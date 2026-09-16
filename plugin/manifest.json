@@ -1,0 +1,49 @@
+{
+    "manifest_version": 3,
+    "name": "店铺中转插件",
+    "version": "10.10.42",
+    "description": "采集商品上传云仓；目标店插件收到接口创建任务后自动预检、提交并回查，无需点击上传。",
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "config/icon_16.png",
+            "48": "config/icon_48.png",
+            "128": "config/icon_128.png"
+        }
+    },
+    "icons": {
+        "16": "config/icon_16.png",
+        "48": "config/icon_48.png",
+        "128": "config/icon_128.png"
+    },
+    "content_scripts": [
+        {
+            "js": ["page-hook.js", "api-reader.js", "form-fill.js"],
+            "matches": ["*://*.temu.com/*", "*://*.kuajingmaihuo.com/*"],
+            "run_at": "document_start",
+            "all_frames": false,
+            "world": "MAIN"
+        },
+        {
+            "js": ["page-context.js", "ingest-queue.js", "store-identity.js", "content-app.js"],
+            "matches": ["*://*.temu.com/*", "*://*.kuajingmaihuo.com/*"],
+            "run_at": "document_start",
+            "all_frames": false
+        }
+    ],
+    "permissions": ["storage", "downloads", "alarms", "scripting"],
+    "host_permissions": [
+        "https://www.ruofei.com.cn/temu/*",
+        "*://*.temu.com/*",
+        "*://*.kuajingmaihuo.com/*",
+        "http://127.0.0.1:18380/*",
+        "http://localhost:18380/*"
+    ],
+    "optional_host_permissions": [
+        "http://*/*",
+        "https://*/*"
+    ]
+}

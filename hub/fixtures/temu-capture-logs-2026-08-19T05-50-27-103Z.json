@@ -1,0 +1,3690 @@
+{
+  "schemaVersion": 3,
+  "exportedAt": "2026-08-19T05:50:27.099Z",
+  "purpose": "用于分析 Temu 扩展采集成功、重复和失败原因",
+  "sensitivePayloadIncluded": false,
+  "logCount": 88,
+  "failedCount": 0,
+  "skippedCount": 0,
+  "runSummaryCount": 0,
+  "snapshotCount": 1,
+  "latestRunSnapshot": {
+    "activePageLabels": [],
+    "bufferOverflow": false,
+    "captured": 87,
+    "category": "run",
+    "completedCount": 14,
+    "declaredProductCount": 14,
+    "domDiagnostics": {
+      "activePageLabels": [],
+      "capturedAt": "2026-08-19T05:50:22.908Z",
+      "counts": {
+        "iframes": 0,
+        "openShadowRoots": 0,
+        "roleRows": 0,
+        "selectedProductRows": 14,
+        "tables": 2,
+        "tbody": 1,
+        "tr": 19,
+        "visibleCandidateRows": 17
+      },
+      "declaredProductCount": 14,
+      "detailLevel": "summary",
+      "domProductIds": [
+        "7744886733",
+        "4764369705",
+        "4876996401",
+        "2815277641",
+        "9858297202",
+        "3030355009",
+        "1358597818",
+        "1160816649",
+        "7404159055",
+        "3015005500",
+        "9100894431",
+        "3640295122",
+        "5372907865",
+        "3714507798"
+      ],
+      "expectedSource": "页面表格 SPU + 当前页列表接口 SPU",
+      "roots": [
+        {
+          "className": "",
+          "id": "",
+          "tag": "body"
+        }
+      ],
+      "rowSamples": [
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "7744886733",
+          "tag": "tr",
+          "text": "SUMAX10ml香水方瓶费洛蒙男士除臭喷雾类目：除臭剂SPU ID：7744886733SKC ID：36188760559货号：U1K763天后自动废弃资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人功效：除臭酒精含量：含酒精实物重量：≤100ml-更新去制作79322547323容量：10ml-展示-体积：12cm*4cm*4cm重量：80g净重：70g-敏感品类别：液体液体容量："
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "4764369705",
+          "tag": "tr",
+          "text": "200ml男女通用成人保湿按摩油，深层滋润私处，长效滋养敏感皮肤，保湿剂 | 优雅瓶设计 | 滋润油配方类目：身体按摩油SPU ID：4764369705SKC ID：92333181434货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：甘油皮肤类型：所有香味：无香适用肤质：所有皮肤功效：保湿主要成分：甘油系列线：欧洲专项是否接触皮肤使用：是全部-更新去制"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "4876996401",
+          "tag": "tr",
+          "text": "芦荟脱毛套装，无痛快速脱毛，男女身体、腋下、私密处脱毛，含刮板方便脱毛，助你打造光滑皮肤类目：脱毛膏、液SPU ID：4876996401SKC ID：99467582447货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}材料类型免费：不含酒精产品推荐用途：比基尼线有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛全部-更新去制作65254129487容量：50ml-展示-体积：4.9cm*4.9c"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "2815277641",
+          "tag": "tr",
+          "text": "SUMAX 50ml香发定型喷雾，清新香气，持久留香，头发护理，适用于各种发质发型，约会旅行清新持久，情人节礼物 万圣节礼物 生日礼物类目：头发香氛SPU ID：2815277641SKC ID：84254115628货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：液体护肤成分：甘油香味：新鲜发型：正常发质功效：保湿酒精含量：不含酒精香精浓度：香精浓度5-15%香调：果"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "9858297202",
+          "tag": "tr",
+          "text": "SUMAX 30ml甜心骷髅淡香水，清香香水，让你拥有一个美好的心情，方便携带，留香持久优，万圣节圣诞节生日礼物推荐，日常使用类目：男士淡香水SPU ID：9858297202SKC ID：41953651490货号：U3C15资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}格式：液体无材料：不含酒精体积：液量盎司香味源：香水酒精含量：不含酒精香精浓度：香精浓度5-10%香调：果香调实物重量：≤100ml留"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "3030355009",
+          "tag": "tr",
+          "text": "SUMAX50g小白罐透明质酸B5面霜，含透明质酸，维生素B5， 持久保湿，日常保湿面霜 - 适宜油性皮肤和干性皮肤，日夜使用类目：面霜SPU ID：3030355009SKC ID：47379349071货号：U5C45资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：奶油具体用途：干燥护肤成分：透明质酸皮肤类型：所有有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "1358597818",
+          "tag": "tr",
+          "text": "SUMAX30ml透明玻璃瓶B5精华液，含透明质酸、维生素A，紧致肌肤、提亮肤色、保湿滋润，无刺激配方，男女通用，日常护肤必备类目：精华SPU ID：1358597818SKC ID：46969008847货号：U3C55资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：滴剂皮肤类型：所有香味：无香味目标使用身体部位：脸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤1"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "1160816649",
+          "tag": "tr",
+          "text": "SUMAX 99ml芦荟保湿液，清爽保湿，不油腻的配方，适合亲密时刻，时尚瓶设计，时尚包装，滋养成分，男女适用类目：身体乳霜SPU ID：1160816649SKC ID：39591171493货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：透明质酸皮肤类型：所有香味：新鲜有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100m"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "7404159055",
+          "tag": "tr",
+          "text": "sumax身体保湿精华液，补充皮肤水分，质地轻盈易吸收，适合各种皮肤类型，生日礼物，万圣节/圣诞节礼物类目：身体乳霜SPU ID：7404159055SKC ID：91948900288货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：透明质酸皮肤类型：所有香味：新鲜有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100ml全部-"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "3015005500",
+          "tag": "tr",
+          "text": "SUMAX30ml精华液，日夜复方视黄醇+维生素C精华套装；轻盈米色焕肤；深层保湿面部护理精华液套装，女性专用类目：精华SPU ID：3015005500SKC ID：97788545254货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：女士*物品形式：滴剂产品优势：保湿皮肤类型：所有香味：无香味目标使用身体部位：脸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100ml系列线：拉"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "9100894431",
+          "tag": "tr",
+          "text": "SUMAX维生素B3光泽身体油，100毫升/3.38液体盎司，适合所有肤质的滋养按摩精油，含甘油，基本功能，SPA美容类目：女式剃毛乳液SPU ID：9100894431SKC ID：99908153541货号：UAD05*2资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}物品形式：油材料类型免费：不含酒精有可能的使用：身体皮肤类型：所有香味：清新功效：滋润实物重量：≤100ml系列线：欧洲专项全部-更新去"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "3640295122",
+          "tag": "tr",
+          "text": "SUMAX男士长效费洛蒙香水，木质香调，便携包装适合日常与约会使用，高级男士香水礼盒类目：头发香氛SPU ID：3640295122SKC ID：15581431809货号：-商品分类错误待修正资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：液体护肤成分：甘油香味：新鲜发型：正常发质功效：保湿酒精含量：不含酒精香精浓度：香精浓度5-15%香调：木质调实物重量：≤100ml系列线"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "5372907865",
+          "tag": "tr",
+          "text": "西瓜温和脱毛蜡条套装,刺激性低,适用于各个部位,赠送清蜡湿巾，助你打造光滑肌肤，适合各种皮肤类型类目：蜡式脱毛蜡带SPU ID：5372907865SKC ID：66847115779货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}材料类型免费：不含酒精产品推荐用途：身体有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛实物重量：≤300g全部-更新去制作58148545964数量：20pcs+2p"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+          "selectedAsProductRow": false,
+          "spuMatch": null,
+          "tag": "tr",
+          "text": "36212696376数量：40pcs+4pack-展示-体积：19cm*10cm*4cm重量：41g-敏感品类别：膏体状态：提交成功单品单品数量：1件U4R3A$18人民币报价:122.59 CNY（参考价）-"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": true,
+          "spuMatch": "3714507798",
+          "tag": "tr",
+          "text": "12/18/30pcs脱毛蜡纸，多色组合脱毛蜡纸，赠送清蜡湿巾，用于嘴唇、面部胡须、眉毛、比基尼线，方便快速脱毛类目：脱毛即用型蜡带SPU ID：3714507798SKC ID：44311324806货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}产品推荐用途：唇有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛实物重量：≤300g全部-更新去制作95342457646数量：12pcs+1bag-"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": false,
+          "spuMatch": null,
+          "tag": "tr",
+          "text": "29971982410数量：18pcs+2bags-展示-体积：9cm*4.5cm*2cm重量：20g-敏感品类别：膏体状态：提交成功单品单品数量：1件T150A$9人民币报价:61.29 CNY（参考价）-"
+        },
+        {
+          "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+          "selectedAsProductRow": false,
+          "spuMatch": null,
+          "tag": "tr",
+          "text": "78529191459数量：30pcs+3bags-展示-体积：9cm*4.5cm*2cm重量：30g-敏感品类别：膏体状态：提交成功单品单品数量：1件T351A$10人民币报价:68.10 CNY（参考价）-"
+        }
+      ],
+      "scanScope": "document 主文档；未扫描 iframe/shadowRoot 内部"
+    },
+    "durationMs": 18403,
+    "error": "",
+    "expectedCount": 14,
+    "expectedSource": "页面表格 SPU + 当前页列表接口 SPU",
+    "failed": 0,
+    "finished": false,
+    "lastEventAt": 1787118616135,
+    "lastProductEventAt": 1787118616149,
+    "loggedAt": "2026-08-19T05:50:26.989Z",
+    "matchedProductIdsCount": 14,
+    "matchedProductIdsSample": [
+      "7744886733",
+      "4764369705",
+      "4876996401",
+      "2815277641",
+      "9858297202",
+      "3030355009",
+      "1358597818",
+      "1160816649",
+      "7404159055",
+      "3015005500",
+      "9100894431",
+      "3640295122",
+      "5372907865",
+      "3714507798"
+    ],
+    "method": "",
+    "pageContextKey": "https://agentseller.temu.com/goods/list",
+    "pageProductIdsCount": 14,
+    "pageProductIdsSample": [
+      "7744886733",
+      "4764369705",
+      "4876996401",
+      "2815277641",
+      "9858297202",
+      "3030355009",
+      "1358597818",
+      "1160816649",
+      "7404159055",
+      "3015005500",
+      "9100894431",
+      "3640295122",
+      "5372907865",
+      "3714507798"
+    ],
+    "pageUrl": "https://agentseller.temu.com/goods/list",
+    "pageVisibleCount": 14,
+    "pendingWrites": 0,
+    "phase": "导出时状态",
+    "primaryProductEvents": 1,
+    "productEvents": 16,
+    "productFailures": 0,
+    "requestUrl": "",
+    "saved": 87,
+    "status": "run-snapshot",
+    "transport": "content"
+  },
+  "errorSummary": {},
+  "skipSummary": {},
+  "idSourceSummary": {
+    "goods:$.result.pageItems[0].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[1].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[2].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[3].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[4].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[5].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[6].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[7].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[8].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[9].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[10].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[11].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[12].goodsId (goodsId)": 1,
+    "goods:$.result.pageItems[13].goodsId (goodsId)": 1,
+    "skc:$.result.pageItems[0].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[1].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[2].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[3].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[4].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[5].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[6].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[7].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[8].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[9].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[10].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[11].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[12].productSkcId (productSkcId)": 1,
+    "skc:$.result.pageItems[13].productSkcId (productSkcId)": 1,
+    "sku:$.result.pageItems[0].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[1].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[2].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[3].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[4].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[5].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[6].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[7].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[8].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[9].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[10].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[11].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[12].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[12].productSkuSummaries[1].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[13].productSkuSummaries[0].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[13].productSkuSummaries[1].productSkuId (productSkuId)": 1,
+    "sku:$.result.pageItems[13].productSkuSummaries[2].productSkuId (productSkuId)": 1,
+    "spu:$.result.pageItems[0].productId (productId)": 1,
+    "spu:$.result.pageItems[1].productId (productId)": 1,
+    "spu:$.result.pageItems[2].productId (productId)": 1,
+    "spu:$.result.pageItems[3].productId (productId)": 1,
+    "spu:$.result.pageItems[4].productId (productId)": 1,
+    "spu:$.result.pageItems[5].productId (productId)": 1,
+    "spu:$.result.pageItems[6].productId (productId)": 1,
+    "spu:$.result.pageItems[7].productId (productId)": 1,
+    "spu:$.result.pageItems[8].productId (productId)": 1,
+    "spu:$.result.pageItems[9].productId (productId)": 1,
+    "spu:$.result.pageItems[10].productId (productId)": 1,
+    "spu:$.result.pageItems[11].productId (productId)": 1,
+    "spu:$.result.pageItems[12].productId (productId)": 1,
+    "spu:$.result.pageItems[13].productId (productId)": 1,
+    "skc:$.result.statusDetailList[0].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[1].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[2].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[3].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[4].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[5].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[6].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[7].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[8].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[9].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[10].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[11].productSkcId (productSkcId)": 1,
+    "skc:$.result.statusDetailList[12].productSkcId (productSkcId)": 1
+  },
+  "logs": [
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:08.668Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 37,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/drogon-api/env",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:08.848Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 29,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.069Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 29,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.221Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 29,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.508Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 289,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.510Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 29,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.511Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 161,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/phantom/xg/pfb/b",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.516Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 289,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.561Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 289,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.725Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 29,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.754Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 289,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.755Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 185,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/phantom/dm/wl/cg",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.768Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 3061,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/phantom/xg/pfb/l1",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.777Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 97,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/phantom/xg/pfb/a3",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "xhr",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.794Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 68,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/temu-sca-config/get-leo-config",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.833Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 177,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lgst-faas-util/get-leo-config",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.854Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 67,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/bg-ladyfish/mms/menu/page/feedback/entrance",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.914Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 120,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/frontend/report/uin/queryFrontendReportUinResult",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.920Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 73,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/hawk/mms/course/exam/queryTotalExam",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.924Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 6106,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/bg/quick/api/merchant/msgBox/unreadMsgDetail",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.927Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 6106,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/bg/quick/api/merchant/msgBox/unreadMsgDetail",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:09.928Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 81,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/supplier/suggestedPrice/flush/msgBox/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.506Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 109,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/bg/quick/api/merchant/msgBox/totalUnreadMsgNum",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.506Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 75,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/bg/quick/api/merchant/rule/unreadNum",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.507Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 81,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/supplier/suggestedPrice/flush/msgBox/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.509Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 129,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/marvel-mms/api/ultraman/FeedbackMmsQueryRpcService/checkAbleFeedback",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.535Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 96094,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/menu",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.934Z",
+      "method": "GET",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 105,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/drogon-api/mms/robin",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.955Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 6241,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lollipop/gray/agent/seller/batchMatchBySupplierIdsWithMulGray",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.958Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 90,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/quick/merchant/pop/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.958Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 81,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/supplier/suggestedPrice/flush/msgBox/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.959Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 81,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/supplier/suggestedPrice/flush/msgBox/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:10.959Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/marvel-mms/api/ultraman/FeedbackMmsQueryRpcService/queryFeedbackNotReadTotal",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "shop",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:11.011Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 289,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:11.018Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 588,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/seller/auth/redDot",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "category",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:11.832Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 5560,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/anniston-agent-seller/category/children/list",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:11.832Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 687,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/config/common/supplier/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:11.844Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 20365,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/config/common/region/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.146Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 17699,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/config/common/region/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.196Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 116,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/matchSubGroup",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.205Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 11165,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/config/common/site/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.206Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 77,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/match",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.208Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 118,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/matchSubGroup",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:12.209Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 596,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/todo/product/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.205Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 1400,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/anniston-agent-seller/config/common/size/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "sku",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.470Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/accessories/toFill/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.472Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 77,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/match",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.487Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 78,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/match",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.490Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 73,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/vehicle/recommend/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-detail",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.490Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 97,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/darwin-mms/api/kiana/foredawn/sales/stock/queryMmsProductStockBaseInfo",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.492Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 24058,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/certTypeEnum",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.499Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 166,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lollipop/gray/agent/seller/batchMatchBySupplierIdsWithMulGray",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.507Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 64,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/listForCrueltyFree",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.509Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 1001,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/config/common/supplier/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.510Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 666,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/compliance/realPicture/todoList/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.511Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 12232,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/mms/ace/biddingInvitationSupplierRpcService/queryChanceBiddingInvitationOrderList",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.512Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 809,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/temu-sca-config/get-leo-config",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.521Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 1152,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/draft/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.521Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 77,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/api/kiana/direnjie/common/gray/match",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.522Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 90,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/bg-luna-mms/goods/quality/optimize/order/wait/optimize/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.522Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/prop/adjust/task/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.571Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/de/hot/addProduct/result/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.571Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/de/hot/addProduct/result/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.571Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/import/semiManagedCopyProduct/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:13.572Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 110,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/fullyManaged/copyProgress/query",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.400Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 63,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/todo/video/wait-upload/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.400Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 154,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/home/page/product/page/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.401Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 112,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/home/page/query/cert/status/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 14,
+      "goodsIdsSample": [
+        "606934090531102",
+        "601103310468816",
+        "601103310364136",
+        "601103310825656",
+        "601103309750228",
+        "601103309540177",
+        "601103307369738",
+        "601103307274739",
+        "601103307274257",
+        "601103307169233",
+        "601103307731371",
+        "601103306332916",
+        "601103305208316",
+        "601103304790133"
+      ],
+      "idSources": {
+        "goods": [
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[0].goodsId",
+            "samples": [
+              "606934090531102"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[1].goodsId",
+            "samples": [
+              "601103310468816"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[2].goodsId",
+            "samples": [
+              "601103310364136"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[3].goodsId",
+            "samples": [
+              "601103310825656"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[4].goodsId",
+            "samples": [
+              "601103309750228"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[5].goodsId",
+            "samples": [
+              "601103309540177"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[6].goodsId",
+            "samples": [
+              "601103307369738"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[7].goodsId",
+            "samples": [
+              "601103307274739"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[8].goodsId",
+            "samples": [
+              "601103307274257"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[9].goodsId",
+            "samples": [
+              "601103307169233"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[10].goodsId",
+            "samples": [
+              "601103307731371"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[11].goodsId",
+            "samples": [
+              "601103306332916"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[12].goodsId",
+            "samples": [
+              "601103305208316"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "goodsId",
+            "path": "$.result.pageItems[13].goodsId",
+            "samples": [
+              "601103304790133"
+            ]
+          }
+        ],
+        "skc": [
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[0].productSkcId",
+            "samples": [
+              "36188760559"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[1].productSkcId",
+            "samples": [
+              "92333181434"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[2].productSkcId",
+            "samples": [
+              "99467582447"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[3].productSkcId",
+            "samples": [
+              "84254115628"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[4].productSkcId",
+            "samples": [
+              "41953651490"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[5].productSkcId",
+            "samples": [
+              "47379349071"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[6].productSkcId",
+            "samples": [
+              "46969008847"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[7].productSkcId",
+            "samples": [
+              "39591171493"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[8].productSkcId",
+            "samples": [
+              "91948900288"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[9].productSkcId",
+            "samples": [
+              "97788545254"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[10].productSkcId",
+            "samples": [
+              "99908153541"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[11].productSkcId",
+            "samples": [
+              "15581431809"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[12].productSkcId",
+            "samples": [
+              "66847115779"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.pageItems[13].productSkcId",
+            "samples": [
+              "44311324806"
+            ]
+          }
+        ],
+        "sku": [
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[0].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "79322547323"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[1].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "48302599487"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[2].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "65254129487"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[3].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "44725227178"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[4].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "44020423679"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[5].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "14606944419"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[6].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "40509836486"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[7].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "49684677269"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[8].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "90010051847"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[9].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "43802886014"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[10].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "65849884652"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[11].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "61742331185"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[12].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "58148545964"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[12].productSkuSummaries[1].productSkuId",
+            "samples": [
+              "36212696376"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[13].productSkuSummaries[0].productSkuId",
+            "samples": [
+              "95342457646"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[13].productSkuSummaries[1].productSkuId",
+            "samples": [
+              "29971982410"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkuId",
+            "path": "$.result.pageItems[13].productSkuSummaries[2].productSkuId",
+            "samples": [
+              "78529191459"
+            ]
+          }
+        ],
+        "spu": [
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[0].productId",
+            "samples": [
+              "7744886733"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[1].productId",
+            "samples": [
+              "4764369705"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[2].productId",
+            "samples": [
+              "4876996401"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[3].productId",
+            "samples": [
+              "2815277641"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[4].productId",
+            "samples": [
+              "9858297202"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[5].productId",
+            "samples": [
+              "3030355009"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[6].productId",
+            "samples": [
+              "1358597818"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[7].productId",
+            "samples": [
+              "1160816649"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[8].productId",
+            "samples": [
+              "7404159055"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[9].productId",
+            "samples": [
+              "3015005500"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[10].productId",
+            "samples": [
+              "9100894431"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[11].productId",
+            "samples": [
+              "3640295122"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[12].productId",
+            "samples": [
+              "5372907865"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productId",
+            "path": "$.result.pageItems[13].productId",
+            "samples": [
+              "3714507798"
+            ]
+          }
+        ]
+      },
+      "loggedAt": "2026-08-19T05:50:14.515Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 110686,
+      "productCount": null,
+      "productIdsCount": 14,
+      "productIdsSample": [
+        "7744886733",
+        "4764369705",
+        "4876996401",
+        "2815277641",
+        "9858297202",
+        "3030355009",
+        "1358597818",
+        "1160816649",
+        "7404159055",
+        "3015005500",
+        "9100894431",
+        "3640295122",
+        "5372907865",
+        "3714507798"
+      ],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/pageQuery",
+      "skcIdsCount": 14,
+      "skuIdsCount": 17,
+      "spuIdsCount": 14,
+      "spuIdsSample": [
+        "7744886733",
+        "4764369705",
+        "4876996401",
+        "2815277641",
+        "9858297202",
+        "3030355009",
+        "1358597818",
+        "1160816649",
+        "7404159055",
+        "3015005500",
+        "9100894431",
+        "3640295122",
+        "5372907865",
+        "3714507798"
+      ],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.520Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 62,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/gambit/api/entity/transfer/goods/bind/queryTransferStatus",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.813Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 127,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/home/page/product/market/limit/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.814Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 89,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/pageQueryForHKHistory",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.993Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 431,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/countStatus",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[0].productSkcId",
+            "samples": [
+              "91948900288"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[1].productSkcId",
+            "samples": [
+              "99467582447"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[2].productSkcId",
+            "samples": [
+              "47379349071"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[3].productSkcId",
+            "samples": [
+              "44311324806"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[4].productSkcId",
+            "samples": [
+              "66847115779"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[5].productSkcId",
+            "samples": [
+              "41953651490"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[6].productSkcId",
+            "samples": [
+              "99908153541"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[7].productSkcId",
+            "samples": [
+              "84254115628"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[8].productSkcId",
+            "samples": [
+              "92333181434"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[9].productSkcId",
+            "samples": [
+              "97788545254"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[10].productSkcId",
+            "samples": [
+              "46969008847"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[11].productSkcId",
+            "samples": [
+              "15581431809"
+            ]
+          },
+          {
+            "count": 1,
+            "key": "productSkcId",
+            "path": "$.result.statusDetailList[12].productSkcId",
+            "samples": [
+              "39591171493"
+            ]
+          }
+        ],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.994Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 734,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/themis/seller/suit_property/query_maintain_status_list",
+      "skcIdsCount": 13,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:14.994Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 102,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/statisticsData",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.122Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/audit/edit/task/product/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.150Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 154,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/home/page/product/page/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "sku",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.150Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/packing/quality/opt/task/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "sku",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.150Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/packingOptTask/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.157Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/prop/adjust/task/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "sku",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.158Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 133,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/classification/adjust/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.158Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 83,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/size/todo/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.165Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/origin/todo/pageQuery",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.214Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 162,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/guideFile/todoTotal",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "sku",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.241Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 88,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/accessories/pg/toFill/stat",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "unknown",
+      "duplicate": false,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:15.980Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 148,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": false,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/prop/adjust/task/count",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "category": "product-list",
+      "duplicate": true,
+      "error": "",
+      "goodsIdsCount": 0,
+      "goodsIdsSample": [],
+      "idSources": {
+        "goods": [],
+        "skc": [],
+        "sku": [],
+        "spu": []
+      },
+      "loggedAt": "2026-08-19T05:50:16.138Z",
+      "method": "POST",
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "payloadBytes": 89,
+      "productCount": null,
+      "productIdsCount": 0,
+      "productIdsSample": [],
+      "productRelated": true,
+      "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/pageQueryForHKHistory",
+      "skcIdsCount": 0,
+      "skuIdsCount": 0,
+      "spuIdsCount": 0,
+      "spuIdsSample": [],
+      "status": "saved",
+      "transport": "fetch",
+      "upgraded": false
+    },
+    {
+      "activePageLabels": [],
+      "bufferOverflow": false,
+      "captured": 87,
+      "category": "run",
+      "completedCount": 14,
+      "declaredProductCount": 14,
+      "domDiagnostics": {
+        "activePageLabels": [],
+        "capturedAt": "2026-08-19T05:50:22.908Z",
+        "counts": {
+          "iframes": 0,
+          "openShadowRoots": 0,
+          "roleRows": 0,
+          "selectedProductRows": 14,
+          "tables": 2,
+          "tbody": 1,
+          "tr": 19,
+          "visibleCandidateRows": 17
+        },
+        "declaredProductCount": 14,
+        "detailLevel": "summary",
+        "domProductIds": [
+          "7744886733",
+          "4764369705",
+          "4876996401",
+          "2815277641",
+          "9858297202",
+          "3030355009",
+          "1358597818",
+          "1160816649",
+          "7404159055",
+          "3015005500",
+          "9100894431",
+          "3640295122",
+          "5372907865",
+          "3714507798"
+        ],
+        "expectedSource": "页面表格 SPU + 当前页列表接口 SPU",
+        "roots": [
+          {
+            "className": "",
+            "id": "",
+            "tag": "body"
+          }
+        ],
+        "rowSamples": [
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "7744886733",
+            "tag": "tr",
+            "text": "SUMAX10ml香水方瓶费洛蒙男士除臭喷雾类目：除臭剂SPU ID：7744886733SKC ID：36188760559货号：U1K763天后自动废弃资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人功效：除臭酒精含量：含酒精实物重量：≤100ml-更新去制作79322547323容量：10ml-展示-体积：12cm*4cm*4cm重量：80g净重：70g-敏感品类别：液体液体容量："
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "4764369705",
+            "tag": "tr",
+            "text": "200ml男女通用成人保湿按摩油，深层滋润私处，长效滋养敏感皮肤，保湿剂 | 优雅瓶设计 | 滋润油配方类目：身体按摩油SPU ID：4764369705SKC ID：92333181434货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：甘油皮肤类型：所有香味：无香适用肤质：所有皮肤功效：保湿主要成分：甘油系列线：欧洲专项是否接触皮肤使用：是全部-更新去制"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "4876996401",
+            "tag": "tr",
+            "text": "芦荟脱毛套装，无痛快速脱毛，男女身体、腋下、私密处脱毛，含刮板方便脱毛，助你打造光滑皮肤类目：脱毛膏、液SPU ID：4876996401SKC ID：99467582447货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}材料类型免费：不含酒精产品推荐用途：比基尼线有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛全部-更新去制作65254129487容量：50ml-展示-体积：4.9cm*4.9c"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "2815277641",
+            "tag": "tr",
+            "text": "SUMAX 50ml香发定型喷雾，清新香气，持久留香，头发护理，适用于各种发质发型，约会旅行清新持久，情人节礼物 万圣节礼物 生日礼物类目：头发香氛SPU ID：2815277641SKC ID：84254115628货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：液体护肤成分：甘油香味：新鲜发型：正常发质功效：保湿酒精含量：不含酒精香精浓度：香精浓度5-15%香调：果"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "9858297202",
+            "tag": "tr",
+            "text": "SUMAX 30ml甜心骷髅淡香水，清香香水，让你拥有一个美好的心情，方便携带，留香持久优，万圣节圣诞节生日礼物推荐，日常使用类目：男士淡香水SPU ID：9858297202SKC ID：41953651490货号：U3C15资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}格式：液体无材料：不含酒精体积：液量盎司香味源：香水酒精含量：不含酒精香精浓度：香精浓度5-10%香调：果香调实物重量：≤100ml留"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "3030355009",
+            "tag": "tr",
+            "text": "SUMAX50g小白罐透明质酸B5面霜，含透明质酸，维生素B5， 持久保湿，日常保湿面霜 - 适宜油性皮肤和干性皮肤，日夜使用类目：面霜SPU ID：3030355009SKC ID：47379349071货号：U5C45资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：奶油具体用途：干燥护肤成分：透明质酸皮肤类型：所有有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "1358597818",
+            "tag": "tr",
+            "text": "SUMAX30ml透明玻璃瓶B5精华液，含透明质酸、维生素A，紧致肌肤、提亮肤色、保湿滋润，无刺激配方，男女通用，日常护肤必备类目：精华SPU ID：1358597818SKC ID：46969008847货号：U3C55资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：滴剂皮肤类型：所有香味：无香味目标使用身体部位：脸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤1"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "1160816649",
+            "tag": "tr",
+            "text": "SUMAX 99ml芦荟保湿液，清爽保湿，不油腻的配方，适合亲密时刻，时尚瓶设计，时尚包装，滋养成分，男女适用类目：身体乳霜SPU ID：1160816649SKC ID：39591171493货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：透明质酸皮肤类型：所有香味：新鲜有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100m"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "7404159055",
+            "tag": "tr",
+            "text": "sumax身体保湿精华液，补充皮肤水分，质地轻盈易吸收，适合各种皮肤类型，生日礼物，万圣节/圣诞节礼物类目：身体乳霜SPU ID：7404159055SKC ID：91948900288货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人具体用途：干燥护肤成分：透明质酸皮肤类型：所有香味：新鲜有效成分：透明质酸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100ml全部-"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "3015005500",
+            "tag": "tr",
+            "text": "SUMAX30ml精华液，日夜复方视黄醇+维生素C精华套装；轻盈米色焕肤；深层保湿面部护理精华液套装，女性专用类目：精华SPU ID：3015005500SKC ID：97788545254货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：女士*物品形式：滴剂产品优势：保湿皮肤类型：所有香味：无香味目标使用身体部位：脸适用肤质：所有皮肤功效：保湿主要成分：透明质酸实物重量：≤100ml系列线：拉"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "9100894431",
+            "tag": "tr",
+            "text": "SUMAX维生素B3光泽身体油，100毫升/3.38液体盎司，适合所有肤质的滋养按摩精油，含甘油，基本功能，SPA美容类目：女式剃毛乳液SPU ID：9100894431SKC ID：99908153541货号：UAD05*2资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}物品形式：油材料类型免费：不含酒精有可能的使用：身体皮肤类型：所有香味：清新功效：滋润实物重量：≤100ml系列线：欧洲专项全部-更新去"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "3640295122",
+            "tag": "tr",
+            "text": "SUMAX男士长效费洛蒙香水，木质香调，便携包装适合日常与约会使用，高级男士香水礼盒类目：头发香氛SPU ID：3640295122SKC ID：15581431809货号：-商品分类错误待修正资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}性别：男女通用-成人物品形式：液体护肤成分：甘油香味：新鲜发型：正常发质功效：保湿酒精含量：不含酒精香精浓度：香精浓度5-15%香调：木质调实物重量：≤100ml系列线"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "5372907865",
+            "tag": "tr",
+            "text": "西瓜温和脱毛蜡条套装,刺激性低,适用于各个部位,赠送清蜡湿巾，助你打造光滑肌肤，适合各种皮肤类型类目：蜡式脱毛蜡带SPU ID：5372907865SKC ID：66847115779货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}材料类型免费：不含酒精产品推荐用途：身体有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛实物重量：≤300g全部-更新去制作58148545964数量：20pcs+2p"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_whiteTr_5-123-0",
+            "selectedAsProductRow": false,
+            "spuMatch": null,
+            "tag": "tr",
+            "text": "36212696376数量：40pcs+4pack-展示-体积：19cm*10cm*4cm重量：41g-敏感品类别：膏体状态：提交成功单品单品数量：1件U4R3A$18人民币报价:122.59 CNY（参考价）-"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": true,
+            "spuMatch": "3714507798",
+            "tag": "tr",
+            "text": "12/18/30pcs脱毛蜡纸，多色组合脱毛蜡纸，赠送清蜡湿巾，用于嘴唇、面部胡须、眉毛、比基尼线，方便快速脱毛类目：脱毛即用型蜡带SPU ID：3714507798SKC ID：44311324806货号：-资质待上传.beast-core-ellipsis-4{-webkit-line-clamp:4;-webkit-box-orient: vertical;}产品推荐用途：唇有可能的使用：胡须和小胡子皮肤类型：所有功效：脱毛实物重量：≤300g全部-更新去制作95342457646数量：12pcs+1bag-"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": false,
+            "spuMatch": null,
+            "tag": "tr",
+            "text": "29971982410数量：18pcs+2bags-展示-体积：9cm*4.5cm*2cm重量：20g-敏感品类别：膏体状态：提交成功单品单品数量：1件T150A$9人民币报价:61.29 CNY（参考价）-"
+          },
+          {
+            "className": "TB_tr_5-123-0 TB_greyTr_5-123-0",
+            "selectedAsProductRow": false,
+            "spuMatch": null,
+            "tag": "tr",
+            "text": "78529191459数量：30pcs+3bags-展示-体积：9cm*4.5cm*2cm重量：30g-敏感品类别：膏体状态：提交成功单品单品数量：1件T351A$10人民币报价:68.10 CNY（参考价）-"
+          }
+        ],
+        "scanScope": "document 主文档；未扫描 iframe/shadowRoot 内部"
+      },
+      "durationMs": 18403,
+      "error": "",
+      "expectedCount": 14,
+      "expectedSource": "页面表格 SPU + 当前页列表接口 SPU",
+      "failed": 0,
+      "finished": false,
+      "lastEventAt": 1787118616135,
+      "lastProductEventAt": 1787118616149,
+      "loggedAt": "2026-08-19T05:50:26.989Z",
+      "matchedProductIdsCount": 14,
+      "matchedProductIdsSample": [
+        "7744886733",
+        "4764369705",
+        "4876996401",
+        "2815277641",
+        "9858297202",
+        "3030355009",
+        "1358597818",
+        "1160816649",
+        "7404159055",
+        "3015005500",
+        "9100894431",
+        "3640295122",
+        "5372907865",
+        "3714507798"
+      ],
+      "method": "",
+      "pageContextKey": "https://agentseller.temu.com/goods/list",
+      "pageProductIdsCount": 14,
+      "pageProductIdsSample": [
+        "7744886733",
+        "4764369705",
+        "4876996401",
+        "2815277641",
+        "9858297202",
+        "3030355009",
+        "1358597818",
+        "1160816649",
+        "7404159055",
+        "3015005500",
+        "9100894431",
+        "3640295122",
+        "5372907865",
+        "3714507798"
+      ],
+      "pageUrl": "https://agentseller.temu.com/goods/list",
+      "pageVisibleCount": 14,
+      "pendingWrites": 0,
+      "phase": "导出时状态",
+      "primaryProductEvents": 1,
+      "productEvents": 16,
+      "productFailures": 0,
+      "requestUrl": "",
+      "saved": 87,
+      "status": "run-snapshot",
+      "transport": "content"
+    }
+  ]
+}

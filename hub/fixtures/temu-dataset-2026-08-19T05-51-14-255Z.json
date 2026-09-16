@@ -1,0 +1,999 @@
+{
+  "schemaVersion": 3,
+  "exportedAt": "2026-08-19T05:51:14.253Z",
+  "purpose": "用于分析 Temu 商品接口真实结构并设计网站与数据库",
+  "exportMode": "structure-samples",
+  "sampleLimitPerType": 3,
+  "totalCountsByType": {
+    "sku": 5,
+    "shop": 2,
+    "unknown": 52,
+    "product-list": 12,
+    "category": 1,
+    "product-detail": 1
+  },
+  "sampleCount": 13,
+  "records": [
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "0b817c04f5d30f310d88bc6b9a3d127be7751825bed27a6df2e49a0d7f2c249e",
+      "savedAt": "2026-08-19T05:50:15.239Z",
+      "dataType": "sku",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/accessories/pg/toFill/stat",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 88,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "awaitingProcessCount": 0
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "8ec442338d9dab9d6bd89415a6e28404cf8309369882b2c8c6c9cde44644f4a1",
+      "savedAt": "2026-08-19T05:50:13.467Z",
+      "dataType": "sku",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/accessories/toFill/stat",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 88,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "awaitingProcessCount": 0
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "e44e326c820ee7aca53d121a31fdf6bf765fba87bf840f27494e31b74131de20",
+      "savedAt": "2026-08-19T05:50:15.149Z",
+      "dataType": "sku",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/lich-mms/product/sku/packingOptTask/pageQuery",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 88,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "total": 0,
+          "pageItems": []
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "107d77a132b27b2ee4c84cd4e6952388b628e67ba016bdd2722c60b9192a29b6",
+      "savedAt": "2026-08-19T05:50:09.506Z",
+      "dataType": "shop",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/api/seller/auth/userInfo",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 297,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "accountId": 25631446548655,
+          "maskMobile": "[REDACTED]",
+          "mallList": [
+            {
+              "mallId": 634418217318103,
+              "mallName": "City Beauty King",
+              "managedType": 0,
+              "mallMode": 0,
+              "uniqueId": "eyJ1IjoicUJ6ZXh3SkJzV1ZmeFhaaFVKMk1Odz09IiwidiI6MX0="
+            }
+          ],
+          "accountType": 2
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "f8a26a139bc6cfd492ead1b6ba9d88aaf6ba48eb6b3d7f89e6afb3a7d71bd103",
+      "savedAt": "2026-08-19T05:50:09.923Z",
+      "dataType": "shop",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/bg/quick/api/merchant/msgBox/unreadMsgDetail",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 6106,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "num": null,
+          "unreadPopMsg": [
+            {
+              "id": 3990054147945,
+              "title": "商品不合规，影响售卖！请尽快处理！",
+              "content": "根据相关法律法规，您的店铺存在不合规商品，影响售卖！请尽快处理！<br><ul><li><h4>商品资质</h4><ul><li><span style=\"color: red;\">13</span>个商品资质待上传或上传失败；<a href=\"https://agentseller.temu.com/govern/upload-qualifications?uploadStatusList=1,3&goodsStatusList=0,1\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品实拍图</h4><ul><li><span style=\"color: red;\">13</span>个商品标签实拍图待上传或有异常； <a href=\"https://agentseller.temu.com/govern/compliant-live-photos?checkTypeStatusList=1,4,7&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品合规信息</h4><ul><li><span style=\"color: red;\">13</span>个商品合规信息待补充；<a href=\"https://agentseller.temu.com/govern/information-supplementation?taskStatusList=2,5&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li></ul><br>",
+              "introduction": null,
+              "sendTime": 1787071266000,
+              "readStatus": 0,
+              "jumpUrl": "https://agentseller.temu.com/govern/dashboard",
+              "linkText": "去处理",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "as_goods_compliance",
+              "templateId": "governDashboardMsgUS"
+            },
+            {
+              "id": 3987735688528,
+              "title": "请您尽快完成信息确认及更新",
+              "content": "尊敬的卖家，您好：<br>为满足您电商业务合规登记需要，请您使用主账号在 2026.08.21 00:00:00 之前进入您的主体信息页面及合规登记页面，对您之前提供的信息进行年度确认或更新，并提供完整、真实、有效的信息，否则可能导致您在美国站停售或影响其他业务经营。<br>",
+              "introduction": null,
+              "sendTime": 1787043748000,
+              "readStatus": 0,
+              "jumpUrl": "",
+              "linkText": "Go to Handle",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "other",
+              "templateId": "YearConfirmSubGLO"
+            },
+            {
+              "id": 3980719830089,
+              "title": "商品不合规，影响售卖！请尽快处理！",
+              "content": "根据相关法律法规，您的店铺存在不合规商品，影响售卖！请尽快处理！<br><ul><li><h4>商品资质</h4><ul><li><span style=\"color: red;\">13</span>个商品资质待上传或上传失败；<a href=\"https://agentseller.temu.com/govern/upload-qualifications?uploadStatusList=1,3&goodsStatusList=0,1\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品实拍图</h4><ul><li><span style=\"color: red;\">13</span>个商品标签实拍图待上传或有异常； <a href=\"https://agentseller.temu.com/govern/compliant-live-photos?checkTypeStatusList=1,4,7&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品合规信息</h4><ul><li><span style=\"color: red;\">13</span>个商品合规信息待补充；<a href=\"https://agentseller.temu.com/govern/information-supplementation?taskStatusList=2,5&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li></ul><br>",
+              "introduction": null,
+              "sendTime": 1786984822000,
+              "readStatus": 0,
+              "jumpUrl": "https://agentseller.temu.com/govern/dashboard",
+              "linkText": "去处理",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "as_goods_compliance",
+              "templateId": "governDashboardMsgUS"
+            },
+            {
+              "id": 3978365114777,
+              "title": "请您尽快完成信息确认及更新",
+              "content": "尊敬的卖家，您好：<br>为满足您电商业务合规登记需要，请您使用主账号在 2026.08.20 00:00:00 之前进入您的主体信息页面及合规登记页面，对您之前提供的信息进行年度确认或更新，并提供完整、真实、有效的信息，否则可能导致您在美国站停售或影响其他业务经营。<br>",
+              "introduction": null,
+              "sendTime": 1786957403000,
+              "readStatus": 0,
+              "jumpUrl": "",
+              "linkText": "Go to Handle",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "other",
+              "templateId": "YearConfirmSubGLO"
+            },
+            {
+              "id": 3969259039356,
+              "title": "商品不合规，影响售卖！请尽快处理！",
+              "content": "根据相关法律法规，您的店铺存在不合规商品，影响售卖！请尽快处理！<br><ul><li><h4>商品资质</h4><ul><li><span style=\"color: red;\">13</span>个商品资质待上传或上传失败；<a href=\"https://agentseller.temu.com/govern/upload-qualifications?uploadStatusList=1,3&goodsStatusList=0,1\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品实拍图</h4><ul><li><span style=\"color: red;\">13</span>个商品标签实拍图待上传或有异常； <a href=\"https://agentseller.temu.com/govern/compliant-live-photos?checkTypeStatusList=1,4,7&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li><li><h4>商品合规信息</h4><ul><li><span style=\"color: red;\">13</span>个商品合规信息待补充；<a href=\"https://agentseller.temu.com/govern/information-supplementation?taskStatusList=2,5&goodsStatusList=1,2\" target=\"_blank\">去处理</a></li></ul></li></ul><br>",
+              "introduction": null,
+              "sendTime": 1786898702000,
+              "readStatus": 0,
+              "jumpUrl": "https://agentseller.temu.com/govern/dashboard",
+              "linkText": "去处理",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "as_goods_compliance",
+              "templateId": "governDashboardMsgUS"
+            },
+            {
+              "id": 3966971094790,
+              "title": "请您尽快完成信息确认及更新",
+              "content": "尊敬的卖家，您好：<br>为满足您电商业务合规登记需要，请您使用主账号在 2026.08.19 00:00:00 之前进入您的主体信息页面及合规登记页面，对您之前提供的信息进行年度确认或更新，并提供完整、真实、有效的信息，否则可能导致您在美国站停售或影响其他业务经营。<br>",
+              "introduction": null,
+              "sendTime": 1786870732000,
+              "readStatus": 0,
+              "jumpUrl": "",
+              "linkText": "Go to Handle",
+              "msgActionType": 2,
+              "forceRead": true,
+              "forceReadSecond": 3,
+              "isRichContent": null,
+              "fileUrl": [],
+              "group": "other",
+              "templateId": "YearConfirmSubGLO"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "3e69c7b62c551c64dc36057f112a73370df91fee0561281e7e2356ff115d29ba",
+      "savedAt": "2026-08-19T05:50:09.723Z",
+      "dataType": "unknown",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+        "method": "GET",
+        "transport": "xhr",
+        "queryKeys": []
+      },
+      "payloadBytes": 29,
+      "payload": {
+        "server_time": 1787118611162
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "46ba7d4005279f4b224cc8548f6e27b4040b1c4ee10c563f93268a1e161ec59a",
+      "savedAt": "2026-08-19T05:50:09.067Z",
+      "dataType": "unknown",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+        "method": "GET",
+        "transport": "xhr",
+        "queryKeys": []
+      },
+      "payloadBytes": 29,
+      "payload": {
+        "server_time": 1787118610412
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "787764ecd1274d629fa7f7929b02e334e35dbe70977c92d8ffb9b57679fd6dc7",
+      "savedAt": "2026-08-19T05:50:08.847Z",
+      "dataType": "unknown",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/api/server/_stm",
+        "method": "GET",
+        "transport": "xhr",
+        "queryKeys": []
+      },
+      "payloadBytes": 29,
+      "payload": {
+        "server_time": 1787118610162
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "1b0a6234f16f099327fb755dcd24bafcc12c461a35f3e1b196193017e8cd1958",
+      "savedAt": "2026-08-19T05:50:14.511Z",
+      "dataType": "product-list",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/gambit/api/entity/transfer/goods/bind/queryTransferStatus",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 62,
+      "payload": {
+        "error_code": 400020037,
+        "error_msg": "No Permission to Access"
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "842fef64f5064c324d7a27296505982a723e03c0ac3a194ba999eb3aac341030",
+      "savedAt": "2026-08-19T05:50:13.494Z",
+      "dataType": "product-list",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/skc/listForCrueltyFree",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 64,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": []
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "86d0a2b3bd2281d6a885f538f3fff3c75794c2b144b524adc775a1dea005ffc1",
+      "savedAt": "2026-08-19T05:50:15.157Z",
+      "dataType": "product-list",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/visage-agent-seller/product/size/todo/pageQuery",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 83,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "total": 0,
+          "list": []
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "3d399aba62f604c1a61f1d4dfa288b46009e3a83614cd611f26646f3bdbb1389",
+      "savedAt": "2026-08-19T05:50:11.830Z",
+      "dataType": "category",
+      "identity": {
+        "shopId": null,
+        "categoryId": 1,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/anniston-agent-seller/category/children/list",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 5560,
+      "payload": {
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null,
+        "result": {
+          "categoryNodeVOS": [
+            {
+              "catId": 1,
+              "catName": "CD和黑胶唱片",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 653,
+              "catName": "办公用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 1464,
+              "catName": "宠物用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 2096,
+              "catName": "家电",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 2542,
+              "catName": "电子",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 4673,
+              "catName": "工业和科学",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 9711,
+              "catName": "家居、厨房用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 13512,
+              "catName": "家居装修",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 15945,
+              "catName": "健康和家居用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 17719,
+              "catName": "乐器",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 18768,
+              "catName": "美容和个人护理",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 19858,
+              "catName": "汽车用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 23177,
+              "catName": "视频游戏",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 24252,
+              "catName": "手机和配件",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 24389,
+              "catName": "庭院、草坪和园艺",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 25439,
+              "catName": "玩具与游戏",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 26207,
+              "catName": "母婴用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 27011,
+              "catName": "服装、鞋靴和珠宝饰品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 31148,
+              "catName": "运动与户外用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 39278,
+              "catName": "收藏品和工艺品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 39316,
+              "catName": "艺术品、工艺品和缝纫用品",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 40479,
+              "catName": "Handmade Products",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": true,
+              "hiddenType": 10,
+              "isSemiManagedHidden": true,
+              "semiManagedHiddenType": 10
+            },
+            {
+              "catId": 42367,
+              "catName": "各色美食",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 44933,
+              "catName": "图书",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 54033,
+              "catName": "电影和电视",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 54712,
+              "catName": "礼品卡",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": false,
+              "hiddenType": 0,
+              "isSemiManagedHidden": false,
+              "semiManagedHiddenType": 0
+            },
+            {
+              "catId": 55083,
+              "catName": "软件",
+              "catEnName": null,
+              "catLevel": 1,
+              "catType": 0,
+              "parentCatId": 0,
+              "isLeaf": false,
+              "isHidden": true,
+              "hiddenType": 10,
+              "isSemiManagedHidden": true,
+              "semiManagedHiddenType": 10
+            }
+          ]
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "extensionVersion": "9.5.0",
+      "classifierVersion": 4,
+      "redactionVersion": 1,
+      "eventId": "56d4b2b2f1d48899c32c25c90701cd89efce2f7d8bb8f485cc06463506e82f1f",
+      "savedAt": "2026-08-19T05:50:13.469Z",
+      "dataType": "product-detail",
+      "identity": {
+        "shopId": null,
+        "categoryId": null,
+        "productId": null,
+        "productIds": [],
+        "goodsIds": [],
+        "skcIds": [],
+        "skuIds": [],
+        "idSources": {
+          "spu": [],
+          "goods": [],
+          "skc": [],
+          "sku": []
+        }
+      },
+      "productCount": null,
+      "source": {
+        "pageUrl": "https://agentseller.temu.com/goods/list",
+        "requestUrl": "https://agentseller.temu.com/darwin-mms/api/kiana/foredawn/sales/stock/queryMmsProductStockBaseInfo",
+        "method": "POST",
+        "transport": "fetch",
+        "queryKeys": []
+      },
+      "payloadBytes": 97,
+      "payload": {
+        "result": {
+          "supplierAllowDecreaseStock": true
+        },
+        "success": true,
+        "errorCode": 1000000,
+        "errorMsg": null
+      }
+    }
+  ]
+}

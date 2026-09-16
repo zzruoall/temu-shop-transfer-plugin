@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>导出 Temu 本地采集数据</title>
+    <style>
+        body{margin:0;background:#f5f7fb;color:#1f2937;font:14px/1.7 Arial,"Microsoft YaHei",sans-serif}
+        main{max-width:680px;margin:60px auto;padding:30px;background:#fff;border-radius:16px;box-shadow:0 12px 36px rgba(15,23,42,.12)}
+        h1{margin:0 0 12px;font-size:21px}.status{padding:14px;border-radius:9px;background:#eef2ff;color:#4338ca}.detail{margin-top:14px;color:#64748b}
+        .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}.actions button{border:0;border-radius:8px;padding:9px 18px;background:#0b74de;color:#fff;cursor:pointer}.actions .secondary{background:#e6f2ff;color:#155d96}
+    </style>
+</head>
+<body>
+<main>
+    <h1>导出 Temu 本地采集数据</h1>
+    <div id="status" class="status">正在读取插件本地数据库…</div>
+    <div id="detail" class="detail"></div>
+    <div class="actions">
+        <button id="fullExport">导出完整商品包</button>
+        <button id="sampleExport" class="secondary">导出结构样本</button>
+        <button id="retry" hidden>重新导出</button>
+    </div>
+</main>
+<script src="packet.js"></script>
+<script src="export.js"></script>
+</body>
+</html>

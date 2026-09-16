@@ -1,0 +1,41 @@
+/** 隔离验证工人同步、恢复与单任务领取；不调用真实店铺或网络。 */
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+import assert from "node:assert/strict";
+const source = await readFile(new URL("../../worker/worker.mjs", import.meta.url), "utf8");
+const method = source.slice(source.indexOf("async function syncManualTasks("), source.indexOf("async function tick()"));
+const script = method.replace('new URL("../ziniao.pem", import.meta.url)', '"test-key"');
+async function run({jobs = [], tasks = [], version = "10.7.0", enabled = "1", claimed = []} = {}) {
+    const calls = [];
+    const context = vm.createContext({ process:{env:{SHOP_HUB_CLI_DELIVERY:enabled}}, console:{log(){}}, readFile:async()=>"key", hubGet:async()=>({jobs}), hubPost:async(path,body)=>{calls.push({path,body});return {claimed};}, deliverCliTask:async(options)=>{calls.push({delivery:options});return {tasks,pendingUploadCount:tasks.length,pendingUploadBytes:2};} });
+    vm.runInContext(script,context);
+    await context.syncManualTasks("store", "name", {pluginVersion:version,pluginDetected:true,pluginInstanceId:"instance",pageStoreName:"name",url:"https://agentseller.temu.com/goods/list"}, {identityMatched:true});
+    return calls;
+}
+const task = {spuId:"123456789",claimToken:"test-token",snapshot:{spuId:"123456789"}};
+const job = (status)=>({id:"job",targetStoreId:"store",mode:"manual-plugin-upload",items:[{...task,status}]});
+assert.equal((await run({enabled:"0"})).length,0);
+let calls = await run();
+assert.ok(calls[0].delivery.syncStates);
+assert.equal(calls[1].body.pendingUploadCount,29);
+assert.equal(calls[1].body.manualUploadsOnly,true);
+calls = await run({jobs:[job("claimed")]});
+assert.equal(calls[1].delivery.task.claimToken,"test-token");
+assert.equal(calls[2].body.status,"received");
+assert.ok(!calls.some(call=>call.path==="/api/jobs/claim"));
+calls = await run({jobs:[job("received")]});
+assert.ok(calls[1].delivery.task);
+assert.ok(!calls.some(call=>call.path==="/api/jobs/report"));
+calls = await run({jobs:[job("received")],tasks:[{jobId:"job",spuId:task.spuId,openRequested:true}]});
+assert.equal(calls[1].body.status,"upload_opened");
+assert.ok(!calls.some(call=>call.delivery?.task));
+calls = await run({jobs:[job("upload_opened")]});
+assert.ok(!calls.some(call=>call.delivery?.task));
+calls = await run({jobs:[job("upload_opened")],tasks:[{jobId:"job",spuId:task.spuId,completionRequested:true}]});
+assert.equal(calls[1].body.status,"uploaded");
+calls = await run({jobs:[job("received")],tasks:[{jobId:"job",spuId:task.spuId,completionRequested:true}]});
+assert.ok(!calls.some(call=>call.body?.status==="uploaded"));
+calls = await run({version:"10.6.1"});
+assert.equal(calls.length,0);
+assert.ok(source.indexOf("await inspectIdleStores(running, stores);") < source.indexOf("if (!requests.length)"));
+console.log("CLI worker: independent巡检、同步、原凭证恢复、打开回报、单任务容量与禁发布检查通过");

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>店铺中转仓</title>
+    <link rel="icon" href="/temu/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/temu/styles.css">
+</head>
+<body>
+<!--
+THESIS: 中转仓先收集完整采集包，再按指定店铺派发任务。旧探测页不进主流程。
+OWN-WORLD: 蓝白中转仓控制台；浅蓝作为信息分层，深蓝只用于导航、关键数字和主要动作。
+STORY: 运营打开页面先看采集是否入库，再进商品库核对，最后给指定目标店派任务。
+FIRST VIEWPORT: 左侧三项导航、采集状态、商品数量、最近导入文件和上传入口。
+FORM: 面向跨店中转的资料仓库控制台，商品库负责核对，任务台负责指定店铺领取。
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+<div class="app">
+    <aside class="rail">
+        <div class="mark">中转仓<small>先入库，再指定店铺</small></div>
+        <nav class="nav">
+            <a href="#/" data-nav="home">查验台</a>
+            <a href="#/products" data-nav="products">商品库</a>
+            <a href="#/jobs" data-nav="jobs">任务台</a>
+            <a href="#/logs" data-nav="logs">工作日志</a>
+        </nav>
+        <p class="rail-note">商品入库后可选择一个或多个目标店，确认合规后通过接口创建。请保持目标店商品列表页打开；在工作日志核对新SPU，创建不等于审核上架。</p>
+    </aside>
+    <main class="stage" id="app"></main>
+</div>
+<script src="/temu/app.js"></script>
+</body>
+</html>

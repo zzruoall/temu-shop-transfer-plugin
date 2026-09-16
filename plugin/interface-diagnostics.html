@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>接口侦听诊断</title>
+    <style>
+        body{margin:0;background:#f5f8ff;color:#172033;font:14px/1.6 Arial,"Microsoft YaHei",sans-serif}
+        main{max-width:1120px;margin:32px auto;padding:26px;background:#fff;border:1px solid #dbe5f5;border-radius:16px;box-shadow:0 12px 36px rgba(30,64,175,.1)}
+        h1{margin:0 0 4px;font-size:23px;color:#1d4ed8}.hint{margin:0 0 20px;color:#64748b}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}.card{padding:12px;border:1px solid #e0e7ff;border-radius:10px;background:#f8faff}.label{color:#64748b;font-size:12px}.value{display:block;margin-top:3px;font-size:20px;font-weight:700;color:#1e40af}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}button{border:0;border-radius:8px;padding:9px 16px;background:#2563eb;color:#fff;cursor:pointer}button.secondary{background:#e8efff;color:#1d4ed8}button.danger{background:#fff1f2;color:#be123c}button:disabled{opacity:.5;cursor:not-allowed}.status{padding:10px 12px;border-radius:8px;background:#eff6ff;color:#1e40af;white-space:pre-wrap}.table-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:960px}th,td{padding:9px 10px;border-bottom:1px solid #edf0f5;text-align:left;vertical-align:top}th{background:#f8fafc;color:#475569;font-size:12px;position:sticky;top:0}td{font-size:12px}code{font-family:Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#334155}.badge{display:inline-block;padding:2px 7px;border-radius:999px;background:#dcfce7;color:#166534}.badge.skip{background:#fff7ed;color:#9a3412}@media(max-width:760px){main{margin:0;border-radius:0}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    </style>
+</head>
+<body>
+<main>
+    <h1>接口侦听诊断</h1>
+    <p class="hint">只包含接口路径、请求方式、响应字段结构和有限 ID 样本；不包含 Cookie、令牌、请求正文或完整商品响应。</p>
+    <div class="cards">
+        <div class="card"><span class="label">JSON 接口样本</span><span class="value" id="jsonCount">—</span></div>
+        <div class="card"><span class="label">跳过/非 JSON</span><span class="value" id="skipCount">—</span></div>
+        <div class="card"><span class="label">含图片证据</span><span class="value" id="imageCount">—</span></div>
+        <div class="card"><span class="label">含详情正文证据</span><span class="value" id="detailCount">—</span></div>
+    </div>
+    <div class="toolbar"><button id="download">导出接口诊断 JSON</button><button id="refresh" class="secondary">刷新</button><button id="clear" class="danger">清空本次诊断</button></div>
+    <div class="status" id="status">正在读取诊断记录…</div>
+    <div class="table-wrap"><table><thead><tr><th>时间</th><th>接口</th><th>方式</th><th>响应</th><th>体积/耗时</th><th>字段与 ID 证据</th><th>内容证据</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main>
+<script src="interface-diagnostics.js"></script>
+</body>
+</html>

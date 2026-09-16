@@ -1,0 +1,22 @@
+/** 使用临时仓库验证商城绑定、插件领取及授权恢复，不连接真实平台。 */
+import assert from 'node:assert/strict';
+import {mkdtemp} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createJobQueue} from '../lib/job-queue.mjs';
+const product={spuId:'9100894431',ready:true,title:'测试',images:['https://example.com/a'],skuIds:['1'],skcIds:['2']};
+const queue=createJobQueue(await mkdtemp(path.join(os.tmpdir(),'api-store-')),{getBatch:async()=>({sourceStoreId:'temu:111',products:[product]}),listOverview:async()=>({})});
+const identity={storeId:'temu:222',mallId:'222',storeName:'target',pageStoreName:'target',pluginInstanceId:'instance',pluginVersion:'10.10.0',pluginDetected:true,identityMatched:true,executionMode:'plugin-api'};
+await queue.registerAgent(identity);
+await assert.rejects(queue.registerAgent({...identity,executionMode:'cli',storeId:'999'}));
+await assert.rejects(queue.claimJobs({...identity,executionMode:'cli'}));
+const job=await queue.createJob({sourceStoreId:'temu:111',targetStoreId:identity.storeId,targetStoreName:'target',sourceBatchId:'batch',spuIds:[product.spuId],requireOnline:true,directCreate:true,complianceVersion:'V2.0'});
+const result=await queue.claimJobs(identity);assert.equal(result.claimed.length,1);
+const base={...identity,jobId:job.id,spuId:product.spuId,claimToken:result.claimed[0].claimToken};
+await queue.reportProgress({...base,status:'received'});
+const begin={...base,phase:'begin',requestHash:'a'.repeat(64),authorizationKey:'stable-authorization-key'};
+await assert.rejects(queue.directProgress({...begin,mallId:'333'}));
+const first=await queue.directProgress(begin),again=await queue.directProgress(begin);
+assert.equal(again.attemptId,first.attemptId);assert.equal(again.resumed,true);
+await queue.directProgress({...base,phase:'created',attemptId:first.attemptId,productId:'8002250622',verified:true});
+console.log('商城绑定、阻止CLI覆盖/代领、错店拒绝、授权恢复和创建回执通过');

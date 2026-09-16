@@ -1,0 +1,22 @@
+# 运行时数据和本地配置
+hub/data/
+plugin-tokens.json
+credentials.json
+.env
+.env.*
+!.env.example
+
+# 证书、密钥和日志
+*.pem
+*.key
+*.log
+
+# 依赖、构建和编辑器缓存
+node_modules/
+__pycache__/
+*.py[cod]
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+test-artifacts/
