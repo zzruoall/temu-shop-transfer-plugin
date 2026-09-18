@@ -1,0 +1,10 @@
+{
+  "name": "shop-hub-worker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "本机紫鸟工人：只打开目标店并核验页面，不填写、不发布",
+  "type": "module",
+  "scripts": {
+    "start": "node worker.mjs"
+  }
+}

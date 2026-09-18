@@ -80,22 +80,28 @@ export function createTransferManager(rootDir, store, options = {}) {
         await writeFile(filePath, JSON.stringify(state, null, 2), "utf8");
     }
 
-    async function refreshStores() {
+    async function refreshStores(options = {}) {
+        const maxAgeMs = Math.max(0, Number(options.maxAgeMs) || 0);
         const run = mutation.then(async () => {
+        const current = await readState();
+        const currentAt = Date.parse(current.storesUpdatedAt || "");
+        // 店铺目录可能超过百家；短时间内的重复读取直接复用本地缓存，避免任务台自动刷新反复调用紫鸟 CLI。
+        if (maxAgeMs && current.stores?.length && Number.isFinite(currentAt) && Date.now() - currentAt <= maxAgeMs) {
+            return { stores: current.stores, updatedAt: current.storesUpdatedAt };
+        }
         let result;
         try {
-            result = parseCliJson((await runCli(["store", "list", "--format", "json"])).stdout);
+            result = parseCliJson((await runCli(["store", "list", "--all", "--format", "json"])).stdout);
         } catch (error) {
             const wrapped = new Error(`ziniao_store_list_failed:${String(error && error.message || error).slice(0, 300)}`);
             wrapped.status = 503;
             throw wrapped;
         }
         const stores = unwrapStores(result).map(normalizeStore).filter((item) => item.storeId);
-        const state = await readState();
-        state.stores = stores;
-        state.storesUpdatedAt = new Date().toISOString();
-        await writeState(state);
-        return { stores, updatedAt: state.storesUpdatedAt };
+        current.stores = stores;
+        current.storesUpdatedAt = new Date().toISOString();
+        await writeState(current);
+        return { stores, updatedAt: current.storesUpdatedAt };
         });
         mutation = run.catch(() => {});
         return run;

@@ -67,6 +67,20 @@ const integrity=vm.runInNewContext(await readFile(new URL('../../worker/direct-i
 const source={carouselImageUrls:['a'],productSkcList:[{productSkuList:[{extCode:'x',supplierPrice:1800,productSkuSpecList:[{specId:1}],productSkuMultiPack:{productSkuNetContent:{netContentNumber:100000,netContentUnitCode:2}}}]}]};
 const request={carouselImageUrls:['a'],productSkcReqs:[{productSkuReqs:[{extCode:'x',supplierPrice:1800,thumbUrl:'a',productSkuSpecReqs:[{specId:1}],productSkuMultiPackReq:{productSkuNetContentReq:{netContentNumber:100000,netContentUnitCode:2}}}]}]};
 assert.equal(integrity(source,request),true);request.productSkcReqs[0].productSkuReqs[0].productSkuMultiPackReq={};assert.throws(()=>integrity(source,request));
+// 平台转换器回传的规格字段可能是类数组实例（有 length 与索引，但 Array.isArray 为 false）。
+// 曾因此把目标规格读成空集合，让没有内容差异的商品在预检阶段被误判为失败。
+const arrayLike=(items)=>{const fake={length:items.length};items.forEach((item,index)=>{fake[index]=item;});Object.defineProperty(fake,Symbol.toStringTag,{value:'Array'});return fake;};
+const arrayLikeSource={carouselImageUrls:['a'],productSkcList:[{productSkuList:[{extCode:'ZWX007',supplierPrice:1800,productSkuSpecList:[{specId:229550}]}]}]};
+const arrayLikeRequest={carouselImageUrls:['a'],productSkcReqs:[{productSkuReqs:[{extCode:'ZWX007',supplierPrice:1800,thumbUrl:'a',productSkuSpecReqs:arrayLike([{specId:229550}])}]}]};
+assert.equal(Array.isArray(arrayLikeRequest.productSkcReqs[0].productSkuReqs[0].productSkuSpecReqs),false,'测试前提：该字段必须是类数组而非真数组');
+assert.equal(integrity(arrayLikeSource,arrayLikeRequest),true,'类数组规格必须能读取规格编号，不能被当成空集合');
+// 商品级成分下传到 SKU 级是正确行为：来源 SKU 级为空、商品级有成分时，目标请求带商品级成分不能判为丢失。
+const cosmeticSource={carouselImageUrls:['a'],productNonAuditExtAttr:{cosmeticInfoVO:{propertyInfoList:[{vid:11},{vid:22}]}},productSkcList:[{productSkuList:[{extCode:'x',supplierPrice:1800,productSkuSpecList:[{specId:1}],productSkuNonAuditExtAttr:null}]}]};
+const cosmeticRequest={carouselImageUrls:['a'],productSkcReqs:[{productSkuReqs:[{extCode:'x',supplierPrice:1800,thumbUrl:'a',productSkuSpecReqs:[{specId:1}],productSkuNonAuditExtAttrReq:{productSkuCosmeticInfoReqList:[{propertyInfoList:[{vid:11},{vid:22}]}]}}]}]};
+assert.equal(integrity(cosmeticSource,cosmeticRequest),true,'商品级成分下传后必须与商品级成分一致，不能判为丢失');
+// 成分确实丢失时仍必须拦截，避免放宽成“任何成分差异都放过”。
+const cosmeticBroken=JSON.parse(JSON.stringify(cosmeticRequest));cosmeticBroken.productSkcReqs[0].productSkuReqs[0].productSkuNonAuditExtAttrReq.productSkuCosmeticInfoReqList=[{propertyInfoList:[{vid:11}]}];
+assert.throws(()=>integrity(cosmeticSource,cosmeticBroken),'成分少传时必须仍然拦截');
 // 平台明确拒绝时属于当前 attempt 的终态：必须把平台原文写进任务并停止自动复核，
 // 否则已授权过的任务会被判为“重复提交”而丢掉失败原因，运营在工作日志里看不到真实问题。
 await queue.registerAgent(identity);

@@ -298,8 +298,42 @@ const server = http.createServer(async (req, res) => {
         }
         if (req.method === "GET" && url.pathname === "/api/ziniao/stores") {
             if (!canAccessWarehouseApi(req)) return send(res, 401, { error: "warehouse_unauthorized" });
-            const refreshed = String(url.searchParams.get("refresh") || "1") !== "0";
             const agents=(await jobQueue.listJobs()).agents;
+            if (url.searchParams.get("scope") === "all") {
+                let directory = { stores: [], updatedAt: null };
+                let directoryError = "";
+                try {
+                    // 全量目录用于任务台和日志索引；60 秒缓存兼顾百家店铺规模与状态新鲜度。
+                    directory = await transferManager.refreshStores({ maxAgeMs: 60000 });
+                } catch (error) {
+                    directoryError = String(error && error.message || error).slice(0, 300);
+                }
+                const agentByStore = new Map(agents.filter((agent) => agent.storeId).map((agent) => [String(agent.storeId), agent]));
+                const stores = directory.stores.map((item) => {
+                    const agent = agentByStore.get(String(item.storeId));
+                    return {
+                        storeId: String(item.storeId),
+                        name: String(agent?.storeName || agent?.pageStoreName || item.name || item.storeId),
+                        platform: item.platform || "",
+                        online: Boolean(agent?.online),
+                        lastSeenAt: agent?.lastSeenAt || ""
+                    };
+                });
+                const knownIds = new Set(stores.map((item) => String(item.storeId)));
+                for (const agent of agents) {
+                    const storeId = String(agent.storeId || "");
+                    if (!storeId || knownIds.has(storeId)) continue;
+                    stores.push({
+                        storeId,
+                        name: String(agent.storeName || agent.pageStoreName || storeId),
+                        platform: "",
+                        online: Boolean(agent.online),
+                        lastSeenAt: agent.lastSeenAt || ""
+                    });
+                }
+                send(res, 200, { stores, updatedAt: directory.updatedAt, error: directoryError });
+                return;
+            }
             // 店铺选择只展示近期心跳且身份已核验的实例，避免离线旧窗口或测试 Agent 污染来源店列表。
             send(res, 200, {stores:agents.filter(a=>a.storeId&&a.online&&a.identityMatched).map(a=>({storeId:a.storeId,name:a.storeName||a.pageStoreName}))});
             return;
@@ -515,6 +549,21 @@ const server = http.createServer(async (req, res) => {
             }
             const result = await store.importFiles(files, { source: "upload" });
             send(res, 200, result);
+            return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/products/unblock") {
+            if (!canAccessWarehouseApi(req)) return send(res, 401, { error: "warehouse_unauthorized" });
+            if (!isTrustedImportOrigin(req)) return send(res, 403, { error: "unblock_origin_denied" });
+            // 解除标红只接受明确的 SPU 数组：平台抖动造成的假失败不需要重新采集来源商品。
+            const buffer = await readBody(req, 256 * 1024);
+            let body;
+            try {
+                body = JSON.parse(stripBom(buffer.toString("utf8")));
+            } catch {
+                return send(res, 400, { error: "解除标红请求不是合法 JSON" });
+            }
+            const result = await store.unblockProducts(body && body.spuIds);
+            send(res, 200, { ok: true, ...result });
             return;
         }
         if (req.method === "DELETE" && url.pathname === "/api/products") {

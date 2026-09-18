@@ -107,21 +107,29 @@ function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms
     assert.ok(harness.logs.some(entry => entry.status === "succeeded"), "创建成功必须写进操作日志");
     assert.equal(harness.data[`directAttempt:job-verify:${PRODUCT}`]?.done, true, "确认成功后要落盘完成标记，避免心跳再次进入");
     // 确认成功后必须立刻收手，不能把重试窗口跑满。
-    const confirms = harness.calls.filter(call => call.kind === "duplicate" && call.payload?.extCodes);
+    // 10.10.42 起判重载荷按商品/SKU 两级货号传递（productCodes/skuCodes），不再是扁平 extCodes；
+    // 用旧字段名过滤会统计到 0 次，让"确认成功后立即收手"这条断言永远失败。
+    const confirms = harness.calls.filter(call => call.kind === "duplicate" && (call.payload?.productCodes || call.payload?.skuCodes));
     assert.ok(confirms.length >= 1 && confirms.length <= 4, `确认成功后应立即停止重试，实际货号回查 ${confirms.length} 次`);
 }
 
-// 二、详情回查与货号列表都确认不了：保持结果未知，绝不重发，也不伪造成功。
+// 二、平台已返回商品ID（创建成功）但我们的回查确认不了：必须按平台结果上报 created，绝不重发。
+// 回查（详情查询与货号列表）是插件自己的核对手段，不能反过来推翻平台已经给出的成功结果，
+// 否则平台创建成功的商品会被判成失败并标红，运营还得去重抓一件好商品。
 {
     const harness = createHarness({ verifyFails: true, listConfirms: false });
     await harness.run();
     assert.equal(harness.submits, 1, "无法确认时同样不能重发新增请求");
     const reports = harness.reports();
-    assert.equal(reports.some(report => report.phase === "created"), false, "列表查不到时不允许上报创建成功");
-    assert.equal(reports.some(report => report.phase === "unknown"), true, "无法确认时必须上报结果未知等待人工核对");
-    // 结果未知要写进任务状态：心跳据此隔离该商品，不再自动复核或重发。
-    assert.equal(harness.lastState(), "unknown", "结果未知必须写进任务状态，禁止心跳自动复核或重发");
-    assert.equal(harness.data[`directAttempt:job-verify:${PRODUCT}`]?.done, undefined, "无法确认时不得落盘完成标记");
+    const created = reports.find(report => report.phase === "created");
+    assert.ok(created, "平台已返回商品ID时必须以 created 上报，不能改判为结果未知");
+    assert.equal(created.productId, CREATED_ID, "上报的商品ID必须来自平台新增响应");
+    // 回查未通过的真实原因必须保留，运营才能区分“只是没读到”和“确实有内容差异”。
+    assert.match(String(created.reason), /回查未通过/, "结论里必须保留回查未通过的原因");
+    assert.equal(reports.some(report => report.phase === "unknown"), false, "平台已给出成功结果时不得再上报结果未知");
+    // 创建成功要落盘完成标记，心跳据此不再重复创建同一件商品。
+    assert.equal(harness.data[`directAttempt:job-verify:${PRODUCT}`]?.done, true, "上报 created 后必须落盘完成标记，防止心跳重发");
+    assert.ok(harness.logs.some(entry => entry.status === "succeeded"), "创建成功必须写进操作日志");
     // 注入失败属于瞬时故障，窗口内必须真的重试过；同时必须收在次数上限内，不能无限循环。
     const verifyCalls = harness.calls.filter(call => call.kind === "verify").length;
     assert.ok(verifyCalls > 2, `注入拿不到结果时必须在窗口内重试，实际 verify ${verifyCalls} 次`);
@@ -141,4 +149,4 @@ function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms
     assert.ok(verifyCalls <= 4, `确认成功后不得继续重试回查，实际 verify ${verifyCalls} 次`);
 }
 
-console.log("回查兜底检查通过：详情回查无结果或内容比对不通过时按货号确认创建、无法确认保持未知、都不重复提交");
+console.log("回查兜底检查通过：平台已返回商品ID即按创建成功上报，回查未通过只记原因，绝不重复提交");

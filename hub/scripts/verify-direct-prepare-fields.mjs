@@ -273,8 +273,13 @@ const sourceProduct = {
     );
     assert.equal(properties.find(item => item.refPid === 6174)?.propValue, "≤100ml", "15ml SKU 必须推导实物重量档位");
     assert.equal(properties.find(item => item.refPid === 386)?.propValue, "玫瑰", "转换器漏掉的香味必须按来源补齐");
-    assert.equal(result.blockers.length, 1, "缺少明确来源值的留香时长仍须阻断");
-    assert.match(result.blockers[0], /留香时长/, "阻断原因必须指向真正缺失的字段");
+    // 目标店"要哪些必填项"由平台回答：本地只记录可疑项，不再阻断上传。
+    // 否则本地规则一旦比平台严，就会造出平台上并不存在的失败（例如把条件必填当无条件必填，
+    // 让按摩油被要求填电池属性）。缺失项仍必须被记录下来，供排查与平台报错对照。
+    assert.equal(result.blockers.length, 0, "本地不得因缺字段阻断上传，判断权交给平台");
+    assert.equal(result.warnings.length, 1, "缺少来源值的留香时长仍必须被记录");
+    assert.match(result.warnings[0], /留香时长/, "记录内容必须指向真正缺失的字段");
+    assert.ok(result.notes.some(note => note.includes("留香时长")), "可疑项必须进入备注，运营才能看到缺了什么");
     assert.equal(result.request.productSkcReqs[0].productSkuReqs[0].productSkuNonAuditExtAttrReq.productSkuCosmeticInfoReqList[0].propertyInfoList[0].vid, 1000102331, "商品级成分必须下传到 SKU");
     assert.ok(result.notes.some(note => note.includes("香味=玫瑰")), "补齐字段必须写入可核验说明");
 }

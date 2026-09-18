@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "店铺中转插件",
-    "version": "10.10.42",
+    "version": "10.10.47",
     "description": "采集商品上传云仓；目标店插件收到接口创建任务后自动预检、提交并回查，无需点击上传。",
     "background": {
         "service_worker": "background.js"

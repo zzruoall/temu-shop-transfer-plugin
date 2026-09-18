@@ -47,7 +47,7 @@ function formatWorkLogTime(value) {
 }
 
 /**
- * 工作日志按目标店铺分组。同一目标店的来源店名只作辅助说明，避免所有店混成一条时间线。
+ * 工作日志按店铺分组。每条记录保留来源与目标店，方便在目标店时间线里追溯商品从哪里发来。
  */
 function groupWorkLogEntries(entries) {
     const groups = [];
@@ -110,7 +110,12 @@ const JOB_STATUS_LABEL = {
 };
 
 async function api(path, options) {
-    const response = await fetch(path, options);
+    // 线上由 /temu 反向代理提供页面，本地直连时后端根路径没有 /temu 前缀。
+    const API_PREFIX = "/temu/api";
+    const requestPath = path.startsWith(API_PREFIX) && !location.pathname.startsWith("/temu/")
+        ? `/api${path.slice(API_PREFIX.length)}`
+        : path;
+    const response = await fetch(requestPath, options);
     let data = {};
     try {
         const text = await response.text();
@@ -241,7 +246,7 @@ function renderProductRows(products, selectable = false, transferStores = [], so
         // 合并行只对外暴露一个 SPU，同货号的其他 SPU 仍要能被搜到，否则运营按旧 SPU 查不到商品。
         const searchText = [product.title, product.spuId, ...(product.spuIds || []), product.goodsId, product.articleNo, product.category, identifierText(product.skcIds), identifierText(product.skuIds), ...productCodes, ...skuCodes].filter(Boolean).join(" ").toLocaleLowerCase();
         return `
-            <article class="product-row" data-product-row data-search="${escapeHtml(searchText)}" data-source-stores="${escapeHtml(sourceStoreIds.join(","))}" data-spu="${escapeHtml(product.spuId)}">
+            <article class="product-row${product.blocked ? " product-row-blocked" : ""}" data-product-row data-search="${escapeHtml(searchText)}" data-source-stores="${escapeHtml(sourceStoreIds.join(","))}" data-blocked="${product.blocked ? "1" : "0"}" data-spu="${escapeHtml(product.spuId)}">
                 ${selectable ? `<label class="row-select" aria-label="选择 SPU ${escapeHtml(product.spuId)}"><input type="checkbox" class="product-checkbox" value="${escapeHtml(product.spuId)}"><span></span></label>` : ""}
                 <a class="product-thumb" href="#/product/${encodeURIComponent(product.spuId)}" aria-label="查看 ${escapeHtml(product.title || product.spuId)}">
                     ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy">` : `<span>无图</span>`}
@@ -257,8 +262,8 @@ function renderProductRows(products, selectable = false, transferStores = [], so
                     <span><b>Goods</b><em class="num">${escapeHtml(product.goodsId || "—")}</em></span>
                     <span><b>SKU</b><em class="num">${escapeHtml(skuCodes.join(" / ") || identifierText(product.skuIds) || "—")}</em></span>
                 </div>
-                <span class="ticket-status ${product.ready ? "ready" : "pending"}">${product.ready ? (product.completeness?.detailState === "source-empty" ? "已采集 · 源正文为空" : "资料可交付") : missingLabel(product)}</span>
-                ${selectable ? `<div class="row-actions"><button type="button" class="row-send" data-transfer-spu="${escapeHtml(product.spuId)}" aria-label="上传 SPU ${escapeHtml(product.spuId)}" ${transferStores.length && productBatches.length ? "" : "disabled"} title="${transferStores.length && productBatches.length ? "选择目标店铺后上传" : (productBatches.length ? "等待在线目标店铺插件" : "缺少可追溯的来源批次")}">上传</button><a href="#/product/${encodeURIComponent(product.spuId)}" class="row-detail">详情</a><button type="button" class="row-delete" data-delete-spu="${escapeHtml(product.spuId)}" aria-label="删除 SPU ${escapeHtml(product.spuId)}">删除</button></div>` : ""}
+                <span class="ticket-status ${product.blocked ? "blocked" : (product.ready ? "ready" : "pending")}">${product.blocked ? "上传失败 · 需修正后重采" : (product.ready ? (product.completeness?.detailState === "source-empty" ? "已采集 · 源正文为空" : "资料可交付") : missingLabel(product))}</span>
+                ${selectable ? `<div class="row-actions"><button type="button" class="row-send" data-transfer-spu="${escapeHtml(product.spuId)}" aria-label="上传 SPU ${escapeHtml(product.spuId)}" ${transferStores.length && productBatches.length && !product.blocked ? "" : "disabled"} title="${product.blocked ? `上次上传失败已标红，需在来源店修正资料后重新采集覆盖：${escapeHtml(product.blockedReason || "")}` : (transferStores.length && productBatches.length ? "选择目标店铺后上传" : (productBatches.length ? "等待在线目标店铺插件" : "缺少可追溯的来源批次"))}">上传</button><a href="#/product/${encodeURIComponent(product.spuId)}" class="row-detail">详情</a><button type="button" class="row-delete" data-delete-spu="${escapeHtml(product.spuId)}" aria-label="删除 SPU ${escapeHtml(product.spuId)}">删除</button></div>` : ""}
             </article>`;
     }).join("");
 }
@@ -270,8 +275,91 @@ function setNav(name) {
     });
 }
 
-function renderHome(overview) {
+/** 首页经营数据按上海自然日汇总，避免浏览器时区与服务端任务时间产生跨日统计偏差。 */
+function shanghaiDayKey(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(date);
+    const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+    return `${pick("year")}-${pick("month")}-${pick("day")}`;
+}
+
+/** 首页只展示可解释的经营口径：发送按任务创建，上传成功和异常按商品项的最近回执时间统计。 */
+function buildHomeDashboard(overview, jobsPayload) {
+    const jobs = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
+    const today = shanghaiDayKey(Date.now());
+    const productCounts = new Map();
+    const sourceCounts = new Map();
+    let todaySent = 0;
+    let todayUploaded = 0;
+    let todayAttention = 0;
+
+    for (const job of jobs) {
+        const items = Array.isArray(job.items) ? job.items : [];
+        const jobDay = shanghaiDayKey(job.createdAt);
+        if (jobDay === today) todaySent += items.length;
+
+        const sourceId = String(job.sourceStoreId || job.sourceStoreName || "unknown-source");
+        const source = sourceCounts.get(sourceId) || {
+            id: sourceId,
+            name: String(job.sourceStoreName || job.sourceStoreId || "未知来源店"),
+            count: 0
+        };
+        source.count += items.length;
+        sourceCounts.set(sourceId, source);
+
+        for (const item of items) {
+            const productId = String(item.spuId || "unknown-product");
+            const product = productCounts.get(productId) || {
+                id: productId,
+                name: String(item.title || item.spuId || "未命名商品"),
+                count: 0
+            };
+            product.count += 1;
+            productCounts.set(productId, product);
+
+            const resultDay = shanghaiDayKey(item.directUpdatedAt || job.updatedAt);
+            if (resultDay !== today) continue;
+            if (item.directState === "created" || item.status === "uploaded") todayUploaded += 1;
+            if (["unknown", "preflight_failed", "rejected"].includes(String(item.directState || ""))
+                || ["failed", "identity_mismatch"].includes(String(item.status || ""))) todayAttention += 1;
+        }
+    }
+
+    const descending = (left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN");
+    return {
+        todaySent,
+        todayUploaded,
+        todayAttention,
+        activeJobs: jobs.filter((job) => ["active", "attention"].includes(jobRecordGroup(job))).length,
+        topProducts: [...productCounts.values()].sort(descending).slice(0, 8),
+        topSources: [...sourceCounts.values()].sort(descending).slice(0, 8)
+    };
+}
+
+function renderDashboardRanking(items, emptyText, type) {
+    if (!items.length) return `<p class="workspace-empty">${escapeHtml(emptyText)}</p>`;
+    const max = Math.max(...items.map((item) => Number(item.count) || 0), 1);
+    return `<ol class="dashboard-ranking-list">${items.map((item, index) => `
+        <li>
+            <span class="ranking-index num">${index + 1}</span>
+            <div class="ranking-copy"><strong>${escapeHtml(item.name)}</strong><small>${type === "product" ? `SPU ${escapeHtml(item.id)}` : "来源店铺"}</small></div>
+            <span class="ranking-meter" aria-hidden="true"><i style="width:${Math.max(8, Math.round((Number(item.count) || 0) / max * 100))}%"></i></span>
+            <b class="num">${item.count}</b>
+        </li>
+    `).join("")}</ol>`;
+}
+
+async function renderHome(overview) {
     setNav("home");
+    let jobsPayload = { jobs: [] };
+    try { jobsPayload = await api("/temu/api/jobs"); } catch { /* 任务读取失败时保留仓库和入库统计。 */ }
+    const dashboard = buildHomeDashboard(overview, jobsPayload);
     const productCount = Number(overview.productCount) || 0;
     const readyCount = Number(overview.readyCount) || 0;
     const missingDetailCount = Number(overview.missingDetailCount) || 0;
@@ -280,46 +368,80 @@ function renderHome(overview) {
         <div class="top catalog-top">
             <div class="top-copy">
                 <h1>查验台</h1>
-                <p class="lede">来源店采集完成后，完整包会进入中转仓。这里先看有没有收到、解析出多少商品、资料缺什么。</p>
+                <p class="lede">汇总今日发送、上传成功、异常和仓库库存，再核对商品与来源店的累计流转排名。</p>
             </div>
-            <div class="top-context"><span class="live-dot"></span>本地仓库运行中</div>
+            <div class="home-sync"><span class="live-dot"></span><strong>数据自动更新</strong><small>任务和日志每 3 秒检查一次</small></div>
         </div>
-        <section class="ingest-card" id="inbox-card" aria-label="采集入库状态">
-            <div class="panel-heading"><h2>采集入库</h2><span class="panel-kicker">正在读取监控状态…</span></div>
-            <p class="muted">正在读取固定目录监控状态…</p>
+        <section class="dashboard-metrics" aria-label="今日经营汇总">
+            <article class="dashboard-metric metric-inventory"><span>仓库商品</span><strong>${productCount}</strong><small>${readyCount} 件资料可交付</small></article>
+            <article class="dashboard-metric metric-sent"><span>今日发送商品</span><strong>${dashboard.todaySent}</strong><small>${dashboard.activeJobs} 个任务仍在处理或需核对</small></article>
+            <article class="dashboard-metric metric-uploaded"><span>今日上传成功</span><strong>${dashboard.todayUploaded}</strong><small>已由目标店插件确认创建</small></article>
+            <article class="dashboard-metric metric-attention"><span>今日异常</span><strong>${dashboard.todayAttention}</strong><small>结果未知、预检失败或商品失败</small></article>
+        </section>
+        <section class="dashboard-rankings" aria-label="累计流转排名">
+            <section class="ranking-panel">
+                <div class="workspace-heading"><div><h2>发送最多的商品</h2><p>按进入目标店任务商品包的次数降序排列。</p></div><span class="section-count">前 ${dashboard.topProducts.length} 项</span></div>
+                ${renderDashboardRanking(dashboard.topProducts, "还没有商品发送记录。", "product")}
+            </section>
+            <section class="ranking-panel">
+                <div class="workspace-heading"><div><h2>发送最多的来源店铺</h2><p>按来源批次累计发送的商品项数量降序排列。</p></div><span class="section-count">前 ${dashboard.topSources.length} 项</span></div>
+                ${renderDashboardRanking(dashboard.topSources, "还没有来源店铺发送记录。", "source")}
+            </section>
+        </section>
+        <section class="ingest-status-strip" id="inbox-card" aria-label="采集入库状态">
+            <div class="ingest-status-main">
+                <span class="status-dot pending" id="inbox-status-dot"></span>
+                <div class="ingest-status-copy">
+                    <strong id="inbox-status-title">正在读取采集监控</strong>
+                    <span id="inbox-status-subtitle">等待本地目录监控返回状态…</span>
+                </div>
+                <button type="button" class="toolbar-button primary" id="inbox-scan" disabled>读取中…</button>
+            </div>
+            <dl class="ingest-status-metrics">
+                <div><dt>新文件已入库</dt><dd id="inbox-imported">—</dd></div>
+                <div><dt>重复文件</dt><dd id="inbox-reused">—</dd></div>
+                <div><dt>入库失败</dt><dd id="inbox-failed">—</dd></div>
+            </dl>
         </section>
         <section class="metric-grid" aria-label="商品统计">
-            <div class="metric-card metric-primary"><span>当前商品</span><strong>${productCount}</strong><small>去重后的标准商品</small></div>
-            <div class="metric-card"><span>资料可交付</span><strong>${readyCount}</strong><small>图片、SKU 和详情资料可核验；发布仍需目标店校验</small></div>
+            <div class="metric-card metric-primary"><span>可交付</span><strong>${readyCount}</strong><small>图片、SKU 和详情资料可核验；发布仍需目标店校验</small></div>
             <div class="metric-card"><span>待采详情</span><strong>${missingDetailCount}</strong><small>另有 ${Number(overview.sourceEmptyDetailCount) || 0} 件已采集但源正文为空</small></div>
             <div class="metric-card"><span>缺图片</span><strong>${missingImageCount}</strong><small>已入库但还没有可用主图</small></div>
+            <div class="metric-card"><span>历史批次</span><strong>${Number(overview.batchCount) || 0}</strong><small>保留原始文件和解析结果便于回溯</small></div>
         </section>
-        <label class="drop" id="drop">
+        <label class="drop manual-ingest" id="drop">
             <span class="drop-symbol" aria-hidden="true">＋</span>
             <span class="drop-copy"><strong>上传采集文件</strong><small>可手动补传完整包。目录监控只自动收取 temu-full-capture 文件</small></span>
             <span class="drop-button">选择文件</span>
             <input class="file-input" id="files" type="file" accept="application/json,.json" multiple>
         </label>
         <div id="toast"></div>
-        <section class="section-block" aria-label="批次列表">
-            <div class="section-heading"><div><h2>最近批次</h2><p>每个批次保留原始文件和解析结果，便于回溯。</p></div><span class="section-count">${overview.batchCount} 个批次</span></div>
-            <div class="board">
-                <div class="board-head"><span>批次</span><span>店铺 / 来源</span><span>覆盖</span><span>SPU / SKU</span><span>结论</span><span>状态</span></div>
-            ${overview.batches.map((batch) => `
-                <a class="board-row ${batch.status === "ready-for-map" ? "ok" : "hold"}" href="#/batch/${batch.id}">
-                    <span class="batch-id num">${batch.id}</span>
-                    <span class="batch-source"><strong>${escapeHtml(batch.shopName || batch.label)}</strong><small>${escapeHtml(hostOf(batch.pageUrl))}</small></span>
-                    <span class="num table-emphasis">${batch.coverage || "—"}</span>
-                    <span class="num">${batch.counts.spu} <i>/</i> ${batch.counts.sku}</span>
-                    <span class="batch-readiness">${escapeHtml(batch.readiness)}</span>
-                    <span class="${stampClass(batch.status)}">${STATUS_LABEL[batch.status] || batch.status}</span>
-                </a>
-            `).join("") || `<div class="board-row"><span>还没有批次</span></div>`}
-            </div>
-        </section>
+        <div class="home-workspace">
+            <section class="workspace-panel batch-workspace" aria-label="最近批次">
+                <div class="workspace-heading"><div><h2>最近批次</h2><p>每个批次保留原始文件和解析结果，便于回溯。</p></div><span class="section-count">${overview.batchCount} 个批次</span></div>
+                <div class="board">
+                    <div class="board-head"><span>批次</span><span>店铺 / 来源</span><span>覆盖</span><span>SPU / SKU</span><span>结论</span><span>状态</span></div>
+                ${overview.batches.map((batch) => `
+                    <a class="board-row ${batch.status === "ready-for-map" ? "ok" : "hold"}" href="#/batch/${batch.id}">
+                        <span class="batch-id num">${batch.id}</span>
+                        <span class="batch-source"><strong>${escapeHtml(batch.shopName || batch.label)}</strong><small>${escapeHtml(hostOf(batch.pageUrl))}</small></span>
+                        <span class="num table-emphasis">${batch.coverage || "—"}</span>
+                        <span class="num">${batch.counts.spu} <i>/</i> ${batch.counts.sku}</span>
+                        <span class="batch-readiness">${escapeHtml(batch.readiness)}</span>
+                        <span class="${stampClass(batch.status)}">${STATUS_LABEL[batch.status] || batch.status}</span>
+                    </a>
+                `).join("") || `<div class="board-row board-empty"><span>还没有批次。来源店采集完成后会自动出现在这里。</span></div>`}
+                </div>
+            </section>
+            <section class="workspace-panel activity-workspace" aria-label="最近入库活动">
+                <div class="workspace-heading"><div><h2>最近入库活动</h2><p>只显示最近扫描到的文件和处理结果。</p></div><button type="button" class="text-button" id="inbox-refresh">刷新</button></div>
+                <div class="recent-files" id="recent-ingest-list"><p class="workspace-empty">正在读取最近文件…</p></div>
+            </section>
+        </div>
     `;
     bindDrop();
     bindInboxCard();
+    document.getElementById("inbox-refresh")?.addEventListener("click", () => bindInboxCard());
 }
 
 /** 将目录监控的最近文件区分成已入库、重复文件和失败，避免把“扫到文件”说成“商品已进库”。 */
@@ -343,29 +465,48 @@ function renderRecentFile(item) {
 /** 展示本机目录监控状态；扫描动作只触发本地解析，不会把文件发送到外部平台。 */
 async function bindInboxCard() {
     const card = document.getElementById("inbox-card");
+    const activityList = document.getElementById("recent-ingest-list");
     if (!card) return;
     try {
         const status = await api("/temu/api/inbox/status");
         const recent = Array.isArray(status.recent) ? status.recent.slice(0, 8) : [];
-        card.innerHTML = `
-            <div class="panel-heading"><h2>采集入库</h2><span class="panel-kicker">${status.running ? "监控中" : "已停止"}</span></div>
-            <p class="muted">监控目录：${(status.directories || []).map(escapeHtml).join("<br>") || "未配置"}</p>
-            <dl class="ingest-meta">
-                <div><dt>新文件已入库</dt><dd class="num">${status.imported || 0}</dd></div>
-                <div><dt>重复文件</dt><dd class="num">${status.reused || 0}</dd></div>
-                <div><dt>失败</dt><dd class="num">${status.failed || 0}</dd></div>
-            </dl>
-            <div class="recent-files">${recent.map(renderRecentFile).join("") || `<p class="muted">还没有扫描到完整采集包。</p>`}</div>
-            <div class="ingest-actions"><button type="button" class="drop-button" id="inbox-scan">立即扫描</button>${status.lastError ? `<span class="toast error">${escapeHtml(status.lastError)}</span>` : ""}</div>
-        `;
-        card.querySelector("#inbox-scan")?.addEventListener("click", async () => {
+        const dot = card.querySelector("#inbox-status-dot");
+        const title = card.querySelector("#inbox-status-title");
+        const subtitle = card.querySelector("#inbox-status-subtitle");
+        const imported = card.querySelector("#inbox-imported");
+        const reused = card.querySelector("#inbox-reused");
+        const failed = card.querySelector("#inbox-failed");
+        dot.className = `status-dot ${status.running ? "" : "pending"}`.trim();
+        title.textContent = status.running ? "采集目录监控中" : "采集目录监控已停止";
+        subtitle.textContent = status.lastError
+            ? `最近错误：${status.lastError}`
+            : `监控目录：${(status.directories || []).join("；") || "未配置"}`;
+        imported.textContent = status.imported || 0;
+        reused.textContent = status.reused || 0;
+        failed.textContent = status.failed || 0;
+        failed.classList.toggle("is-error", Number(status.failed || 0) > 0);
+        if (activityList) {
+            activityList.innerHTML = recent.map(renderRecentFile).join("") || `<p class="workspace-empty">还没有扫描到完整采集包。</p>`;
+        }
+        const button = card.querySelector("#inbox-scan");
+        if (button) {
+            button.disabled = false;
+            button.textContent = "立即扫描";
+        }
+        card.querySelector("#inbox-scan").onclick = async () => {
             const button = card.querySelector("#inbox-scan");
             if (button) { button.disabled = true; button.textContent = "扫描中…"; }
             try { await api("/temu/api/inbox/scan", { method: "POST" }); await route(); }
             catch (error) { if (button) { button.disabled = false; button.textContent = `扫描失败：${error.message}`; } }
-        });
+        };
     } catch (error) {
-        card.innerHTML = `<div class="panel-heading"><h2>采集入库</h2></div><p class="muted">读取失败：${escapeHtml(error.message)}</p>`;
+        card.querySelector("#inbox-status-title").textContent = "采集监控读取失败";
+        card.querySelector("#inbox-status-subtitle").textContent = error.message;
+        card.querySelector("#inbox-status-dot").className = "status-dot is-error";
+        card.querySelector("#inbox-scan").disabled = false;
+        card.querySelector("#inbox-scan").textContent = "重试";
+        card.querySelector("#inbox-scan").onclick = () => bindInboxCard();
+        if (activityList) activityList.innerHTML = `<p class="workspace-empty is-error">读取失败：${escapeHtml(error.message)}</p>`;
     }
 }
 
@@ -392,11 +533,12 @@ async function renderProducts(overview) {
         </div>
         <div class="catalog-filter-bar" aria-label="商品筛选和搜索">
             <label class="catalog-filter"><span>来源店铺</span><select id="source-store-filter"><option value="">全部来源店铺</option>${sourceStores.map(([id, name]) => `<option value="${escapeHtml(id)}">${escapeHtml(name)}</option>`).join("")}</select></label>
+            <label class="catalog-filter"><span>标红状态</span><select id="blocked-filter"><option value="">全部商品</option><option value="blocked">仅看标红（上传失败）</option><option value="normal">仅看未标红</option></select></label>
             <label class="catalog-search"><span class="search-symbol" aria-hidden="true"></span><span class="visually-hidden">搜索商品</span><input id="product-search" type="search" placeholder="搜索名称、货号、SPU、SKU、Goods ID" autocomplete="off"><span class="search-count" id="search-count" aria-live="polite">${overview.productCount} 个结果</span></label>
         </div>
         <div class="catalog-connection-row" aria-label="连接店铺状态"><span class="connection-pulse" aria-hidden="true"></span><strong>${targetStores.length} 个目标店铺已连接</strong><span class="muted">在线插件可接收批量上传任务</span><span class="connection-stores">${targetStores.map(store => escapeHtml(store.storeName || store.storeId)).join("、") || "暂无在线店铺"}</span></div>
         <div class="catalog-action-row" aria-label="商品操作">
-            <div class="catalog-action-left"><label class="select-all"><input id="select-all-products" type="checkbox"><span></span>全选当前结果</label><button type="button" class="toolbar-button danger" id="delete-selected" disabled>删除</button><button type="button" class="toolbar-button" id="batch-target-trigger" ${targetStores.length ? "" : "disabled"}>选择目标店铺</button><button type="button" class="toolbar-button" id="catalog-upload-button">导入资料</button><input class="visually-hidden" id="catalog-files" type="file" accept="application/json,.json" multiple></div>
+            <div class="catalog-action-left"><label class="select-all"><input id="select-all-products" type="checkbox"><span></span>全选当前结果</label><button type="button" class="toolbar-button danger" id="delete-selected" disabled>删除</button><button type="button" class="toolbar-button" id="unblock-selected" disabled>解除标红</button><button type="button" class="toolbar-button" id="batch-target-trigger" ${targetStores.length ? "" : "disabled"}>选择目标店铺</button><button type="button" class="toolbar-button" id="catalog-upload-button">导入资料</button><input class="visually-hidden" id="catalog-files" type="file" accept="application/json,.json" multiple></div>
             <span class="selection-count" id="selection-count">已选择 0 个</span><span class="catalog-count-total">共 ${overview.productCount} 个商品</span>
         </div>
         <div class="batch-upload-row" aria-label="批量上传">
@@ -631,6 +773,10 @@ function bindProductInventory(overview, targetStores) {
         selectAll.checked = Boolean(visibleBoxes.length) && checkedVisible === visibleBoxes.length;
         selectAll.indeterminate = checkedVisible > 0 && checkedVisible < visibleBoxes.length;
         deleteSelected.disabled = selected === 0;
+        // 解除标红只对当前选中的标红商品有意义；没有选中标红商品时按钮保持禁用。
+        // 标红状态记在行上（checkedBoxes 返回的是 checkbox），必须回到行元素读取。
+        const unblockButton = document.getElementById("unblock-selected");
+        if (unblockButton) unblockButton.disabled = checkedBoxes().filter((box) => box.closest("[data-product-row]")?.dataset.blocked === "1").length === 0;
         selectionCount.textContent = `已选择 ${selected} 个`;
         const targetCount = [...(batchTargetStores?.selectedOptions || [])].filter(option => option.value).length;
         if (batchDirectCreate) batchDirectCreate.disabled = selected === 0 || targetCount === 0;
@@ -639,10 +785,14 @@ function bindProductInventory(overview, targetStores) {
     const filterRows = () => {
         const query = input.value.trim().toLocaleLowerCase();
         const sourceStoreId = String(sourceStoreFilter?.value || "");
+        // 标红与店铺是两个独立维度，必须同时生效：先按店铺缩小范围，再按标红状态筛选。
+        const blockedFilter = String(document.getElementById("blocked-filter")?.value || "");
         rows.forEach((row) => {
             const matchesQuery = !query || String(row.dataset.search || "").includes(query);
             const matchesStore = !sourceStoreId || String(row.dataset.sourceStores || "").split(",").includes(sourceStoreId);
-            row.hidden = !(matchesQuery && matchesStore);
+            const isBlocked = String(row.dataset.blocked || "0") === "1";
+            const matchesBlocked = !blockedFilter || (blockedFilter === "blocked" ? isBlocked : !isBlocked);
+            row.hidden = !(matchesQuery && matchesStore && matchesBlocked);
             // “全选当前结果”只对当前可见筛选结果负责；换搜索词时自动取消隐藏行，避免误删上一轮选择。
             if (row.hidden) {
                 const box = row.querySelector(".product-checkbox");
@@ -654,6 +804,7 @@ function bindProductInventory(overview, targetStores) {
     };
     input.addEventListener("input", filterRows);
     sourceStoreFilter?.addEventListener("change", filterRows);
+    document.getElementById("blocked-filter")?.addEventListener("change", filterRows);
     rows.forEach((row) => row.querySelector(".product-checkbox")?.addEventListener("change", syncSelection));
     batchTargetStores?.addEventListener("change", syncSelection);
     selectAll.addEventListener("change", () => {
@@ -664,6 +815,26 @@ function bindProductInventory(overview, targetStores) {
         syncSelection();
     });
     deleteSelected.addEventListener("click", () => deleteInventoryProducts(checkedBoxes().map((box) => box.value)));
+    document.getElementById("unblock-selected")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        // 只解除选中的标红商品：未标红的商品无需处理，避免把正常商品也写一遍。
+        const targets = [...new Set(checkedBoxes()
+            .filter((box) => box.closest("[data-product-row]")?.dataset.blocked === "1")
+            .map((box) => box.value))];
+        if (!targets.length) return;
+        if (!window.confirm(`确认解除 ${targets.length} 个商品的标红？解除后这些商品可以再次上传。`)) return;
+        button.disabled = true;
+        button.textContent = "解除中…";
+        try {
+            await api("/temu/api/products/unblock", { method: "POST", body: JSON.stringify({ spuIds: targets }) });
+            await refresh();
+        } catch (error) {
+            window.alert(`解除标红失败：${error.message}`);
+        } finally {
+            button.disabled = false;
+            button.textContent = "解除标红";
+        }
+    });
     rows.forEach((row) => row.querySelector("[data-delete-spu]")?.addEventListener("click", (event) => {
         event.stopPropagation();
         deleteInventoryProducts([event.currentTarget.dataset.deleteSpu]);
@@ -709,7 +880,8 @@ function bindProductInventory(overview, targetStores) {
         for (const product of products) {
             const sourceBatchId = product?.publicationData?.sourceBatchId;
             const sourceBatch = (overview.batches || []).find(batch => batch.id === sourceBatchId && (product.batchIds || []).includes(batch.id) && batch.sourceStoreId);
-            if (!product.ready || !sourceBatch) {
+            // 标红商品即使被手工勾选也不能下发：必须先在来源店修正资料并重新采集覆盖。
+            if (!product.ready || product.blocked || !sourceBatch) {
                 skipped.push(String(product.spuId));
                 continue;
             }
@@ -968,50 +1140,326 @@ function jobStatusLabel(status) {
 }
 
 /**
+ * 汇总单个店铺在任务队列中的实时阶段，供状态表按列独立显示在线、部署、发送、上传和异常。
+ * 这里只读现有 Agent 与任务数据，不改变任务的领取和提交规则。
+ */
+function storeRuntimeSummary(agent, jobs, directoryStore = null) {
+    const storeId = String(directoryStore?.storeId || agent?.storeId || "");
+    const storeJobs = (jobs || []).filter((job) => String(job.targetStoreId || "") === storeId);
+    const activeJobs = storeJobs.filter((job) => ["active", "attention"].includes(jobRecordGroup(job)));
+    const items = activeJobs.flatMap((job) => (job.items || []).map((item) => ({ job, item })));
+    const queued = items.filter(({ item }) => ["queued", "opening", "opened", "claimed", "retry_wait"].includes(String(item.status || ""))).length;
+    const uploading = items.filter(({ item }) => ["received", "upload_opened"].includes(String(item.status || "")) || String(item.directState || "") === "creating").length;
+    const failures = items.filter(({ item }) => ["failed", "identity_mismatch"].includes(String(item.status || ""))
+        || ["unknown", "preflight_failed", "rejected"].includes(String(item.directState || ""))).length;
+    const version = String(agent?.pluginVersion || "");
+    const versionReady = /^10\.(?:9|[1-9]\d)\./.test(version);
+    const deployTone = !agent?.pluginDetected ? "danger" : (!versionReady || !agent?.identityMatched || !agent?.canReceiveUploads ? "warn" : "ok");
+    const deployText = !agent?.pluginDetected
+        ? "插件未部署"
+        : (!versionReady ? `版本待升级 ${version || "未知版"}` : (!agent?.identityMatched ? "店名未核验" : "已部署可接收"));
+    const onlineTone = agent?.online ? "ok" : "idle";
+    const sendTone = failures ? "danger" : (queued ? "active" : "ok");
+    const sendText = failures ? `${failures} 项异常` : (queued ? `${queued} 项待发送` : "无待发送");
+    const uploadTone = failures ? "danger" : (uploading || Number(agent?.pendingUploadCount || 0) ? "active" : "ok");
+    const uploadText = failures ? `${failures} 项异常` : (uploading || Number(agent?.pendingUploadCount || 0)
+        ? `${uploading + Number(agent?.pendingUploadCount || 0)} 项处理中`
+        : "无上传任务");
+    const runtimeTone = failures ? "danger" : (activeJobs.length ? "active" : (agent?.online ? "ok" : "idle"));
+    const current = activeJobs[0];
+    const currentText = current ? `${jobStatusLabel(current.status)} · ${current.id}` : "空闲";
+    const errorTone = failures ? "danger" : "ok";
+    const lastActivity = activeJobs.map((job) => job.updatedAt).filter(Boolean).sort().pop() || agent?.lastSeenAt || "";
+    return {
+        storeId,
+        storeName: String(agent?.storeName || agent?.pageStoreName || directoryStore?.name || directoryStore?.storeName || storeId || "未知店铺"),
+        onlineTone,
+        onlineText: agent?.online ? "在线" : "离线",
+        deployTone,
+        deployText,
+        sendTone,
+        sendText,
+        uploadTone,
+        uploadText,
+        runtimeTone,
+        currentText,
+        errorTone,
+        errorText: failures ? `${failures} 项需处理` : "无异常",
+        failures,
+        activeCount: activeJobs.length,
+        lastActivity
+    };
+}
+
+function statusValue(tone, text, meta = "") {
+    return `<span class="runtime-value tone-${escapeHtml(tone)}"><i aria-hidden="true"></i><span><strong>${escapeHtml(text)}</strong>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span></span>`;
+}
+
+function renderStoreRuntimeRows(rows) {
+    if (!rows.length) {
+        return `<tr><td colspan="8"><p class="workspace-empty">还没有读取到紫鸟店铺。请确认紫鸟客户端和 ZClaw Bridge 已启动，然后点击“刷新状态”。</p></td></tr>`;
+    }
+    return rows.map((row) => `<tr data-store-runtime-row data-search="${escapeHtml([row.storeName, row.storeId, row.currentText, row.deployText].join(" ").toLocaleLowerCase())}" data-tone="${escapeHtml(row.runtimeTone)}" data-failures="${row.failures}" data-active="${row.activeCount}">
+        <td class="runtime-store"><strong>${escapeHtml(row.storeName)}</strong><small>${escapeHtml(row.storeId)}</small></td>
+        <td>${statusValue(row.onlineTone, row.onlineText)}</td>
+        <td>${statusValue(row.deployTone, row.deployText)}</td>
+        <td>${statusValue(row.sendTone, row.sendText)}</td>
+        <td>${statusValue(row.uploadTone, row.uploadText)}</td>
+        <td class="runtime-current">${statusValue(row.runtimeTone, row.currentText.split(" · ")[0], row.currentText.split(" · ")[1] || "")}</td>
+        <td>${statusValue(row.errorTone, row.errorText)}</td>
+        <td class="runtime-time">${row.lastActivity ? escapeHtml(formatWorkLogTime(row.lastActivity)) : "—"}</td>
+    </tr>`).join("");
+}
+
+/**
  * 任务台只给指定目标店派发领取任务。不会向所有插件广播，也不会在这一页保存草稿或发布。
  */
 async function renderJobs(overview) {
     setNav("jobs");
     let storeResult = null;
     let storeError = null;
-    try { storeResult = await api("/temu/api/ziniao/stores?refresh=1"); } catch (error) { storeError = error; }
+    try { storeResult = await api("/temu/api/ziniao/stores?scope=all&refresh=1"); } catch (error) { storeError = error; }
     let jobs = { jobs: [], agents: [] };
     try { jobs = await api("/temu/api/jobs"); } catch {}
     const stores = storeResult && Array.isArray(storeResult.stores) ? storeResult.stores : [];
+    const directoryError = String(storeResult?.error || "");
     const targetAgents = (jobs.agents || []).filter(agent => agent.online && agent.pluginDetected && agent.identityMatched && agent.canReceiveUploads && agent.storeId);
-    const readyProducts = (overview.products || []).filter((item) => item.ready);
+    // 标红商品禁止再次上传，不能进入“创建任务”的可选清单；解除条件是重新采集覆盖，不是改这里的过滤。
+    const readyProducts = (overview.products || []).filter((item) => item.ready && !item.blocked);
+    const toneRank = { danger: 0, warn: 1, active: 2, ok: 3, idle: 4 };
+    const agentByStore = new Map((jobs.agents || []).filter((agent) => agent.storeId).map((agent) => [String(agent.storeId), agent]));
+    const directoryStores = (storeResult?.stores || []).filter((store) => store.storeId);
+    const runtimeStores = [
+        ...directoryStores.map((store) => ({ directoryStore: store, agent: agentByStore.get(String(store.storeId)) || null })),
+        ...(jobs.agents || [])
+            .filter((agent) => agent.storeId && !directoryStores.some((store) => String(store.storeId) === String(agent.storeId)))
+            .map((agent) => ({ directoryStore: null, agent }))
+    ];
+    const runtimeRows = runtimeStores
+        .map(({ directoryStore, agent }) => storeRuntimeSummary(agent, jobs.jobs || [], directoryStore))
+        .sort((left, right) => toneRank[left.runtimeTone] - toneRank[right.runtimeTone]
+            || right.failures - left.failures
+            || left.storeName.localeCompare(right.storeName, "zh-CN"));
+    const activeJobCount = (jobs.jobs || []).filter((job) => jobRecordGroup(job) === "active").length;
+    const attentionJobCount = (jobs.jobs || []).filter((job) => jobRecordGroup(job) === "attention").length;
+    const targetOptions = targetAgents.map((item) => `
+        <label class="target-option" data-target-search="${escapeHtml((item.storeName || item.pageStoreName || item.storeId).toLocaleLowerCase())}">
+            <input type="checkbox" value="${escapeHtml(item.storeId)}">
+            <span class="target-check" aria-hidden="true"></span>
+            <span class="target-option-copy"><strong>${escapeHtml(item.storeName || item.pageStoreName || item.storeId)}</strong><small>${escapeHtml(item.storeId)} · 在线，可接收上传任务</small></span>
+        </label>
+    `).join("");
+    const productOptions = (overview.products || []).map((item) => {
+        const productCodes = productExtCodes(item);
+        const searchText = [item.title, item.spuId, ...(item.spuIds || []), item.goodsId, item.category, ...productCodes, ...skuExtCodes(item)].filter(Boolean).join(" ").toLocaleLowerCase();
+        return `
+            <label class="task-product-option" data-batch-ids="${escapeHtml((item.batchIds || []).join(","))}" data-ready="${item.ready ? "1" : "0"}" data-search="${escapeHtml(searchText)}" ${item.ready ? "" : "hidden"}>
+                <input type="checkbox" name="job-spu" value="${escapeHtml(item.spuId)}">
+                <span class="task-product-check" aria-hidden="true"></span>
+                <span class="task-product-copy"><strong>${escapeHtml(item.title || item.spuId)}</strong><small>SPU ${escapeHtml(item.spuId)} · 货号 ${escapeHtml(productCodes.join(" / ") || "—")}</small></span>
+                <span class="task-product-state ${item.ready ? "ready" : "pending"}">${item.ready ? "资料可交付" : missingLabel(item)}</span>
+            </label>
+        `;
+    }).join("");
     app.innerHTML = `
-        <div class="top">
+        <div class="top task-top">
             <div class="top-copy">
                 <h1>任务台</h1>
-                <p class="lede">选择商品和目标店，确认合规后直接调用新增接口，无需填写表单。创建不等于已审核上架；结果待核对时不要重发。</p>
+                <p class="lede">先看所有店铺的在线、部署、发送和上传状态，再进入创建任务；任务记录独立查看，关键操作不会被长表单挤到页面底部。</p>
             </div>
-            <div class="top-context">${jobs.agents.length} 个已检查店铺窗口</div>
+            <div class="task-top-actions">
+                <div class="task-top-stats"><span><b>${runtimeRows.filter((row) => row.onlineTone === "ok").length}</b> 家在线</span><span><b>${activeJobCount}</b> 个进行中</span><span class="${attentionJobCount ? "has-attention" : ""}"><b>${attentionJobCount}</b> 个需处理</span></div>
+                <button type="button" class="toolbar-button" id="refresh-job-stores">刷新状态</button>
+            </div>
         </div>
-        <section class="panel transfer-panel">
-            <div class="panel-heading"><h2>创建指定店铺任务</h2><button type="button" class="drop-button" id="refresh-job-stores">刷新店铺</button></div>
-            ${storeError ? `<p class="toast error">读取店铺失败：${escapeHtml(storeError.message)}。本机工人和紫鸟客户端需要先启动。</p>` : ""}
-            <form id="job-form" class="transfer-form">
-                <label>来源店铺<select id="job-source-store" required><option value="">${stores.length ? "请选择来源店铺" : "暂无店铺"}</option>${stores.map((item) => `<option value="${escapeHtml(item.storeId)}">${escapeHtml(item.name)} (${escapeHtml(item.storeId)})</option>`).join("")}</select></label>
-                <label>目标店铺（可多选，仅在线插件）<select id="job-target-store" multiple size="${Math.min(6, Math.max(2, targetAgents.length))}" required>${targetAgents.length ? targetAgents.map((item) => `<option value="${escapeHtml(item.storeId)}">${escapeHtml(item.storeName || item.pageStoreName || item.storeId)} (${escapeHtml(item.storeId)})</option>`).join("") : `<option value="">暂无可接收的目标插件</option>`}</select><small class="muted">按住 Ctrl（Windows）或 ⌘（Mac）可选择多个店铺</small></label>
-                <label>来源批次<select id="job-batch" required><option value="">请选择来源批次</option>${overview.batches.map((item) => `<option value="${escapeHtml(item.id)}" data-source-store="${escapeHtml(item.sourceStoreId || "")}">${escapeHtml(item.label || item.id)} · ${escapeHtml(item.sourceStoreName || item.shopName || "未知店铺")} · SPU ${item.counts.spu}</option>`).join("")}</select></label>
-                <fieldset><legend>商品（可多选）</legend><div class="transfer-products" id="job-products">${overview.products.map((item) => `<label data-batch-ids="${escapeHtml((item.batchIds || []).join(","))}"><input type="checkbox" name="job-spu" value="${escapeHtml(item.spuId)}"><span>${escapeHtml(item.title || item.spuId)} · SPU ${escapeHtml(item.spuId)}${item.ready ? "" : "（资料未齐）"}</span></label>`).join("") || `<span class="muted">当前商品库为空，请先从来源店采集入库。</span>`}</div></fieldset>
-                <button class="toolbar-button primary" type="submit" ${targetAgents.length && readyProducts.length ? "" : "disabled"}>确认并接口创建</button>
-                <span id="job-message" class="muted" role="status"></span>
+        ${storeError ? `<p class="toast error">读取店铺失败：${escapeHtml(storeError.message)}。本机工人和紫鸟客户端需要先启动。</p>` : ""}
+        ${!storeError && directoryError ? `<p class="toast error">全量店铺目录读取失败，当前仅显示已有心跳的店铺。请确认紫鸟客户端已启动后刷新状态。</p>` : ""}
+        <nav class="task-view-tabs" aria-label="任务台视图">
+            <button type="button" class="active" data-task-view-button="status" aria-selected="true">实时状态 <b>${runtimeRows.length}</b></button>
+            <button type="button" data-task-view-button="create" aria-selected="false">创建任务 <b>${readyProducts.length}</b></button>
+            <button type="button" data-task-view-button="records" aria-selected="false">任务记录 <b>${(jobs.jobs || []).length}</b></button>
+        </nav>
+        <section class="task-view-panel live-status-panel" data-task-panel="status">
+            <div class="live-status-toolbar">
+                <label class="task-search"><span class="search-symbol" aria-hidden="true"></span><input id="store-runtime-search" type="search" placeholder="搜索店铺、ID 或当前任务" autocomplete="off"></label>
+                <label><span>状态</span><select id="store-runtime-filter"><option value="all">全部状态</option><option value="danger">只看异常</option><option value="active">只看处理中</option><option value="offline">只看离线</option></select></label>
+                <span class="live-status-note"><i></i>每 3 秒自动更新</span>
+            </div>
+            <div class="live-status-table-wrap">
+                <table class="live-status-table">
+                    <thead><tr><th>店铺</th><th>在线</th><th>插件部署</th><th>发送队列</th><th>商品上传</th><th>当前任务</th><th>异常</th><th>最后活动</th></tr></thead>
+                    <tbody id="store-runtime-body">${renderStoreRuntimeRows(runtimeRows)}</tbody>
+                </table>
+            </div>
+            <p class="live-status-empty" id="store-runtime-empty" role="status" hidden>没有匹配的店铺状态。</p>
+        </section>
+        <section class="task-view-panel task-create-panel" data-task-panel="create" hidden>
+            <form id="job-form" class="task-layout">
+                <div class="task-composer">
+                    <section class="task-step">
+                        <div class="task-step-heading"><span class="task-step-index">1</span><div><h2>来源与批次</h2><p>批次已经绑定采集店铺，来源店只用于提交前核对。</p></div></div>
+                        <div class="task-field-grid">
+                            <label>来源批次<select id="job-batch" required><option value="">请选择来源批次</option>${overview.batches.map((item) => `<option value="${escapeHtml(item.id)}" data-source-store="${escapeHtml(item.sourceStoreId || "")}">${escapeHtml(item.label || item.id)} · ${escapeHtml(item.sourceStoreName || item.shopName || "未知店铺")} · SPU ${item.counts.spu}</option>`).join("")}</select></label>
+                            <label>识别到的来源店铺<select id="job-source-store" disabled aria-describedby="job-source-note"><option value="">选择批次后自动识别</option>${stores.map((item) => `<option value="${escapeHtml(item.storeId)}">${escapeHtml(item.name)} (${escapeHtml(item.storeId)})</option>`).join("")}</select><small id="job-source-note" class="field-note">来源店铺由批次采集信息锁定，避免选错店铺。</small></label>
+                        </div>
+                    </section>
+                    <section class="task-step">
+                        <div class="task-step-heading"><span class="task-step-index">2</span><div><h2>目标店铺</h2><p>只显示在线、插件在场且店名已核验的目标店。</p></div><button type="button" class="toolbar-button" id="job-target-trigger" ${targetAgents.length ? "" : "disabled"}>选择目标店铺</button></div>
+                        <select id="job-target-store" class="visually-hidden" multiple aria-hidden="true" tabindex="-1">${targetAgents.map((item) => `<option value="${escapeHtml(item.storeId)}">${escapeHtml(item.storeName || item.pageStoreName || item.storeId)}</option>`).join("")}</select>
+                        <div class="selection-chips" id="job-target-chips"><span class="selection-empty">尚未选择目标店铺</span></div>
+                    </section>
+                    <section class="task-step">
+                        <div class="task-step-heading"><span class="task-step-index">3</span><div><h2>选择商品</h2><p>默认只看资料可交付商品；可以按名称、货号或 SPU 搜索。</p></div><span class="selection-count" id="job-product-visible-count">0 个可见</span></div>
+                        <div class="task-product-tools">
+                            <label class="task-search"><span class="search-symbol" aria-hidden="true"></span><input id="job-product-search" type="search" placeholder="搜索商品名称、货号或 SPU" autocomplete="off"></label>
+                            <label class="task-check-toggle"><input id="job-ready-only" type="checkbox" checked><span>仅看资料可交付</span></label>
+                            <label class="task-check-toggle"><input id="job-select-visible" type="checkbox"><span>全选当前结果</span></label>
+                        </div>
+                        <div class="transfer-products task-product-list" id="job-products">${productOptions || `<span class="workspace-empty">当前商品库为空，请先从来源店采集入库。</span>`}</div>
+                    </section>
+                </div>
+                <aside class="task-summary" aria-label="提交摘要">
+                    <div class="task-summary-head"><span>提交摘要</span><strong>接口创建</strong></div>
+                    <dl>
+                        <div><dt>已选商品</dt><dd id="job-summary-products">0</dd></div>
+                        <div><dt>目标店铺</dt><dd id="job-summary-stores">0</dd></div>
+                        <div><dt>预计任务数</dt><dd id="job-summary-jobs">0</dd></div>
+                    </dl>
+                    <p>创建不等于审核上架。结果待核对时不要重发，先在目标店商品列表确认货号状态。</p>
+                    <button class="toolbar-button primary task-submit" id="job-submit" type="submit" ${targetAgents.length && readyProducts.length ? "" : "disabled"}>确认并接口创建</button>
+                    <span id="job-message" class="task-message" role="status"></span>
+                </aside>
             </form>
         </section>
-        <section class="panel">
-            <div class="panel-heading"><h2>已登记 Agent</h2><span class="panel-kicker">${jobs.agents.length} 个</span></div>
-            <div class="transfer-jobs">${(jobs.agents || []).map((agent) => `<article class="transfer-job"><strong>${escapeHtml(agent.storeName || agent.pageStoreName || agent.storeId || "未映射店铺")}</strong><span>${escapeHtml(agent.storeId || "待工人映射")}</span><span>${agent.pluginDetected ? "插件在场" : "未检测到插件"} · ${agent.identityMatched ? "店名匹配" : "店名未核验"}</span><span>${escapeHtml(agent.lastSeenAt || "")}</span><small>${escapeHtml(agent.pluginInstanceId || "无实例")} · ${escapeHtml(agent.pageUrl || "尚未上报页面")}${agent.pageStoreName ? ` · 页头 ${escapeHtml(agent.pageStoreName)}` : ""}</small></article>`).join("") || `<p class="muted">还没有店铺窗口登记。打开两家目标店后，插件会识别店名，本机工人会读取只读状态并映射紫鸟店铺。</p>`}</div>
-        </section>
-        <section class="panel">
-            <div class="panel-heading"><h2>任务记录</h2><span class="panel-kicker">${jobs.jobs.length} 条</span></div>
-            <div class="transfer-jobs">${jobs.jobs.map(renderHubJob).join("") || `<p class="muted">还没有跨店任务。</p>`}</div>
+        <dialog id="job-target-dialog" class="target-dialog" aria-labelledby="job-target-dialog-title">
+            <form method="dialog">
+                <div class="target-dialog-head"><div><h2 id="job-target-dialog-title">选择目标店铺</h2><p>可多选。展开的是店铺名称和 ID，提交前还能在摘要中复核。</p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+                <label class="target-search"><span class="search-symbol" aria-hidden="true"></span><input id="job-target-search" type="search" placeholder="搜索店铺名称或 ID" autocomplete="off"></label>
+                <label class="target-select-all"><input id="job-target-select-all" type="checkbox"><span>全选当前店铺</span></label>
+                <div class="target-options" id="job-target-options">${targetOptions || `<p class="workspace-empty">暂无在线目标店铺。</p>`}</div>
+                <div class="target-dialog-footer"><span id="job-target-dialog-count">已选择 0 家店铺</span><button type="submit" value="apply" class="toolbar-button primary">完成选择</button></div>
+            </form>
+        </dialog>
+        <section class="task-view-panel task-records-panel" data-task-panel="records" hidden>
+            <div class="task-record-toolbar">
+                <div><h2>任务记录</h2><p>${jobs.jobs.length} 条任务，按处理结果筛选后查看商品级状态。</p></div>
+                <div class="record-filters" role="group" aria-label="任务状态筛选">
+                    <button type="button" class="filter-chip active" data-job-filter="attention">需处理</button>
+                    <button type="button" class="filter-chip" data-job-filter="active">进行中</button>
+                    <button type="button" class="filter-chip" data-job-filter="done">已完成</button>
+                    <button type="button" class="filter-chip" data-job-filter="all">全部</button>
+                </div>
+            </div>
+            <div class="transfer-jobs" id="job-records">${jobs.jobs.map(renderHubJob).join("") || `<p class="workspace-empty">还没有跨店任务。</p>`}</div>
         </section>
     `;
+    const taskViewButtons = [...app.querySelectorAll("[data-task-view-button]")];
+    const showTaskView = (name) => {
+        taskViewButtons.forEach((button) => {
+            const active = button.getAttribute("data-task-view-button") === name;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        app.querySelectorAll("[data-task-panel]").forEach((panel) => {
+            panel.hidden = panel.getAttribute("data-task-panel") !== name;
+        });
+    };
+    taskViewButtons.forEach((button) => button.addEventListener("click", () => showTaskView(button.getAttribute("data-task-view-button") || "status")));
+    const runtimeSearch = document.getElementById("store-runtime-search");
+    const runtimeFilter = document.getElementById("store-runtime-filter");
+    const runtimeRowsElements = [...app.querySelectorAll("[data-store-runtime-row]")];
+    const runtimeEmpty = document.getElementById("store-runtime-empty");
+    const applyRuntimeFilter = () => {
+        const query = String(runtimeSearch?.value || "").trim().toLocaleLowerCase();
+        const filter = String(runtimeFilter?.value || "all");
+        let visible = 0;
+        runtimeRowsElements.forEach((row) => {
+            const matchesQuery = !query || String(row.dataset.search || "").includes(query);
+            const tone = String(row.dataset.tone || "");
+            const matchesFilter = filter === "all"
+                || (filter === "danger" && tone === "danger")
+                || (filter === "active" && tone === "active")
+                || (filter === "offline" && tone === "idle");
+            row.hidden = !(matchesQuery && matchesFilter);
+            if (!row.hidden) visible += 1;
+        });
+        if (runtimeEmpty) runtimeEmpty.hidden = visible !== 0;
+    };
+    runtimeSearch?.addEventListener("input", applyRuntimeFilter);
+    runtimeFilter?.addEventListener("change", applyRuntimeFilter);
     document.getElementById("refresh-job-stores")?.addEventListener("click", () => route());
     const sourceStoreSelect = document.getElementById("job-source-store");
     const batchSelect = document.getElementById("job-batch");
+    const targetDialog = document.getElementById("job-target-dialog");
+    const targetStoreSelect = document.getElementById("job-target-store");
+    const targetChecks = [...targetDialog.querySelectorAll('input[type="checkbox"][value]')];
+    const productChecks = [...document.querySelectorAll('input[name="job-spu"]')];
+    const productLabels = [...document.querySelectorAll("#job-products .task-product-option")];
+    const productSearch = document.getElementById("job-product-search");
+    const readyOnly = document.getElementById("job-ready-only");
+    const selectVisible = document.getElementById("job-select-visible");
+    const targetDialogCount = document.getElementById("job-target-dialog-count");
+    const targetDialogSelectAll = document.getElementById("job-target-select-all");
+    const summaryProducts = document.getElementById("job-summary-products");
+    const summaryStores = document.getElementById("job-summary-stores");
+    const summaryJobs = document.getElementById("job-summary-jobs");
+    const submitButton = document.getElementById("job-submit");
+    const selectedTargetIds = () => [...targetStoreSelect.selectedOptions].map(option => String(option.value || "")).filter(Boolean);
+    const updateTaskSummary = () => {
+        const productCount = productChecks.filter(input => input.checked).length;
+        const storeCount = selectedTargetIds().length;
+        if (summaryProducts) summaryProducts.textContent = productCount;
+        if (summaryStores) summaryStores.textContent = storeCount;
+        if (summaryJobs) summaryJobs.textContent = productCount * storeCount;
+        if (submitButton) submitButton.disabled = !(productCount && storeCount);
+    };
+    const renderTargetSelection = () => {
+        const selected = new Set(selectedTargetIds());
+        targetChecks.forEach(input => { input.checked = selected.has(String(input.value)); });
+        [...targetStoreSelect.options].forEach(option => { option.selected = selected.has(String(option.value)); });
+        const names = [...targetStoreSelect.selectedOptions].map(option => option.textContent || option.value);
+        const chips = document.getElementById("job-target-chips");
+        if (chips) chips.innerHTML = names.length ? names.map(name => `<span class="selection-chip">${escapeHtml(name)}</span>`).join("") : `<span class="selection-empty">尚未选择目标店铺</span>`;
+        if (targetDialogCount) targetDialogCount.textContent = `已选择 ${names.length} 家店铺`;
+        updateTaskSummary();
+    };
+    const applyTargetDialogFilter = () => {
+        const query = String(document.getElementById("job-target-search")?.value || "").trim().toLocaleLowerCase();
+        const visible = [];
+        targetChecks.forEach(input => {
+            const option = input.closest(".target-option");
+            const matches = !query || String(option?.dataset.targetSearch || "").includes(query);
+            option.hidden = !matches;
+            if (matches) visible.push(input);
+        });
+        if (targetDialogSelectAll) {
+            const checked = visible.filter(input => input.checked).length;
+            targetDialogSelectAll.checked = visible.length > 0 && checked === visible.length;
+            targetDialogSelectAll.indeterminate = checked > 0 && checked < visible.length;
+        }
+    };
+    const applyProductVisibility = () => {
+        const batchId = batchSelect?.value || "";
+        const query = String(productSearch?.value || "").trim().toLocaleLowerCase();
+        const onlyReady = Boolean(readyOnly?.checked);
+        let visible = 0;
+        productLabels.forEach(label => {
+            const batchIds = String(label.dataset.batchIds || "").split(",").filter(Boolean);
+            const matchesBatch = !batchId || batchIds.includes(batchId);
+            const matchesReady = !onlyReady || label.dataset.ready === "1";
+            const matchesQuery = !query || String(label.dataset.search || "").includes(query);
+            label.hidden = !(matchesBatch && matchesReady && matchesQuery);
+            if (!label.hidden) visible += 1;
+        });
+        const visibleInputs = productLabels.filter(label => !label.hidden).map(label => label.querySelector("input"));
+        if (selectVisible) {
+            const checked = visibleInputs.filter(input => input?.checked).length;
+            selectVisible.checked = visibleInputs.length > 0 && checked === visibleInputs.length;
+            selectVisible.indeterminate = checked > 0 && checked < visibleInputs.length;
+        }
+        const count = document.getElementById("job-product-visible-count");
+        if (count) count.textContent = `${visible} 个可见`;
+    };
     const syncSourceFromBatch = () => {
         const option = batchSelect?.selectedOptions?.[0];
         const batchStoreId = option?.getAttribute("data-source-store") || "";
@@ -1019,29 +1467,68 @@ async function renderJobs(overview) {
         const batchId = batchSelect?.value || "";
         document.querySelectorAll("#job-products label[data-batch-ids]").forEach((label) => {
             const ids = String(label.getAttribute("data-batch-ids") || "").split(",").filter(Boolean);
-            label.hidden = Boolean(batchId) && !ids.includes(batchId);
-            if (label.hidden) {
+            const mismatched = Boolean(batchId) && !ids.includes(batchId);
+            if (mismatched) {
                 const input = label.querySelector("input[name=job-spu]");
                 if (input) input.checked = false;
             }
         });
+        applyProductVisibility();
+        updateTaskSummary();
     };
     batchSelect?.addEventListener("change", syncSourceFromBatch);
+    productSearch?.addEventListener("input", applyProductVisibility);
+    readyOnly?.addEventListener("change", applyProductVisibility);
+    selectVisible?.addEventListener("change", () => {
+        productLabels.filter(label => !label.hidden).forEach(label => {
+            const input = label.querySelector('input[name="job-spu"]');
+            if (input) input.checked = Boolean(selectVisible.checked);
+        });
+        updateTaskSummary();
+    });
+    productChecks.forEach(input => input.addEventListener("change", () => { applyProductVisibility(); updateTaskSummary(); }));
+    document.getElementById("job-target-trigger")?.addEventListener("click", () => {
+        applyTargetDialogFilter();
+        targetDialog.showModal();
+    });
+    document.getElementById("job-target-search")?.addEventListener("input", applyTargetDialogFilter);
+    targetChecks.forEach(input => input.addEventListener("change", () => {
+        const option = [...targetStoreSelect.options].find(item => String(item.value) === String(input.value));
+        if (option) option.selected = input.checked;
+        renderTargetSelection();
+        applyTargetDialogFilter();
+    }));
+    targetDialogSelectAll?.addEventListener("change", () => {
+        targetChecks.filter(input => !input.closest(".target-option")?.hidden).forEach(input => {
+            input.checked = targetDialogSelectAll.checked;
+            const option = [...targetStoreSelect.options].find(item => String(item.value) === String(input.value));
+            if (option) option.selected = input.checked;
+        });
+        renderTargetSelection();
+        applyTargetDialogFilter();
+    });
+    targetStoreSelect?.addEventListener("change", renderTargetSelection);
+    renderTargetSelection();
     syncSourceFromBatch();
+    applyProductVisibility();
     document.getElementById("job-form")?.addEventListener("submit", async (event) => {
         event.preventDefault();
         const message = document.getElementById("job-message");
-        const sourceStoreId = document.getElementById("job-source-store")?.value || "";
+        const selectedBatch = overview.batches.find((item) => item.id === batchSelect?.value);
+        const sourceStoreId = selectedBatch?.sourceStoreId || sourceStoreSelect?.value || "";
         const targetStoreIds = [...(document.getElementById("job-target-store")?.selectedOptions || [])].map((option) => String(option.value || "")).filter(Boolean);
         const sourceBatchId = document.getElementById("job-batch")?.value || "";
-        const sourceStoreName = stores.find((item) => item.storeId === sourceStoreId)?.name || "";
+        const sourceStoreName = selectedBatch?.sourceStoreName || selectedBatch?.shopName || stores.find((item) => item.storeId === sourceStoreId)?.name || "";
         const selectedTargets = targetAgents.filter((item) => targetStoreIds.includes(String(item.storeId)));
         const targetStoreNames = selectedTargets.map((item) => item.storeName || item.pageStoreName || item.storeId);
         const spuIds = [...document.querySelectorAll("input[name=job-spu]:checked")].map((input) => input.value);
         if (!message) return;
-        const selectedBatch = overview.batches.find((item) => item.id === sourceBatchId);
         if (selectedBatch && selectedBatch.sourceStoreId && selectedBatch.sourceStoreId !== sourceStoreId) {
             message.textContent = "来源店必须和该批次采集时的店铺一致。";
+            return;
+        }
+        if (!sourceBatchId || !sourceStoreId) {
+            message.textContent = "请选择已经绑定来源店铺的采集批次。";
             return;
         }
         if (!targetStoreIds.length) {
@@ -1084,6 +1571,16 @@ async function renderJobs(overview) {
         } catch (error) {
             message.textContent = `创建失败：${error.message}`;
         }
+    });
+    app.querySelectorAll("[data-job-filter]").forEach(button => {
+        button.addEventListener("click", () => {
+            app.querySelectorAll("[data-job-filter]").forEach(item => item.classList.toggle("active", item === button));
+            const filter = button.getAttribute("data-job-filter") || "all";
+            app.querySelectorAll("#job-records .job-record").forEach(record => {
+                record.hidden = filter !== "all" && record.getAttribute("data-job-group") !== filter;
+            });
+        });
+        if (button.getAttribute("data-job-filter") === "attention") button.click();
     });
     app.querySelectorAll("[data-job-action]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -1160,6 +1657,18 @@ function confirmDirectRetry(spuId, mode) {
     });
 }
 
+function jobRecordGroup(job) {
+    const status = String(job?.status || "");
+    const itemStates = (job?.items || []).map(item => String(item.directState || ""));
+    if (itemStates.some(state => ["unknown", "preflight_failed", "rejected"].includes(state))
+        || ["failed", "partial", "blocked_preflight", "identity_mismatch"].includes(status)) return "attention";
+    if (itemStates.includes("creating")) return "active";
+    // 接口任务完成后 job.status 仍可能停在 received，实际是否结束要看商品项的 directState。
+    if (itemStates.length && itemStates.every(state => ["created", "duplicate_exists"].includes(state))) return "done";
+    if (ACTIVE_ITEM_STATUSES.has(status)) return "active";
+    return "done";
+}
+
 function renderHubJob(job) {
     const actions = [];
     if (["queued", "blocked_preflight"].includes(job.status)) {
@@ -1176,9 +1685,11 @@ function renderHubJob(job) {
         const reset = mode
             ? `<button type="button" class="toolbar-button" data-job-action="retry" data-job-id="${escapeHtml(job.id)}" data-job-store="${escapeHtml(job.targetStoreId || "")}" data-job-spu="${escapeHtml(item.spuId)}" data-retry-mode="${escapeHtml(mode)}">${mode === "requeue" ? "重新排队" : "人工确认重试"}</button>`
             : "";
-        return `<li><span>SPU ${escapeHtml(item.spuId)}</span><span>${escapeHtml(DIRECT_ITEM_LABEL[item.directState] || jobStatusLabel(item.status))}</span><span>${escapeHtml(item.reason || "")}</span>${reset}</li>`;
+        const state = String(item.directState || "");
+        const stateClass = ["unknown", "preflight_failed", "rejected"].includes(state) ? "attention" : (state === "created" || state === "duplicate_exists" ? "done" : "");
+        return `<li class="${stateClass}"><span>SPU ${escapeHtml(item.spuId)}</span><span>${escapeHtml(DIRECT_ITEM_LABEL[item.directState] || jobStatusLabel(item.status))}</span><span>${escapeHtml(item.reason || "")}</span>${reset}</li>`;
     }).join("");
-    return `<article class="transfer-job">
+    return `<article class="transfer-job job-record" data-job-group="${jobRecordGroup(job)}">
         <strong>${escapeHtml(job.id)}</strong>
         <span>${escapeHtml(job.sourceStoreName || job.sourceStoreId)} → ${escapeHtml(job.targetStoreName || job.targetStoreId)}</span>
         <span>${escapeHtml(jobStatusLabel(job.status))}</span>
@@ -1198,7 +1709,7 @@ function confirmWorkLogRemoval(storeName) {
         dialog.setAttribute("aria-labelledby", "work-log-delete-title");
         dialog.setAttribute("aria-describedby", "work-log-delete-description");
         dialog.style.cssText = "max-width:480px;width:calc(100% - 48px);border:1px solid #cbd5e1;border-radius:12px;padding:24px;color:#172b4d;background:white;";
-        dialog.innerHTML = `<h2 id="work-log-delete-title">删除该店工作日志？</h2><p id="work-log-delete-description">将清除 ${escapeHtml(storeName)} 最近 3 天的操作记录。已发送任务和平台商品不会被撤销。</p><form method="dialog"><button class="toolbar-button" value="cancel" autofocus>取消</button> <button class="toolbar-button danger" value="delete">确认删除</button></form>`;
+        dialog.innerHTML = `<h2 id="work-log-delete-title">删除该店工作日志？</h2><p id="work-log-delete-description">将清除 ${escapeHtml(storeName)} 最近 15 天的操作记录。已发送任务和平台商品不会被撤销。</p><form method="dialog"><button class="toolbar-button" value="cancel" autofocus>取消</button> <button class="toolbar-button danger" value="delete">确认删除</button></form>`;
         const onRouteChange = () => dialog.close("cancel");
         window.addEventListener("hashchange", onRouteChange, { once: true });
         dialog.addEventListener("close", () => {
@@ -1213,106 +1724,259 @@ function confirmWorkLogRemoval(storeName) {
     });
 }
 
-/** 工作日志页按目标店分组展示任务动作，默认收起长时间线，减少运营扫描时的认知负担。 */
+const WORK_LOG_LABEL = {
+    web_task_created: "网页创建发送任务",
+    web_task_replaced: "旧任务被新任务替换",
+    web_task_cancelled: "网页取消任务",
+    plugin_claimed: "目标插件领取商品",
+    plugin_received: "目标插件已接收商品",
+    plugin_upload_opened: "操作者打开上传页",
+    plugin_uploaded: "操作者确认已上传",
+    direct_creating: "新增接口提交中",
+    direct_created: "平台创建并回查成功",
+    direct_unknown: "结果待核对（禁止重发）",
+    direct_preflight_failed: "预检失败（未提交）",
+    direct_manual_retry: "人工确认后重新排队"
+};
+
+const WORK_LOG_OUTCOME = {
+    attention: { label: "需处理", className: "attention" },
+    active: { label: "处理中", className: "active" },
+    done: { label: "已完成", className: "done" }
+};
+
+function workLogOutcome(entry) {
+    const type = String(entry?.type || "");
+    if (["direct_unknown", "direct_preflight_failed", "failed", "blocked", "web_task_replaced"].includes(type)) return "attention";
+    if (["direct_created", "plugin_uploaded"].includes(type)) return "done";
+    return "active";
+}
+
+function workLogStoreSourceLabels(store) {
+    return [...new Set([
+        store.sourceStoreName,
+        store.sourceLabel,
+        store.sourceStoreId,
+        ...(store.entries || []).flatMap((entry) => [entry.sourceStoreName, entry.sourceStoreId])
+    ].map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+/** 工作日志使用店铺索引加右侧时间线；筛选只影响当前视图，不重新请求后端。 */
 async function renderWorkLogs() {
     setNav("logs");
-    const payload = await api("/temu/api/work-log");
-    const stores = Array.isArray(payload.stores) ? payload.stores : groupWorkLogEntries(payload.entries || []);
-    const entries = stores.flatMap((store) => store.entries || []);
-    const label = {
-        web_task_created: "网页创建发送任务",
-        plugin_claimed: "目标插件领取商品",
-        plugin_received: "目标插件已接收商品",
-        plugin_upload_opened: "操作者打开上传页",
-        plugin_uploaded: "操作者确认已上传",
-        direct_creating: "新增接口提交中",
-        direct_created: "平台创建并回查成功",
-        direct_unknown: "结果待核对（禁止重发）",
-        direct_preflight_failed: "预检失败（未提交）"
-    };
-    const storeOptions = stores
-        .slice()
-        .sort((left, right) => String(left.storeName || left.storeId).localeCompare(String(right.storeName || right.storeId), "zh-CN"))
-        .map((store) => `<option value="${escapeHtml(store.storeId)}">${escapeHtml(store.storeName || store.storeId)}</option>`)
-        .join("");
-    app.innerHTML = `
-        <div class="top work-log-top"><div class="top-copy"><h1>工作日志</h1><p class="lede">每个目标店铺单独保存最近 3 天的插件操作。默认收起长日志，展开后再查看明细；删除只清日志，不影响已发送任务。</p></div><div class="top-context">${stores.length} 家目标店 · ${entries.length} 条记录</div></div>
-        <section class="panel work-log-controls" aria-label="工作日志筛选">
-            <div class="work-log-search-field"><label for="work-log-search">搜索店铺</label><div class="work-log-search-wrap"><span class="search-symbol" aria-hidden="true"></span><input id="work-log-search" type="search" placeholder="店铺名、店铺 ID 或来源店铺" autocomplete="off"></div></div>
-            <label class="work-log-store-filter" for="work-log-store-filter"><span>店铺筛选</span><select id="work-log-store-filter"><option value="">全部目标店铺</option>${storeOptions}</select></label>
-            <div class="work-log-view-actions"><button type="button" class="drop-button" id="expand-work-logs" ${stores.length ? "" : "disabled"}>展开全部</button><button type="button" class="drop-button" id="collapse-work-logs" ${stores.length ? "" : "disabled"}>收起全部</button><span id="work-log-filter-count" class="work-log-filter-count" aria-live="polite">显示 ${stores.length} 家店铺</span></div>
-            <p class="work-log-scope-note">当前提供日志搜索、筛选和清理；在线店铺读取与刷新在 <a href="#/jobs">任务台</a>，暂未提供店铺别名、归档或删除等独立管理。</p>
-        </section>
-        <div class="work-log-store-list" id="work-log-store-list">
-        ${stores.map((store) => {
-            // 来源店信息以每条日志为准累积，避免同一目标店接收多个来源店后只保留最后/第一家。
-            const sourceLabels = [...new Set([
-                store.sourceStoreName,
-                store.sourceLabel,
-                store.sourceStoreId,
-                ...(store.entries || []).flatMap((entry) => [entry.sourceStoreName, entry.sourceStoreId])
-            ].map((value) => String(value || "").trim()).filter(Boolean))];
-            const sourceName = sourceLabels.join("、");
-            const searchIndex = [store.storeName, store.storeId, ...sourceLabels].filter(Boolean).join(" ").toLocaleLowerCase();
-            const latestAt = (store.entries || []).map((entry) => entry.at).filter(Boolean).sort().pop() || "";
-            return `<details class="panel work-log-store" data-work-log-store data-store-id="${escapeHtml(store.storeId)}" data-search="${escapeHtml(searchIndex)}"><summary class="work-log-store-summary"><span class="work-log-summary-marker" aria-hidden="true"></span><span class="work-log-store-copy"><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)}${sourceName ? ` · 来源 ${escapeHtml(sourceName)}` : ""}</small></span><span class="work-log-summary-meta"><span class="work-log-store-count">${(store.entries || []).length} 条</span>${latestAt ? `<time datetime="${escapeHtml(latestAt)}">最新 ${escapeHtml(formatWorkLogTime(latestAt))}</time>` : ""}</span></summary><div class="work-log-store-body"><div class="work-log-store-tools"><span class="muted">展开查看该店铺的操作时间线</span><button type="button" class="toolbar-button danger" data-clear-store="${escapeHtml(store.storeId)}">删除该店日志</button></div><div class="work-log-list">${(store.entries || []).map((entry) => `<article class="work-log-entry"><time datetime="${escapeHtml(entry.at || "")}">${escapeHtml(formatWorkLogTime(entry.at))}</time><strong>${escapeHtml(label[entry.type] || entry.type || "操作")}</strong><span>任务 ${escapeHtml(entry.jobId || "—")} · SPU ${escapeHtml(entry.spuId || "—")}</span><p>${escapeHtml(entry.message || "")}</p></article>`).join("")}</div></div></details>`;
-        }).join("")}
-        </div>
-        <p class="work-log-no-results" id="work-log-no-results" role="status" hidden>没有匹配的店铺日志，请调整搜索词或筛选条件。</p>
-        ${stores.length ? "" : `<section class="panel"><p class="muted">还没有可记录的发送或上传操作。</p></section>`}
-        <div class="work-log-actions"><button type="button" class="drop-button" id="refresh-work-log">刷新当前日志</button></div>`;
-    bindWorkLogControls(stores.length);
-    document.getElementById("refresh-work-log")?.addEventListener("click", () => route());
-    document.querySelectorAll("[data-clear-store]").forEach((button) => {
-        button.addEventListener("click", async () => {
-            const storeId = button.getAttribute("data-clear-store") || "";
-            const storeName = button.closest(".work-log-store")?.querySelector(".work-log-store-copy strong")?.textContent || storeId;
-            if (!storeId || !(await confirmWorkLogRemoval(storeName))) return;
-            button.disabled = true;
-            try {
-                await api("/temu/api/work-log", {
-                    method: "DELETE",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ storeId })
-                });
-                await route();
-            } catch (error) {
-                button.disabled = false;
-                button.textContent = `删除失败：${error.message}`;
-            }
+    const [payload, jobsPayload, storePayload] = await Promise.all([
+        api("/temu/api/work-log"),
+        api("/temu/api/jobs").catch(() => ({ jobs: [], agents: [] })),
+        api("/temu/api/ziniao/stores?scope=all&refresh=1").catch(() => ({ stores: [] }))
+    ]);
+    const loggedStores = Array.isArray(payload.stores) ? payload.stores : groupWorkLogEntries(payload.entries || []);
+    const storeMap = new Map(loggedStores.map((store) => [String(store.storeId || ""), store]));
+    const agentByStore = new Map((jobsPayload.agents || [])
+        .filter((agent) => agent.storeId)
+        .map((agent) => [String(agent.storeId), agent]));
+    for (const directoryStore of storePayload.stores || []) {
+        const storeId = String(directoryStore.storeId || "");
+        if (!storeId) continue;
+        const agent = agentByStore.get(storeId);
+        const existing = storeMap.get(storeId);
+        if (existing) {
+            existing.online = Boolean(agent?.online || directoryStore.online);
+            existing.storeName = existing.storeName || agent?.storeName || agent?.pageStoreName || directoryStore.name || storeId;
+            continue;
+        }
+        storeMap.set(storeId, {
+            storeId,
+            storeName: agent?.storeName || agent?.pageStoreName || directoryStore.name || storeId,
+            online: Boolean(agent?.online || directoryStore.online),
+            updatedAt: agent?.lastSeenAt || directoryStore.lastSeenAt || "",
+            entries: []
         });
+    }
+    for (const agent of jobsPayload.agents || []) {
+        const storeId = String(agent.storeId || "");
+        if (!storeId) continue;
+        const existing = storeMap.get(storeId);
+        if (existing) {
+            existing.online = Boolean(agent.online);
+            existing.storeName = existing.storeName || agent.storeName || agent.pageStoreName || storeId;
+            continue;
+        }
+        storeMap.set(storeId, {
+            storeId,
+            storeName: agent.storeName || agent.pageStoreName || storeId,
+            online: Boolean(agent.online),
+            updatedAt: agent.lastSeenAt || "",
+            entries: []
+        });
+    }
+    const stores = [...storeMap.values()].sort((left, right) => {
+        if (Boolean(left.online) !== Boolean(right.online)) return left.online ? -1 : 1;
+        return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+    });
+    const entries = stores.flatMap((store) => store.entries || []);
+    const attentionCount = entries.filter(entry => workLogOutcome(entry) === "attention").length;
+    const typeOptions = [...new Set(entries.map(entry => String(entry.type || "")).filter(Boolean))]
+        .sort()
+        .map(type => `<option value="${escapeHtml(type)}">${escapeHtml(WORK_LOG_LABEL[type] || type)}</option>`)
+        .join("");
+    const storeNav = stores.map((store) => {
+        const sourceLabels = workLogStoreSourceLabels(store);
+        const latestAt = (store.entries || []).map(entry => entry.at).filter(Boolean).sort().pop() || "";
+        const searchIndex = [store.storeName, store.storeId, ...sourceLabels].filter(Boolean).join(" ").toLocaleLowerCase();
+        return `<button type="button" class="log-store-button ${store.online ? "is-online" : ""}" data-log-store="${escapeHtml(store.storeId)}" data-search="${escapeHtml(searchIndex)}"><span class="log-store-marker"></span><span class="log-store-copy"><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${store.online ? "在线" : "离线"} · ${escapeHtml(store.storeId)}${sourceLabels.length ? ` · 来源 ${escapeHtml(sourceLabels.join("、"))}` : ""}</small></span><span class="log-store-counts"><b data-store-visible-count>0</b><small>条</small>${latestAt ? `<time>${escapeHtml(formatWorkLogTime(latestAt))}</time>` : ""}</span></button>`;
+    }).join("");
+    app.innerHTML = `
+        <div class="top work-log-top">
+            <div class="top-copy"><h1>工作日志</h1><p class="lede">所有已登记店铺保留最近 15 天操作。新日志会自动出现，手动刷新入口固定在页面顶部。</p></div>
+            <div class="work-log-top-actions">
+                <div class="work-log-stats"><span><b>${stores.length}</b> 家店铺</span><span><b>${entries.length}</b> 条记录</span><span class="${attentionCount ? "has-attention" : ""}"><b>${attentionCount}</b> 条需处理</span></div>
+                <button type="button" class="toolbar-button primary" id="refresh-work-log">刷新日志</button>
+                <span class="auto-refresh-note"><i></i>每 3 秒自动更新</span>
+            </div>
+        </div>
+        <section class="panel log-toolbar" aria-label="工作日志筛选">
+            <label class="task-search"><span class="search-symbol" aria-hidden="true"></span><input id="work-log-search" type="search" placeholder="搜索店铺、来源店、任务号或 SPU" autocomplete="off"></label>
+            <label><span>处理结果</span><select id="work-log-outcome"><option value="">全部结果</option><option value="attention">只看需处理</option><option value="active">处理中</option><option value="done">已完成</option></select></label>
+            <label><span>动作类型</span><select id="work-log-type"><option value="">全部动作</option>${typeOptions}</select></label>
+            <label><span>时间范围</span><select id="work-log-time"><option value="all">最近 15 天</option><option value="hour">近 1 小时</option><option value="today">今天</option><option value="day">近 24 小时</option></select></label>
+        </section>
+        <div class="work-log-workspace">
+            <aside class="work-log-index" aria-label="店铺索引">
+                <div class="work-log-index-head"><strong>店铺</strong><span id="work-log-visible-stores">${stores.length} 家</span></div>
+                <div class="work-log-store-nav" id="work-log-store-nav">${storeNav || `<p class="workspace-empty">还没有已登记店铺。</p>`}</div>
+            </aside>
+            <section class="work-log-detail" aria-live="polite">
+                <div class="work-log-detail-head"><div><h2 id="work-log-detail-title">选择店铺</h2><p id="work-log-detail-meta">左侧选择店铺后查看最近 15 天操作时间线。</p></div><button type="button" class="toolbar-button danger" id="clear-current-log" disabled>删除该店日志</button></div>
+                <div class="work-log-timeline" id="work-log-timeline"><p class="workspace-empty">该店铺最近 15 天暂无操作记录。</p></div>
+            </section>
+        </div>
+        <p class="work-log-no-results" id="work-log-no-results" role="status" hidden>没有匹配的日志，请调整搜索词或筛选条件。</p>
+    `;
+    bindWorkLogControls(stores);
+    document.getElementById("refresh-work-log")?.addEventListener("click", () => route());
+    document.getElementById("clear-current-log")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        const storeId = button.getAttribute("data-store-id") || "";
+        const store = stores.find(item => String(item.storeId) === storeId);
+        if (!storeId || !(await confirmWorkLogRemoval(store?.storeName || storeId))) return;
+        button.disabled = true;
+        try {
+            await api("/temu/api/work-log", {
+                method: "DELETE",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ storeId })
+            });
+            await route();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = `删除失败：${error.message}`;
+        }
     });
 }
 
-/**
- * 工作日志筛选只隐藏店铺分组，不重新请求后端，保证搜索时不会打断正在查看的时间线。
- * 展开/收起操作仅作用于当前筛选可见的店铺，避免用户搜索后误打开隐藏分组。
- */
-function bindWorkLogControls(totalStores) {
+function bindWorkLogControls(stores) {
     const search = document.getElementById("work-log-search");
-    const filter = document.getElementById("work-log-store-filter");
-    const count = document.getElementById("work-log-filter-count");
+    const outcomeFilter = document.getElementById("work-log-outcome");
+    const typeFilter = document.getElementById("work-log-type");
+    const timeFilter = document.getElementById("work-log-time");
     const noResults = document.getElementById("work-log-no-results");
-    const stores = [...document.querySelectorAll("[data-work-log-store]")];
-    const visibleStores = () => stores.filter((store) => !store.hidden);
-    const applyFilter = () => {
-        const query = (search?.value || "").trim().toLocaleLowerCase();
-        const storeId = filter?.value || "";
-        let visible = 0;
-        stores.forEach((store) => {
-            const matchesQuery = !query || (store.dataset.search || "").includes(query);
-            const matchesStore = !storeId || store.dataset.storeId === storeId;
-            store.hidden = !(matchesQuery && matchesStore);
-            if (!store.hidden) visible += 1;
-        });
-        if (count) count.textContent = `显示 ${visible} / ${totalStores} 家店铺`;
-        if (noResults) noResults.hidden = visible !== 0 || totalStores === 0;
+    const navButtons = [...document.querySelectorAll("[data-log-store]")];
+    const detailTitle = document.getElementById("work-log-detail-title");
+    const detailMeta = document.getElementById("work-log-detail-meta");
+    const timeline = document.getElementById("work-log-timeline");
+    const clearButton = document.getElementById("clear-current-log");
+    const visibleStores = document.getElementById("work-log-visible-stores");
+    let selectedStoreId = stores[0] ? String(stores[0].storeId) : "";
+
+    const entryMatches = (entry, query, outcome, type, startAt) => {
+        const at = Date.parse(String(entry.at || ""));
+        const text = [entry.message, entry.jobId, entry.spuId, entry.sourceStoreName, entry.sourceStoreId, entry.type, WORK_LOG_LABEL[entry.type]].filter(Boolean).join(" ").toLocaleLowerCase();
+        return (!query || text.includes(query))
+            && (!outcome || workLogOutcome(entry) === outcome)
+            && (!type || String(entry.type || "") === type)
+            && (!startAt || (Number.isFinite(at) && at >= startAt));
     };
-    search?.addEventListener("input", applyFilter);
-    filter?.addEventListener("change", applyFilter);
-    document.getElementById("expand-work-logs")?.addEventListener("click", () => visibleStores().forEach((store) => { store.open = true; }));
-    document.getElementById("collapse-work-logs")?.addEventListener("click", () => visibleStores().forEach((store) => { store.open = false; }));
-    applyFilter();
+    const timeStart = () => {
+        const value = timeFilter?.value || "all";
+        if (value === "hour") return Date.now() - 60 * 60 * 1000;
+        if (value === "day") return Date.now() - 24 * 60 * 60 * 1000;
+        if (value === "today") {
+            const now = new Date();
+            return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        }
+        return 0;
+    };
+    const renderTimeline = (store, visibleEntries) => {
+        if (!store) {
+            timeline.innerHTML = `<p class="workspace-empty">该店铺最近 15 天暂无操作记录。</p>`;
+            return;
+        }
+        detailTitle.textContent = store.storeName || store.storeId;
+        const sourceLabels = workLogStoreSourceLabels(store);
+        detailMeta.textContent = `${store.storeId}${sourceLabels.length ? ` · 来源 ${sourceLabels.join("、")}` : ""} · 当前显示 ${visibleEntries.length} 条`;
+        if (clearButton) {
+            clearButton.disabled = !(store.entries || []).length;
+            clearButton.setAttribute("data-store-id", String(store.storeId));
+        }
+        timeline.innerHTML = visibleEntries.map(entry => {
+            const outcome = workLogOutcome(entry);
+            const meta = WORK_LOG_OUTCOME[outcome];
+            return `<article class="log-event outcome-${meta.className}">
+                <span class="log-event-line" aria-hidden="true"></span>
+                <div class="log-event-card">
+                    <div class="log-event-head"><time datetime="${escapeHtml(entry.at || "")}">${escapeHtml(formatWorkLogTime(entry.at))}</time><span class="log-outcome-badge">${meta.label}</span><strong>${escapeHtml(WORK_LOG_LABEL[entry.type] || entry.type || "操作")}</strong></div>
+                    <p>${escapeHtml(entry.message || "无补充说明")}</p>
+                    <div class="log-event-meta"><span>任务 ${escapeHtml(entry.jobId || "—")}</span><span>SPU ${escapeHtml(entry.spuId || "—")}</span>${entry.sourceStoreName || entry.sourceStoreId ? `<span>来源 ${escapeHtml(entry.sourceStoreName || entry.sourceStoreId)}</span>` : ""}</div>
+                </div>
+            </article>`;
+        }).join("") || `<p class="workspace-empty">该店铺在最近 15 天内没有符合当前筛选条件的记录。</p>`;
+    };
+    const applyFilters = () => {
+        const query = String(search?.value || "").trim().toLocaleLowerCase();
+        const outcome = outcomeFilter?.value || "";
+        const type = typeFilter?.value || "";
+        const startAt = timeStart();
+        let visibleStoreCount = 0;
+        let visibleEntryCount = 0;
+        const visibleByStore = new Map();
+        const hasRecordFilter = Boolean(outcome || type || startAt);
+        stores.forEach(store => {
+            const storeSearch = [store.storeName, store.storeId, ...workLogStoreSourceLabels(store)].filter(Boolean).join(" ").toLocaleLowerCase();
+            const storeMatches = !query || storeSearch.includes(query);
+            const matchedEntries = (store.entries || []).filter(entry => entryMatches(entry, query, outcome, type, startAt));
+            // 默认保留零日志店铺，便于确认全量店铺是否已接入；启用记录条件后再隐藏无匹配店铺。
+            const visibleEntries = storeMatches && !hasRecordFilter ? (store.entries || []) : matchedEntries;
+            const showStore = storeMatches && (!hasRecordFilter || visibleEntries.length > 0);
+            visibleByStore.set(String(store.storeId), visibleEntries);
+            const nav = navButtons.find(button => button.getAttribute("data-log-store") === String(store.storeId));
+            if (nav) {
+                nav.hidden = !showStore;
+                const count = nav.querySelector("[data-store-visible-count]");
+                if (count) count.textContent = visibleEntries.length;
+            }
+            if (showStore) {
+                visibleStoreCount += 1;
+                visibleEntryCount += visibleEntries.length;
+            }
+        });
+        const selectedStoreVisible = navButtons.find(button => button.getAttribute("data-log-store") === String(selectedStoreId))?.hidden === false;
+        if (!selectedStoreVisible) {
+            selectedStoreId = stores.find(store => navButtons.find(button => button.getAttribute("data-log-store") === String(store.storeId))?.hidden === false)?.storeId || "";
+        }
+        navButtons.forEach(button => button.classList.toggle("active", button.getAttribute("data-log-store") === String(selectedStoreId)));
+        const selectedStore = stores.find(store => String(store.storeId) === String(selectedStoreId));
+        renderTimeline(selectedStore, selectedStore ? visibleByStore.get(String(selectedStore.storeId)) || [] : []);
+        if (visibleStores) visibleStores.textContent = `${visibleStoreCount} 家`;
+        if (detailMeta && selectedStore) detailMeta.textContent += ` · 共 ${visibleEntryCount} 条结果`;
+        if (noResults) noResults.hidden = visibleEntryCount !== 0 || stores.length === 0;
+    };
+    navButtons.forEach(button => button.addEventListener("click", () => {
+        selectedStoreId = button.getAttribute("data-log-store") || "";
+        applyFilters();
+    }));
+    search?.addEventListener("input", applyFilters);
+    [outcomeFilter, typeFilter, timeFilter].forEach(control => control?.addEventListener("change", applyFilters));
+    applyFilters();
 }
 
 /**
@@ -1478,7 +2142,7 @@ async function route() {
     const hash = location.hash || "#/";
     try {
         if (hash === "#/" || hash === "#") {
-            renderHome(await api("/temu/api/overview"));
+            await renderHome(await api("/temu/api/overview"));
             return;
         }
         if (hash === "#/products") {
@@ -1567,17 +2231,16 @@ function captureViewState() {
         const element = document.getElementById(id);
         if (element && element.innerHTML) panels[id] = element.innerHTML;
     });
-    const details = {};
-    app.querySelectorAll("[data-work-log-store]").forEach((element) => {
-        details[element.getAttribute("data-store-id") || ""] = element.open;
-    });
+    const workLogStore = app.querySelector("[data-log-store].active")?.getAttribute("data-log-store") || "";
+    const taskView = app.querySelector("[data-task-view-button].active")?.getAttribute("data-task-view-button") || "";
     const active = document.activeElement;
     const activeKey = active && app.contains(active) ? controlKey(active) : "";
     return {
         hash: location.hash || "#/",
         scrollY: window.scrollY,
         panels,
-        details,
+        workLogStore,
+        taskView,
         controls,
         focus: activeKey ? { key: activeKey, start: active.selectionStart, end: active.selectionEnd } : null
     };
@@ -1598,8 +2261,8 @@ function restoreViewState(state) {
         if (element.multiple) [...element.options].forEach((option) => { option.selected = item.value.includes(option.value); });
         else element.value = item.value;
     }
-    ["product-search", "work-log-search"].forEach((id) => document.getElementById(id)?.dispatchEvent(new Event("input")));
-    ["source-store-filter", "batch-target-stores", "work-log-store-filter", "job-batch"].forEach((id) => document.getElementById(id)?.dispatchEvent(new Event("change")));
+    ["product-search", "work-log-search", "job-product-search", "store-runtime-search"].forEach((id) => document.getElementById(id)?.dispatchEvent(new Event("input")));
+    ["source-store-filter", "batch-target-stores", "work-log-outcome", "work-log-type", "work-log-time", "job-batch", "job-target-store", "store-runtime-filter"].forEach((id) => document.getElementById(id)?.dispatchEvent(new Event("change")));
     checks.forEach(([element, checked]) => {
         element.checked = checked;
         element.dispatchEvent(new Event("change"));
@@ -1608,10 +2271,12 @@ function restoreViewState(state) {
         const element = document.getElementById(id);
         if (element) element.innerHTML = html;
     });
-    Object.entries(state.details).forEach(([storeId, open]) => {
-        const element = app.querySelector(`[data-work-log-store][data-store-id="${CSS.escape(storeId)}"]`);
-        if (element) element.open = open;
-    });
+    if (state.workLogStore) {
+        app.querySelector(`[data-log-store="${CSS.escape(state.workLogStore)}"]`)?.click();
+    }
+    if (state.taskView) {
+        app.querySelector(`[data-task-view-button="${CSS.escape(state.taskView)}"]`)?.click();
+    }
     if (state.focus) {
         const target = findControl(state.focus.key);
         if (target) {

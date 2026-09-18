@@ -14,6 +14,20 @@ export function createStore(rootDir) {
     const indexPath = path.join(dataDir, "index.json");
     let mutationQueue = Promise.resolve();
 
+    /**
+     * 红标按“来源店 + SPU”记录：一个店铺的一个商品单独标记，不按货号合并。
+     * 货号可能被重建新商品复用，按货号标记会误伤后来的正常商品；SPU 才是这一件商品的稳定标识。
+     */
+    function blockedProductKey(storeId, spuId) {
+        return `${String(storeId || "").trim()}\u0000${String(spuId || "").trim()}`;
+    }
+
+    /** 红标表与商品行分开保存：商品行每次读取都由批次重建，标记必须独立持久化才不会被重建清掉。 */
+    function readBlockedMap(index) {
+        const map = index && index.blockedProducts;
+        return map && typeof map === "object" && !Array.isArray(map) ? map : {};
+    }
+
     async function ensure() {
         await mkdir(filesDir, { recursive: true });
         try {
@@ -138,6 +152,20 @@ export function createStore(rootDir) {
             }
         }
         index.products = [...rows.values()].map(finalizeProductRow);
+        // 红标只影响展示与“能否再上传”，在商品行重建后统一贴上，避免标记与批次重建互相覆盖。
+        const blocked = readBlockedMap(index);
+        const entries = Object.entries(blocked).filter(([, item]) => item && typeof item === "object");
+        for (const product of index.products) {
+            const matched = entries.filter(([key]) => {
+                const [storeId, spuId] = key.split("\u0000");
+                return (product.sourceStoreIds || []).includes(storeId) && (product.spuIds || []).includes(spuId);
+            });
+            if (!matched.length) continue;
+            const latest = matched.map(([, item]) => item).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+            product.blocked = true;
+            product.blockedReason = String(latest.reason || "上传失败，来源资料需要修正后重新采集").slice(0, 300);
+            product.blockedAt = String(latest.at || "");
+        }
     }
 
     /**
@@ -182,6 +210,7 @@ export function createStore(rootDir) {
             attributes: [],
             sources: [],
             batchIds: [],
+            sourceStoreIds: [],
             ready: false,
             completeness: {}
         };
@@ -218,6 +247,8 @@ export function createStore(rootDir) {
             }
             current.sources = [...new Set(current.sources.concat(product.sources || []))];
             current.batchIds = [...new Set(current.batchIds.concat(batch.id))];
+            // 红标按“来源店 + SPU”判定，行内必须记住自己来自哪些来源店，不能只留下批次 ID。
+            if (batch.sourceStoreId) current.sourceStoreIds = [...new Set((current.sourceStoreIds || []).concat(String(batch.sourceStoreId)))];
         }
         // SPU 取“带完整发布资料的那一条”：上传任务按 (来源批次, SPU) 取快照，
         // 两者必须来自同一次采集，错位会取不到商品。没有发布资料时退回第一条 SPU。
@@ -413,9 +444,147 @@ export function createStore(rootDir) {
             source: options.source || (options.seed ? "seed" : "upload")
         };
         index.batches.unshift(batch);
+        // 重新采集并入库即视为“这件商品已按新资料覆盖”，解除红标；清除条件必须是重新采集，手工删除库存不解除。
+        const incomingStoreId = batch.sourceStoreId || options.sourceStoreId || "";
+        const incomingSpuIds = parsed.products.map((product) => String(product.spuId || "")).filter(Boolean);
+        if (incomingStoreId && incomingSpuIds.length) {
+            const blocked = readBlockedMap(index);
+            let cleared = 0;
+            for (const spuId of incomingSpuIds) {
+                const key = blockedProductKey(incomingStoreId, spuId);
+                if (!blocked[key]) continue;
+                delete blocked[key];
+                cleared += 1;
+            }
+            if (cleared) index.blockedProducts = blocked;
+        }
         rebuildProducts(index);
         await writeIndex(index);
         return { batch, reused: false, warnings: parsed.warnings };
+    }
+
+    /**
+     * 标记一件商品上传失败，禁止再次上传，直到它被重新采集覆盖。
+     * 只接受来源店 + SPU：服务器不判断商品内容缺什么，只记录“这件上传没过”这个事实；
+     * 重复命中（目标店已存在同款）不算内容缺失，由调用方过滤，不能标红。
+     */
+    async function markProductBlocked({ storeId, spuId, reason } = {}) {
+        const key = blockedProductKey(storeId, spuId);
+        const [store, spu] = key.split("\u0000");
+        if (!store || !spu) {
+            const error = new Error("标记失败商品需要来源店和 SPU");
+            error.status = 400;
+            throw error;
+        }
+        const run = mutationQueue.then(async () => {
+            await ensure();
+            const index = JSON.parse(await readFile(indexPath, "utf8"));
+            const blocked = readBlockedMap(index);
+            const previous = blocked[key];
+            blocked[key] = {
+                storeId: store,
+                spuId: spu,
+                reason: String(reason || "").slice(0, 300),
+                at: new Date().toISOString(),
+                // 同一件商品被标记的次数用于排查反复失败，不参与是否标红的判断。
+                count: Number(previous && previous.count ? previous.count : 0) + 1
+            };
+            index.blockedProducts = blocked;
+            await writeIndex(index);
+            return { blocked: true, key, ...blocked[key] };
+        });
+        mutationQueue = run.catch(() => {});
+        return run;
+    }
+
+    /**
+     * 重新采集覆盖后解除红标：只按来源店 + SPU 解除，不影响同店其他商品。
+     * 解除条件是“这份商品被重新采集入库”，因此由导入路径按 SPU 精确调用。
+     */
+    async function clearProductBlocked(storeId, spuIds) {
+        const store = String(storeId || "").trim();
+        const ids = [...new Set((Array.isArray(spuIds) ? spuIds : []).map((value) => String(value || "").trim()).filter(Boolean))];
+        if (!store || !ids.length) return { cleared: 0 };
+        const run = mutationQueue.then(async () => {
+            await ensure();
+            const index = JSON.parse(await readFile(indexPath, "utf8"));
+            const blocked = readBlockedMap(index);
+            let cleared = 0;
+            for (const spuId of ids) {
+                const key = blockedProductKey(store, spuId);
+                if (!blocked[key]) continue;
+                delete blocked[key];
+                cleared += 1;
+            }
+            if (!cleared) return { cleared: 0 };
+            index.blockedProducts = blocked;
+            await writeIndex(index);
+            return { cleared };
+        });
+        mutationQueue = run.catch(() => {});
+        return run;
+    }
+
+    /**
+     * 网页人工解除红标：按 SPU 反查它所属的来源店后清除标记。
+     * 与 clearProductBlocked 的区别是调用方只有 SPU（商品库一行可能来自多个来源店），
+     * 因此这里按行内记录的来源店逐个解除，避免漏掉或误清其他店的同名 SPU。
+     */
+    async function unblockProducts(spuIds) {
+        const ids = [...new Set((Array.isArray(spuIds) ? spuIds : []).map((value) => String(value || "").trim()).filter(Boolean))];
+        if (!ids.length) {
+            const error = new Error("需要选择 1 个以上商品");
+            error.status = 400;
+            throw error;
+        }
+        const run = mutationQueue.then(async () => {
+            await ensure();
+            const index = JSON.parse(await readFile(indexPath, "utf8"));
+            const blocked = readBlockedMap(index);
+            // 先按当前商品表反查每个 SPU 的来源店；索引里找不到时退回扫描红标表自身的 storeId。
+            const storeIdsBySpu = new Map();
+            for (const product of index.products || []) {
+                for (const spuId of [product.spuId, ...(product.spuIds || [])]) {
+                    const key = String(spuId || "").trim();
+                    if (!key) continue;
+                    const current = storeIdsBySpu.get(key) || new Set();
+                    (product.sourceStoreIds || []).forEach((storeId) => current.add(String(storeId)));
+                    storeIdsBySpu.set(key, current);
+                }
+            }
+            let cleared = 0;
+            const missing = [];
+            for (const spuId of ids) {
+                const storeIds = storeIdsBySpu.get(spuId);
+                let hit = false;
+                if (storeIds && storeIds.size) {
+                    for (const storeId of storeIds) {
+                        const key = blockedProductKey(storeId, spuId);
+                        if (!blocked[key]) continue;
+                        delete blocked[key];
+                        cleared += 1;
+                        hit = true;
+                    }
+                }
+                if (!hit) {
+                    // 商品表里查不到来源店时退回按红标表匹配，保证标记能被解除而不是卡住。
+                    for (const key of Object.keys(blocked)) {
+                        const [storeId, blockedSpu] = key.split("\u0000");
+                        if (blockedSpu !== spuId) continue;
+                        delete blocked[key];
+                        cleared += 1;
+                        hit = true;
+                    }
+                }
+                if (!hit) missing.push(spuId);
+            }
+            if (!cleared) return { cleared: 0, missing };
+            index.blockedProducts = blocked;
+            await writeIndex(index);
+            return { cleared, missing };
+        });
+        mutationQueue = run.catch(() => {});
+        return run;
     }
 
     async function listOverview() {
@@ -434,6 +603,8 @@ export function createStore(rootDir) {
             fileCount: index.batches.reduce((sum, batch) => sum + (batch.files || []).length, 0),
             // 保留该字段兼容旧客户端；新删除语义会物理清理记录，因此正常状态下始终为 0。
             excludedCount: (index.excludedSpuIds || []).length,
+            // 已判定上传失败、禁止再传的商品数；解除条件是重新采集覆盖。
+            blockedCount: products.filter((item) => item.blocked).length,
             batches: index.batches.map(summarizeBatch),
             products
         };
@@ -683,7 +854,7 @@ export function createStore(rootDir) {
         return { updated };
     }
 
-    return { ensure, importFiles, deleteProducts, listOverview, indexSignature, getBatch, getProduct, readStoredFile, attachSourceStore, filesDir };
+    return { ensure, importFiles, deleteProducts, markProductBlocked, clearProductBlocked, unblockProducts, listOverview, indexSignature, getBatch, getProduct, readStoredFile, attachSourceStore, filesDir };
 }
 
 const PRODUCT_ID_SCALAR_KEYS = new Set(["productid", "spuid", "pageproductid"]);

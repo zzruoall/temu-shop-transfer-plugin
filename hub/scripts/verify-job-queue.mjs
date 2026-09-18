@@ -548,7 +548,8 @@ assert.ok(uploadedLog.entries.some((entry) => entry.jobId === manualJob.id && en
 assert.ok(uploadedLog.stores.some((store) => store.storeId === "30000000000000" && store.entries.some((entry) => entry.type === "plugin_uploaded")));
 await queue.clearStoreActivity("30000000000000");
 const clearedLog = await queue.listActivity();
-assert.equal(clearedLog.stores.some((store) => store.storeId === "30000000000000"), false);
+// 清日志只删除操作记录，不把已登记店铺从索引里移除；运营仍需要看到该店在线状态和空时间线。
+assert.equal(clearedLog.stores.some((store) => store.storeId === "30000000000000" && store.entries.length === 0), true);
 
 // 人工上传的“部分完成”仍有未完成商品，必须保持为活跃任务：不能重复派发，并且允许运营取消余项。
 const partialManual = await queue.createJob({

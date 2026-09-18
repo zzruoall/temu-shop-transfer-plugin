@@ -31,13 +31,19 @@ const OPEN_LEASE_MS = 3 * 60 * 1000;
 // 插件每 8 秒发送一次心跳；超过这个窗口的实例不能被网页误认为可接收任务。
 const AGENT_ONLINE_MS = 35 * 1000;
 const MAX_JOBS = 200;
+// 运营可能维护上百家店铺，Agent 索引不能沿用早期的 50 家上限，否则旧店铺会被静默淘汰。
+const MAX_AGENTS = 500;
 const MAX_MANUAL_TARGET_TASKS = 30;
 const MAX_MANUAL_TARGET_TASK_BYTES = 4 * 1024 * 1024;
-const WORK_LOG_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
-const MAX_STORE_WORK_LOG_ENTRIES = 400;
+const WORK_LOG_RETENTION_MS = 15 * 24 * 60 * 60 * 1000;
+const MAX_STORE_WORK_LOG_ENTRIES = 2000;
 // 已开始提交但长时间没有任何进度更新的项目，视为插件中途掉线留下的残局；
 // 这个阈值必须远大于一次正常的重复检索加预检耗时，避免人工重试打断仍在提交中的插件。
 const DIRECT_STALE_MS = 10 * 60 * 1000;
+// 平台临时故障（系统异常/限流/超时）自动重试的次数与退避基数：资料没问题，抖动通常几次内就恢复。
+// 超过次数仍失败才落终态并标红，避免一件完好商品因平台抖动被要求重新采集。
+const DIRECT_AUTO_RETRY_LIMIT = 3;
+const DIRECT_AUTO_RETRY_DELAY_MS = 20 * 1000;
 const TERMINAL_JOB_STATUSES = new Set(["cancelled", "failed", "identity_verified", "uploaded"]);
 const ACTIVE_ITEM_STATUSES = new Set(["queued", "opening", "opened", "claimed", "received", "upload_opened", "plugin_missing", "retry_wait"]);
 // 会真正走到平台提交、或已被插件接手准备提交的状态；人工重试据此保证同店同货号只有一个在途项。
@@ -180,7 +186,7 @@ function workLogFileName(storeId) {
     return `${createHash("sha1").update(asText(storeId) || "unknown-store").digest("hex")}.json`;
 }
 
-/** 超过 3 天的操作不再展示，也不再写回店铺日志文件。 */
+/** 超过 15 天的操作不再展示，也不再写回店铺日志文件。 */
 function isWorkLogFresh(entry, nowMs = Date.now()) {
     const at = Date.parse(asText(entry && entry.at));
     return Number.isFinite(at) && nowMs - at >= 0 && nowMs - at <= WORK_LOG_RETENTION_MS;
@@ -384,6 +390,24 @@ export function createJobQueue(rootDir, store) {
     const workLogDir = path.join(dataDir, "work-logs");
     let mutation = Promise.resolve();
 
+    /**
+     * 上传失败后给来源商品标红，并禁止它再次上传，直到被重新采集覆盖。
+     * 判重命中（目标店已存在同款）不算内容缺失，不能标红：否则运营会去重抓一件本来完好的商品，
+     * 还会连带禁掉这件商品发给其他目标店。服务器只按这个事实记录，不解读商品缺了什么字段。
+     */
+    async function markBlockedFromFailure(job, item) {
+        if (!store || typeof store.markProductBlocked !== "function") return;
+        const reason = asText(item.reason);
+        if (!reason) return;
+        // 只有"平台明确拒绝商品内容"才标红并要求重新采集来源商品；以下情况都不算内容缺失：
+        // - 判重命中：目标店已存在同款，是正常结果；
+        // - 预检未走到平台（环境/结构问题，如页面未就绪、类目模板查询失败）：重试即可，不是商品问题；
+        // - 回查未通过：平台已经返回商品ID、商品创建成功，只是我们没读到结果。
+        if (reason.includes("已存在商品") || reason.includes("未重复创建") || reason.includes("批次内已有相同货号")) return;
+        if (reason.includes("prepare:") || reason.includes("preflight") || reason.includes("回查未通过")) return;
+        await store.markProductBlocked({ storeId: job.sourceStoreId, spuId: item.spuId, reason }).catch(() => {});
+    }
+
     function workLogPath(storeId) {
         return path.join(workLogDir, workLogFileName(storeId));
     }
@@ -579,7 +603,7 @@ export function createJobQueue(rootDir, store) {
                 ? (state.agents || []).indexOf(existing)
                 : -1;
             if (index >= 0) state.agents[index] = { ...existing, ...agent };
-            else state.agents = [agent, ...(state.agents || [])].slice(0, 50);
+            else state.agents = [agent, ...(state.agents || [])].slice(0, MAX_AGENTS);
             await writeState(state);
             const saved = index >= 0 ? state.agents[index] : agent;
             if (saved.storeId && typeof store.attachSourceStore === "function") {
@@ -629,6 +653,16 @@ export function createJobQueue(rootDir, store) {
             const overview = await store.listOverview();
             const state = await readState();
             if (missingIds.length) throw httpError(`来源批次中没有这些 SPU：${missingIds.join("、")}`, 400);
+            // 标红商品在上传失败后禁止再次上传：必须回来源店修正资料并重新采集覆盖，红标才会解除。
+            // 这里只拦“已被判定上传没过”的商品，不代表服务器替目标店铺判断商品内容。
+            const blockedIds = requestedIds.filter((spuId) => {
+                const row = (overview.products || []).find((product) => (product.spuIds || [product.spuId]).includes(spuId));
+                return Boolean(row && row.blocked);
+            });
+            if (blockedIds.length) {
+                const first = (overview.products || []).find((product) => (product.spuIds || [product.spuId]).includes(blockedIds[0]));
+                throw httpError(`这些商品上次上传失败，已标红禁止再传：${blockedIds.join("、")}。请在来源店修正资料后重新采集覆盖（原因：${asText(first && first.blockedReason) || "上传失败"}）`, 409);
+            }
             // 网页只允许下发给已经由本机工人核验、且近期仍在心跳的新版插件。
             // 这条检查是“选择目标店”与“实际能接收到商品包”之间的必要因果约束。
             const targetAgent = (state.agents || []).find((agent) => asText(agent.storeId) === targetStoreId);
@@ -770,7 +804,43 @@ export function createJobQueue(rootDir, store) {
                 refreshJobStatus(job);
                 job.updatedAt = item.directUpdatedAt;
                 await writeState(state);
+                await markBlockedFromFailure(job, item);
                 return {attemptId:item.directAttemptId, state:item.directState};
+            }
+            // 平台临时故障（系统异常/限流/超时）：商品资料没有问题，同一份资料稍后重试通常就能成功。
+            // 这里必须与“确定性拒绝”分开：不标红、不改终态，只把项目放回可重试队列并按退避时间重排，
+            // 否则一件完好的商品会因为平台抖动被标红，运营被迫去重新采集来源商品。
+            if (phase === "transient") {
+                if (item.directAttemptId && item.directAttemptId !== asText(input.attemptId)) throw httpError("创建结果不能覆盖当前任务", 409);
+                const used = Number(item.directAutoRetryCount || 0);
+                if (used >= DIRECT_AUTO_RETRY_LIMIT) {
+                    // 自动重试次数用尽仍失败，说明不是一次抖动；此时才落终态并标红，交由人工处理。
+                    item.directState = "preflight_failed";
+                    item.status = "failed";
+                    item.reason = `平台连续 ${used} 次临时故障，已停止自动重试：${asText(input.reason).slice(0, 800)}`;
+                    item.directUpdatedAt = new Date().toISOString();
+                    await appendJobActivity(job, "direct_preflight_failed", {actor:"local-cli",storeId:job.targetStoreId,spuId:item.spuId,message:item.reason});
+                    refreshJobStatus(job);
+                    job.updatedAt = item.directUpdatedAt;
+                    await writeState(state);
+                    await markBlockedFromFailure(job, item);
+                    return {attemptId:item.directAttemptId, state:item.directState};
+                }
+                item.directAutoRetryCount = used + 1;
+                // 清除本次 attempt 占位，让插件可以重新申请创建许可；旧 attempt 编号随之作废。
+                item.directState = "";
+                item.directAttemptId = "";
+                item.authorizationKey = "";
+                item.requestHash = "";
+                item.status = "retry_wait";
+                item.reason = `平台临时故障，第 ${used + 1}/${DIRECT_AUTO_RETRY_LIMIT} 次自动重试排队中：${asText(input.reason).slice(0, 800)}`;
+                item.directUpdatedAt = new Date().toISOString();
+                item.retryAt = new Date(Date.now() + DIRECT_AUTO_RETRY_DELAY_MS * (used + 1)).toISOString();
+                await appendJobActivity(job, "direct_transient_retry", {actor:"local-cli",storeId:job.targetStoreId,spuId:item.spuId,message:item.reason});
+                refreshJobStatus(job);
+                job.updatedAt = item.directUpdatedAt;
+                await writeState(state);
+                return {attemptId:"", state:"retry_wait"};
             }
             // 已授权回执允许短时离线后补传；只有新授权必须核验在线状态。
             if (["begin", "preflight_failed"].includes(phase) && !isAgentOnline(agent)) throw httpError("目标插件离线，不能开始创建", 409);
@@ -817,6 +887,7 @@ export function createJobQueue(rootDir, store) {
             refreshJobStatus(job);
             job.updatedAt = item.directUpdatedAt;
             await writeState(state);
+            if (item.status === "failed") await markBlockedFromFailure(job, item);
             return {attemptId:item.directAttemptId, state:item.directState};
         });
     }
@@ -1059,7 +1130,7 @@ export function createJobQueue(rootDir, store) {
             };
             const nextAgent = agent;
             if (targetIndex >= 0) state.agents[targetIndex] = nextAgent;
-            else state.agents = [nextAgent, ...(state.agents || [])].slice(0, 50);
+            else state.agents = [nextAgent, ...(state.agents || [])].slice(0, MAX_AGENTS);
             await writeState(state);
             return { storeId, storeName, claimed };
         });
@@ -1313,20 +1384,36 @@ export function createJobQueue(rootDir, store) {
                     entries
                 });
             }
-            if (!entries.length) continue;
+            const agent = (state.agents || []).find((item) => asText(item.storeId) === storeId);
             const visible = entries.slice().sort((left, right) => String(right.at).localeCompare(String(left.at)));
             stores.push({
                 storeId,
-                storeName: asText(value.storeName) || storeId,
+                storeName: asText(value.storeName) || asText(agent?.storeName || agent?.pageStoreName) || storeId,
                 sourceStoreId: asText(value.sourceStoreId),
                 sourceStoreName: asText(value.sourceStoreName),
-                updatedAt: asText(value.updatedAt) || visible[0].at,
+                online: Boolean(agent && isAgentOnline(agent, nowMs)),
+                updatedAt: asText(value.updatedAt) || asText(visible[0]?.at) || asText(agent?.lastSeenAt),
                 entries: visible
+            });
+        }
+        // 已登记但最近 15 天没有操作的店铺也要出现在日志索引里，运营才能确认店是否接入、是否离线。
+        const indexedStoreIds = new Set(stores.map((item) => asText(item.storeId)));
+        for (const agent of state.agents || []) {
+            const storeId = asText(agent.storeId);
+            if (!storeId || indexedStoreIds.has(storeId)) continue;
+            stores.push({
+                storeId,
+                storeName: asText(agent.storeName || agent.pageStoreName) || storeId,
+                sourceStoreId: "",
+                sourceStoreName: "",
+                online: isAgentOnline(agent, nowMs),
+                updatedAt: asText(agent.lastSeenAt),
+                entries: []
             });
         }
         stores.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
         return {
-            retentionDays: 3,
+            retentionDays: 15,
             stores,
             entries: stores.flatMap((store) => store.entries)
         };

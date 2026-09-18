@@ -7,16 +7,16 @@
   "scripts": {
     "start": "node server.mjs",
     "start:all": "node start-all.mjs",
-    "verify": "node scripts/verify-ingest-queue.mjs && node scripts/verify-page-context.mjs && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-full-capture.mjs && node scripts/verify-inbox-transfer.mjs && node scripts/verify-ingest.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-job-queue.mjs && node scripts/verify-live-refresh.mjs && node scripts/verify-direct-prepare-fields.mjs && node scripts/verify-direct-stop.mjs && node scripts/verify-direct-verify-page.mjs && node scripts/verify-direct-verify-fallback.mjs && node scripts/verify-direct-create.mjs",
+    "verify": "node scripts/verify-ingest-queue.mjs && node scripts/verify-page-context.mjs && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-full-capture.mjs && node scripts/verify-inbox-transfer.mjs && node scripts/verify-ingest.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-job-queue.mjs && node scripts/verify-live-refresh.mjs && node scripts/verify-direct-prepare-fields.mjs && node scripts/verify-direct-stop.mjs && node scripts/verify-direct-verify-page.mjs && node scripts/verify-direct-verify-fallback.mjs && node scripts/verify-direct-no-code.mjs && node scripts/verify-direct-transient.mjs && node scripts/verify-direct-create.mjs && node scripts/verify-blocked-products.mjs",
     "verify:live": "node scripts/verify-full-capture-live.mjs",
     "verify:api": "node scripts/verify-api-batch.mjs",
     "verify:downloads": "node scripts/verify-download-discovery.mjs",
     "verify:operations": "node scripts/verify-operation-log.mjs",
     "verify:selection": "node scripts/verify-plugin-selection.mjs",
     "verify:panel": "node scripts/verify-panel-shell.mjs",
-    "verify:prepare": "node scripts/verify-direct-prepare-fields.mjs"
-    ,"verify:direct-stop": "node scripts/verify-direct-stop.mjs"
-    ,"verify:verify-fallback": "node scripts/verify-direct-verify-fallback.mjs"
-    ,"verify:verify-page": "node scripts/verify-direct-verify-page.mjs"
+    "verify:prepare": "node scripts/verify-direct-prepare-fields.mjs",
+    "verify:direct-stop": "node scripts/verify-direct-stop.mjs",
+    "verify:verify-fallback": "node scripts/verify-direct-verify-fallback.mjs",
+    "verify:verify-page": "node scripts/verify-direct-verify-page.mjs"
   }
 }
