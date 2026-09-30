@@ -66,9 +66,11 @@ const overflowed = queue.upsertJobWithEviction(overflowSeed, {
     allowedSpuIds: ["99"],
     createdAt: "2026-08-26T04:01:00.000Z"
 }, now);
+// 满额时保留原有 10 个任务并拒绝新任务：等待核对的旧采集包不能被静默丢弃。
 assert(overflowed.jobs.length === 10, "队列没有维持 10 个任务上限");
-assert(overflowed.evicted.length === 1 && overflowed.evicted[0].allowedSpuIds[0] === "1", "第 11 个任务没有显式淘汰最早任务");
-assert(!overflowed.jobs.some((job) => job.allowedSpuIds[0] === "1"), "被淘汰任务仍留在队列里");
+assert(overflowed.evicted.length === 1 && overflowed.evicted[0].allowedSpuIds[0] === "99", "满额时没有拒绝新任务");
+assert(overflowed.jobs.some((job) => job.allowedSpuIds[0] === "1"), "满额时淘汰了尚待核对的旧任务");
+assert(!overflowed.jobs.some((job) => job.allowedSpuIds[0] === "99"), "被拒绝的新任务仍留在队列里");
 
 const doneOutcome = queue.upsertOutcome([], {
     fingerprint: first.fingerprint,

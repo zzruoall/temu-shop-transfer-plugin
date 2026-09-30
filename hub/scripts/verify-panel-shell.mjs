@@ -178,6 +178,33 @@ async function panelState(client) {
     `);
 }
 
+/** 宿主位置必须在当前视口内；fixed 元素若同时没有 top/bottom 会落到文档流末端。 */
+async function panelHostState(page, hostId) {
+    return page.evaluate((id) => {
+        const host = document.getElementById(id);
+        const rect = host && host.getBoundingClientRect();
+        return {
+            present: Boolean(host),
+            hidden: host ? Boolean(host.hidden) : null,
+            top: host ? host.style.top : "",
+            bottom: host ? host.style.bottom : "",
+            rect: rect ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right } : null,
+            viewport: { width: window.innerWidth, height: window.innerHeight }
+        };
+    }, hostId);
+}
+
+/** 统一用 1px 容差判断可见性，避免浏览器小数像素在边缘产生假失败。 */
+function assertPanelWithinViewport(state, label) {
+    assert.equal(state.present, true, `${label}：面板宿主不存在`);
+    assert.equal(state.hidden, false, `${label}：面板宿主被隐藏`);
+    assert.ok(state.rect, `${label}：读取不到面板位置`);
+    assert.ok(state.rect.top >= -1, `${label}：面板顶部超出视口，实际 ${JSON.stringify(state)}`);
+    assert.ok(state.rect.bottom <= state.viewport.height + 1, `${label}：面板底部超出视口，实际 ${JSON.stringify(state)}`);
+    assert.ok(state.rect.left >= -1, `${label}：面板左侧超出视口，实际 ${JSON.stringify(state)}`);
+    assert.ok(state.rect.right <= state.viewport.width + 1, `${label}：面板右侧超出视口，实际 ${JSON.stringify(state)}`);
+}
+
 /**
  * 停止接口创建按钮的真实状态。
  * 判定依据必须是渲染结果而不是按钮是否存在：按钮一直在 DOM 里，未识别到本店任务时靠 hidden 收敛，
@@ -232,7 +259,9 @@ try {
     });
     await context.route("**/*", route => {
         const url = route.request().url();
-        if (url.startsWith("https://agentseller.temu.com/goods/list")) {
+        // 列表页与新建商品页都要能打开：后者用于验证面板不出现在非工作页上。
+        if (url.startsWith("https://agentseller.temu.com/goods/list")
+            || url.startsWith("https://agentseller.temu.com/goods/create")) {
             return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: fixtureHtml() });
         }
         return route.abort();
@@ -253,6 +282,43 @@ try {
     assert.equal(initial.logsVisible, false, "折叠时导出操作日志不应可见");
     assert.equal(initial.toggleText, "展开", `折叠态按钮文案应为展开，实际 ${initial.toggleText}`);
     assert.equal(initial.miniVisible, true, "折叠态应能看到收缩为小球的入口");
+    // 无历史坐标时必须保留右下角默认锚点，不能再出现 top/bottom 同时为 auto。
+    const initialHost = await panelHostState(page, "temu-local-dataset-panel");
+    assert.equal(initialHost.top, "auto", `无历史位置时 top 应为 auto，实际 ${JSON.stringify(initialHost)}`);
+    assert.equal(initialHost.bottom, "18px", `无历史位置时应保留右下角锚点，实际 ${JSON.stringify(initialHost)}`);
+    assertPanelWithinViewport(initialHost, "首次挂载");
+
+    // 旧窗口留下的超远纵坐标必须按当前视口夹取；展开后高度增加也要继续留在视口内。
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await page.evaluate((hostId) => {
+        localStorage.setItem("temu-local-dataset-panel-state-v1", JSON.stringify({
+            side: "right",
+            top: "5000px",
+            compact: false
+        }));
+    }, "temu-local-dataset-panel");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
+    const restoredHost = await panelHostState(page, "temu-local-dataset-panel");
+    assert.notEqual(restoredHost.top, "auto", `历史位置恢复后应使用顶部定位，实际 ${JSON.stringify(restoredHost)}`);
+    assertPanelWithinViewport(restoredHost, "历史位置恢复");
+    await clickPanelNode(client, "toggle");
+    /**
+     * 展开后要等夹取真正生效再断言。
+     *
+     * 夹取由 ResizeObserver 异步触发；固定 100ms 在慢机器上可能早于回调，
+     * 让这条断言时有时无（实测同一份代码 3 次里失败 1 次）。
+     * 这里等到"面板底部回到视口内"或超时，让结论可重复；
+     * 超时后仍由 assertPanelWithinViewport 给出具体数值，不掩盖失败。
+     */
+    await page.waitForFunction(() => {
+        const host = document.getElementById('temu-local-dataset-panel');
+        if (!host) return false;
+        const rect = host.getBoundingClientRect();
+        return rect.bottom <= window.innerHeight + 1 && rect.height > 0;
+    }, null, { timeout: 3000 }).catch(() => { /* 超时后由下面的断言给出具体数值 */ });
+    assertPanelWithinViewport(await panelHostState(page, "temu-local-dataset-panel"), "展开工具后");
+    await clickPanelNode(client, "toggle");
 
     // 关键回归：点的必须是“展开工具”，而不是把整块面板收缩成小球。
     await clickPanelNode(client, "toggle");
@@ -288,50 +354,91 @@ try {
     assert.equal(restored.miniVisible, true, "还原后应重新显示收缩入口");
 
     // 停止接口创建按钮：没有本店待办时不应占位，否则面板长期挂一个点了没反应的按钮。
+    // 协议 1 的店铺在未点"启用本轮"前即为停止态：按钮显示"启用本轮"是正常初始状态。
+    // 注意：启用/停止轮次需要服务端参与（/api/jobs/execution-run），本测试用 route.abort()
+    // 切断全部网络，所以这里只核对初始渲染与文案，不模拟需要服务端的往返；
+    // 轮次启停的语义由 verify-execution-runs.mjs 在服务端侧覆盖。
     const idle = await stopButtonState(client);
-    assert.equal(idle.visible, false, `无本店任务时停止按钮不应可见，实际 ${JSON.stringify(idle)}`);
-    assert.equal(idle.text, "停止接口创建", `无任务时按钮文案应为停止接口创建，实际 ${idle.text}`);
-    assert.equal(idle.disabled, false, "无任务时按钮不应被禁用，否则后台恢复后点不动");
+    assert.equal(idle.visible, true, `未启用轮次时应露出启用入口，实际 ${JSON.stringify(idle)}`);
+    assert.equal(idle.text, "启用本轮", `未启用时按钮文案应为启用本轮，实际 ${idle.text}`);
+    assert.equal(idle.disabled, false, "启用入口不应被禁用，否则操作者点不动");
+    assert.equal(idle.progressPaused, true, "未启用时进度块应为暂停配色，与按钮文案一致");
     assert.deepEqual(await pauseKeys(context), [], "初始不应存在任何停止标记");
 
     /*
-     * 真实走一遍停止链路：面板按钮 → 内容脚本 → 扩展后台身份核验并落盘。
-     * 面板在折叠态也必须能点到这个按钮，所以这一步刻意不展开工具区。
+     * 收缩为小球后刷新页面：必须仍然是小球。
+     * 用户收起面板就是为了不挡商品列表，刷新后弹回来等于白收一次。
      */
-    await clickPanelNode(client, "transfer-pause");
-    const stopped = await waitForStopText(client, "继续接口创建");
-    assert.equal(stopped.visible, true, `停止后按钮必须可见，实际 ${JSON.stringify(stopped)}`);
-    assert.equal(stopped.progressVisible, true, "停止后进度块必须可见，操作者要能看到处于停止状态");
-    assert.equal(stopped.progressPaused, true, "停止后进度块应切换为暂停配色");
-    assert.equal(stopped.headStage, "已停止接口创建", `标题栏应显示已停止，实际 ${stopped.headStage}`);
-    // 停止必须落到扩展存储：只有内存标记的话，刷新页面就会重新开始上传。
-    assert.deepEqual(await pauseKeys(context), [`directPause:${FIXTURE_STORE_ID}`], "停止后应在扩展存储中留下本店停止标记");
-
-    // 用户反馈的核心问题：刷新页面后自动上传还在继续。停止标记必须落盘，刷新后仍然是停止态。
+    await clickPanelNode(client, "mini");
+    /**
+     * 必须等**落盘**完成再刷新，不能只等 DOM 变成小球。
+     *
+     * 点击处理是异步的：DOM 先切到 42px，随后才写 localStorage。
+     * 若在这中间刷新，新文档读到的是**上一条**状态（collapsed 而非 compact），
+     * 面板就会以展开态回来——实测约 1/8 次复现。
+     * 这里等到存储值真的写着 compact:true，让断言检验的是落盘契约而不是时序运气。
+     */
+    await page.waitForFunction(key => {
+        try { return JSON.parse(localStorage.getItem(key) || 'null')?.compact === true; }
+        catch { return false; }
+    }, "temu-local-dataset-panel-state-v1", { timeout: 3000 }).catch(() => {});
+    const beforeReloadCompact = await panelState(client);
+    assert.equal(beforeReloadCompact.compact, true, "点击后应处于小球态");
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
-    const afterReload = await waitForStopText(client, "继续接口创建");
-    assert.equal(afterReload.text, "继续接口创建", `刷新后必须仍是停止态，实际 ${JSON.stringify(afterReload)}`);
-    assert.equal(afterReload.visible, true, "刷新后停止态按钮必须可见");
-    assert.equal(afterReload.progressPaused, true, "刷新后进度块应保持暂停配色");
-    assert.equal(afterReload.headStage, "已停止接口创建", `刷新后标题栏应仍显示已停止，实际 ${afterReload.headStage}`);
-    assert.deepEqual(await pauseKeys(context), [`directPause:${FIXTURE_STORE_ID}`], "刷新后停止标记必须仍然存在");
+    const compactAfterReload = await panelState(client);
+    assert.equal(compactAfterReload.compact, true, `刷新后必须仍是小球，实际 ${JSON.stringify(compactAfterReload)}`);
+    assert.ok(compactAfterReload.width <= 44, `刷新后小球宽度应贴近 42px，实际 ${compactAfterReload.width}`);
+    assert.ok(["‹", "›"].includes(compactAfterReload.toggleText), `刷新后小球只应保留方向箭头，实际 ${compactAfterReload.toggleText}`);
 
-    // 恢复：同一个按钮再点一次，后台清标记并把本店待办重新纳入自动创建。
-    await clickPanelNode(client, "transfer-pause");
-    const resumed = await waitForStopText(client, "停止接口创建");
-    assert.equal(resumed.progressPaused, false, "恢复后进度块不应再有暂停配色");
-    assert.equal(resumed.visible, false, "恢复且无待办后按钮应收起，不占面板位置");
-    assert.deepEqual(await pauseKeys(context), [], "恢复后必须清除本店停止标记");
+    // 还原后刷新：同样要保持还原，不能自己又缩成小球。
+    await clickPanelNode(client, "toggle");
+    const expandedAfterReload = await panelState(client);
+    assert.equal(expandedAfterReload.compact, false, "点开后应退出小球态");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
+    const restoredAfterReload = await panelState(client);
+    assert.equal(restoredAfterReload.compact, false, `还原后刷新不应又变成小球，实际 ${JSON.stringify(restoredAfterReload)}`);
+    assert.ok(restoredAfterReload.width > 300, `还原后刷新应保持完整宽度，实际 ${restoredAfterReload.width}`);
+
+    /*
+     * 面板只允许出现在商品列表页。
+     * 之前它会在新建商品、草稿等页面一起出现，遮挡平台内容；
+     * 而在那些页面插件本来也执行不了判重/预检/提交（directPage 要求 /goods/list），
+     * 显示出来只会误导操作者。
+     */
+    await page.goto("https://agentseller.temu.com/goods/create/category", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1500);
+    const onCreatePage = await page.evaluate((hostId) => {
+        const host = document.getElementById(hostId);
+        if (!host) return { present: false, hidden: null };
+        return { present: true, hidden: Boolean(host.hidden) };
+    }, "temu-local-dataset-panel");
+    assert.equal(onCreatePage.hidden === true || onCreatePage.present === false, true,
+        `新建商品页不应显示面板，实际 ${JSON.stringify(onCreatePage)}`);
+
+    // 回到列表页必须重新出现，否则用户会以为插件坏了。
+    await page.goto("https://agentseller.temu.com/goods/list", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
+    const backOnList = await page.evaluate((hostId) => {
+        const host = document.getElementById(hostId);
+        return { present: Boolean(host), hidden: host ? Boolean(host.hidden) : null };
+    }, "temu-local-dataset-panel");
+    assert.equal(backOnList.present, true, "回到列表页面板必须存在");
+    assert.equal(backOnList.hidden, false, "回到列表页面板必须可见");
 
     console.log(JSON.stringify({
-        result: "panel shell toggles tools and compacts independently",
+        result: "panel shell toggles tools and compacts independently; 收缩态跨刷新保持；面板只绑定商品列表页",
         version: manifest.version,
         initial,
         expanded,
         compact,
         restored,
-        stop: { idle, stopped, afterReload, resumed }
+        compactAfterReload,
+        restoredAfterReload,
+        pageScope: { onCreatePage, backOnList },
+        // 只报告壳层可验证的初始态；轮次启停需要服务端，由 verify-execution-runs.mjs 覆盖。
+        stop: { idle }
     }));
 } finally {
     if (context) await context.close().catch(() => {});

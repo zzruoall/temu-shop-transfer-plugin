@@ -1,7 +1,7 @@
 /**
- * 核对“上传失败标红并禁止再传”与“重新采集后解除”：
- * 标红只记录上传没过这个事实，不改商品内容，也不替目标店判断缺什么字段；
- * 解除条件必须是重新采集覆盖，避免运营靠删除/改标记绕过。
+ * 核对上传失败标红、重新采集解除与人工解除：
+ * 红标只记录“这次上传没过”的排查线索，不改商品内容，也不阻止发往其他目标店；
+ * 解除条件必须是重新采集覆盖或明确的人工解除，避免运营靠删除记录绕过。
  */
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
@@ -70,13 +70,27 @@ assert.match(blockedRow.blockedReason, /产地省份必填/, "红标必须带上
 assert.notEqual(overview.products.find(p => p.spuId === "9876543210").blocked, true, "标红不能影响同店其他商品");
 
 // 标红商品禁止再上传。
-const queue = createJobQueue(root, store);
-const identity = { storeId: "temu:222", storeName: "目标店", pageStoreName: "目标店", pluginInstanceId: "inst", pluginDetected: true, identityMatched: true, pluginVersion: "10.10.43" };
+// 本用例核对的是标红与解除，不是原包一致性；来源原包校验由专门的传输完整性用例覆盖。
+// 因此只在队列侧替换该函数，仓库读写仍走真实实现，标红行为依旧被真实校验。
+const queue = createJobQueue(root, {
+    ...store,
+    verifyBatchTransfer: async (_batch, products) => products
+});
+// 直推创建要求目标店以插件 API 模式登记，且 storeId 与 mallId 同源一致。
+const identity = { storeId: "temu:222", mallId: "222", storeName: "目标店", pageStoreName: "目标店", executionMode: "plugin-api",
+    pluginInstanceId: "inst", pluginDetected: true, identityMatched: true, pluginVersion: "10.10.61" };
 await queue.registerAgent(identity);
 const jobInput = { sourceStoreId: storeId, targetStoreId: "temu:222", targetStoreName: "目标店", sourceBatchId: batchId, spuIds: [spuId], requireOnline: true, directCreate: true, complianceVersion: "V2.0" };
-await assert.rejects(queue.createJob(jobInput), /已标红禁止再传/, "标红商品必须被拦在上传之外");
-// 同批次里没被标红的商品仍可正常下发。
+// 红标是排查线索，不是全局封禁：平台拒绝只属于某次商品版本与目标店，不能连带禁掉发给其他目标店。
+// 因此标红商品仍可下发，是否已存在由目标店插件在平台内自行检索判断。
+const blockedSend = await queue.createJob(jobInput);
+assert.ok(blockedSend.id, "标红商品仍应允许下发，红标仅供排查");
+assert.equal(blockedSend.items[0].spuId, spuId);
+// 同批次里另一件商品同样可正常下发。
 await queue.createJob({ ...jobInput, spuIds: ["9876543210"] });
+// 下发不会自动清除红标：红标只由重新采集覆盖或人工解除来消除。
+overview = await store.listOverview();
+assert.equal(overview.products.find(p => p.spuId === spuId).blocked, true, "下发行为不得自动清除红标");
 
 // 重新采集覆盖后解除红标。
 await store.clearProductBlocked(storeId, [spuId]);
@@ -108,4 +122,4 @@ const noop = await store.unblockProducts(["9999999999"]);
 assert.equal(noop.cleared, 0, "未标红商品解除应为无操作");
 assert.deepEqual(noop.missing, ["9999999999"], "应如实报告未找到标红记录的商品");
 
-console.log("blocked product checks passed（标红、禁止再传、重新采集解除、人工解除、按来源店隔离）");
+console.log("blocked product checks passed（标红不阻断其他目标店、重新采集解除、人工解除、按来源店隔离）");

@@ -213,7 +213,6 @@
     const request = await converter.hi({ value: values, formStore: store, grayInfo: global.grayInfo, needSkcAndSkuId: false });
     applyRequiredPropertyMappings(request, store, product, notes, targetPropertyTemplate);
     if (inheritedCosmeticInfo) notes.push("已将商品级成分下传到每个 SKU");
-    if (!request.productName || !request.productSkcReqs?.length) throw Error("request_incomplete");
     /**
      * 这里只记录可疑项，不再阻断上传。
      * 目标店"要哪些必填项"必须由平台回答：本地按模板猜规则一旦比平台严，就会凭空造出
@@ -224,7 +223,7 @@
     for (const property of store.originPropertyList.filter(item => item.required)) {
         if (!request.productPropertyReqs?.some(item => item.refPid === property.refPid)) warnings.push(`目标模板必填项未生成：${property.name}`);
     }
-    for (const skc of request.productSkcReqs) for (const sku of skc.productSkuReqs || []) {
+    for (const skc of request.productSkcReqs || []) for (const sku of skc.productSkuReqs || []) {
         if (!sku.thumbUrl) warnings.push("SKU 图片缺失");
         if (!store.packageInventoryFullHiddenInGray && store.categoryCommonConfig.matchSkuAccessoriesRequired && !sku.productSkuAccessoriesReq) warnings.push("目标类目要求 SKU 配件信息，但当前提交资料没有此字段");
         if (store.isCosmeticRequire && !sku.productSkuNonAuditExtAttrReq?.productSkuCosmeticInfoReqList?.length) warnings.push("目标类目要求成分信息，但转换后的请求没有成分");

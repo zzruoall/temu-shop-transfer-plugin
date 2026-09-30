@@ -1,6 +1,6 @@
 /**
  * 锁定三条与"上传失败/重复创建"直接相关的规则：
- *   1) 平台临时故障（系统异常/限流/超时）不得判为确定性拒绝，否则好商品会被标红；
+ *   1) 平台临时故障只能停在结果未知，既不标记来源商品缺陷，也不自动重新创建；
  *   2) 预检与提交必须串行，不能并发争抢同一个 Temu runtime；
  *   3) 同一批次内重复货号（有商品货号按商品货号、否则按 SKU 货号）只传第一件，后面的直接跳过，
  *      且该规则不依赖"跳过目标店检索"的测试开关。
@@ -10,13 +10,13 @@ import vm from "node:vm";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../../plugin/direct-executor.js", import.meta.url), "utf8");
+import { directExecutorFixture } from './direct-platform-fixture.mjs';
+const source = await directExecutorFixture();
 
-// 一、并发度必须是 1：并发注入多个页面脚本会争抢 runtime，曾导致平台返回 1000005 系统异常。
+// 一、预检在单件循环内等待完成，不能保留会与当前提交重叠的提前预取路径。
 {
-    const match = source.match(/const DIRECT_PREFLIGHT_CONCURRENCY\s*=\s*(\d+)/);
-    assert.ok(match, "必须能找到预检并发常量");
-    assert.equal(Number(match[1]), 1, "预检与提交必须严格串行，并发会导致平台临时故障并误判失败");
+    assert.ok(source.includes('await prepareDirectTask(task, identity, tabId, key, reservedCodes)'));
+    assert.ok(!source.includes('startCandidate()'), '不能在当前商品提交前启动下一件预检');
 }
 
 // 二、提交结果分类：临时故障必须是 unknown，内容错误才是 rejected。
@@ -36,6 +36,8 @@ async function classifySubmitError(platformError) {
         sessionStorage: { setItem() {}, getItem: () => null },
         location: { origin: "https://agentseller.temu.com", pathname: "/goods/list" },
         window: {
+            // 只预置当前模拟文档的已握手标记，让测试进入平台错误分类而非轮次拒绝分支。
+            __temuExecutionRound: { id: 'transient-execution-round', stopped: false },
             chunkLoadingGlobal_temu_sca_goods: { push: entry => entry[2](runtime) },
             __temuDirectPreparedRequests: {},
             __temuDirectSubmitStates: {},
@@ -49,7 +51,8 @@ async function classifySubmitError(platformError) {
     vm.runInContext(source, context);
     context.__captured = value => { captured = value; };
     await vm.runInContext(`(async () => {
-        const payload = { attemptId: 't1', mallId: '123', requestKey: 'k1', request: { productName: 'x' } };
+        const payload = { attemptId: 't1', mallId: '123', executionRunId: 'transient-execution-round',
+            documentId: 'transient-document', requestKey: 'k1', request: { productName: 'x' } };
         await directPage(1, 'submit', payload);
         for (let i = 0; i < 40; i += 1) {
             await new Promise(r => setTimeout(r, 50));
@@ -61,15 +64,16 @@ async function classifySubmitError(platformError) {
 }
 
 {
-    // 系统异常：必须停在 unknown（可重试），不能判 rejected（否则被标红）。
+    // 系统异常可能发生在平台已提交之后，unknown 不是自动重试许可。
     const transient = await classifySubmitError({ success: false, errorCode: 1000005, errorMsg: "系统异常" });
     assert.ok(transient, "必须能捕获提交状态");
     assert.equal(transient.state, "unknown", "系统异常属临时故障，不能判为确定性拒绝");
-    assert.equal(transient.transient, true, "必须显式标记为临时故障，供后台按可重试处理");
+    assert.equal(transient.transient, true, "临时故障分类只供诊断，不能触发第二次新增");
+    assert.ok(!source.includes("if (result?.transient)"), "执行器不能按临时错误重新申请新增许可");
 
-    // 缺必填属性：内容问题，重试无用，必须判 rejected 才能标红。
+    // 平台明确拒绝保留在目标任务内，不再全局标红来源商品。
     const content = await classifySubmitError({ success: false, errorCode: 2000135, errorMsg: "当前类目净含量必填" });
-    assert.equal(content.state, "rejected", "内容错误必须判为确定性拒绝并标红");
+    assert.equal(content.state, "rejected", "内容错误必须保留目标平台拒绝事实");
     assert.equal(Boolean(content.transient), false, "内容错误不能被当成临时故障");
 }
 
@@ -94,4 +98,4 @@ async function classifySubmitError(platformError) {
     assert.ok([...withProduct].some(code => reserved.has(code)), "同货号第二件必须能被批次保留位拦住");
 }
 
-console.log("direct transient-retry / serial / batch-duplicate checks passed");
+console.log("direct unknown-isolation / serial / batch-duplicate checks passed");

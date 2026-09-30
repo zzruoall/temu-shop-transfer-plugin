@@ -1,5 +1,5 @@
 /**
- * 核对中央任务队列：不能自己传给自己，不能广播给所有插件，目标店身份不符必须失败。
+ * 核对中央任务队列：同店发送需确认，不能广播给所有插件，目标店身份不符必须失败。
  */
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -17,7 +17,9 @@ const readyProduct = {
     skuIds: ["1"],
     skcIds: ["2"],
     skus: [{ skuId: "1", price: 12.5, specs: [{ name: "规格", value: "单瓶" }] }],
-    detail: { detailHtml: "<p>详情正文</p>" }
+    detail: { detailHtml: "<p>详情正文</p>" },
+    // 人工下发要求核验来源原始资料存在，桩数据必须带上可核对身份的来源对象。
+    publicationData: { sourceProduct: { productId: "7744886733" } }
 };
 const incompleteProduct = {
     spuId: "5372907865",
@@ -37,9 +39,14 @@ const extraReadyProduct = {
     skuIds: ["5"],
     skcIds: ["6"],
     skus: [{ skuId: "5", price: 8, specs: [{ name: "规格", value: "默认" }] }],
-    detail: { detailHtml: "<p>第二件</p>" }
+    detail: { detailHtml: "<p>第二件</p>" },
+    publicationData: { sourceProduct: { productId: "8888888888" } }
 };
 const store = {
+    // 人工下发前服务端要核对来源原包；桩只做一致性透传，不代表真实校验逻辑。
+    async verifyBatchTransfer(_batch, products) {
+        return products;
+    },
     async listOverview() {
         return { products: [readyProduct, incompleteProduct, extraReadyProduct], shopName: "City Beauty King" };
     },
@@ -70,8 +77,8 @@ const queue = createJobQueue(root, store);
 const supportedPlugin = { pluginDetected: true, pluginVersion: "10.1.0", identityMatched: true };
 
 await assert.rejects(
-    () => queue.createJob({ sourceStoreId: "A", targetStoreId: "A", sourceBatchId: "b1", spuIds: ["7744886733"] }),
-    /来源店和目标店不能相同/
+    () => queue.createJob({ sourceStoreId: "27565374641388", targetStoreId: "27565374641388", sourceBatchId: "batch-1", spuIds: ["7744886733"] }),
+    /请确认是否发送到商品来源店铺/
 );
 
 await assert.rejects(
@@ -459,14 +466,14 @@ const mismatchReport = await queue.reportProgress({
 });
 assert.equal(mismatchReport.items.find((item) => item.spuId === "8888888888").status, "identity_mismatch");
 
-// 新版网页必须只向近期在线、身份匹配的 10.3 目标插件发送；领取、接收和人工确认三步缺一不可。
+// 新版网页必须只向近期在线、身份匹配且满足传输完整性门槛的目标插件发送；领取、接收和人工确认三步缺一不可。
 const manualTarget = await queue.registerAgent({
     pluginInstanceId: "plugin-instance-manual-target",
     storeId: "30000000000000",
     storeName: "Manual Target Shop",
     pageStoreName: "Manual Target Shop",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true,
     source: "worker-inspect"
 });
@@ -487,7 +494,7 @@ const workerManualClaim = await queue.claimJobs({
     storeName: "Manual Target Shop",
     pluginInstanceId: "plugin-instance-manual-target",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true,
     claimManualUploads: false
 });
@@ -497,7 +504,7 @@ const manualClaim = await queue.claimJobs({
     storeName: "Manual Target Shop",
     pluginInstanceId: "plugin-instance-manual-target",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true
 });
 assert.equal(manualClaim.claimed.length, 1);
@@ -508,8 +515,10 @@ const manualReceived = await queue.reportProgress({
     storeId: "30000000000000",
     status: "received",
     claimToken: manualClaim.claimed[0].claimToken,
+    // 现行协议要求插件确认实际落盘快照的摘要，服务端才认可送达。
+    snapshotSha256: manualClaim.claimed[0].transferIntegrity.sha256,
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: true,
     pageStoreName: "Manual Target Shop"
@@ -522,7 +531,7 @@ const manualOpened = await queue.reportProgress({
     status: "upload_opened",
     claimToken: manualClaim.claimed[0].claimToken,
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: true,
     pageStoreName: "Manual Target Shop"
@@ -535,7 +544,7 @@ const manualUploaded = await queue.reportProgress({
     status: "uploaded",
     claimToken: manualClaim.claimed[0].claimToken,
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: true,
     pageStoreName: "Manual Target Shop"
@@ -566,7 +575,7 @@ const partialClaim = await queue.claimJobs({
     storeName: "Manual Target Shop",
     pluginInstanceId: "plugin-instance-manual-target",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true
 });
 const partialFirst = partialClaim.claimed.find((item) => item.jobId === partialManual.id && item.spuId === "7744886733");
@@ -577,15 +586,16 @@ const partialReceived = await queue.reportProgress({
     storeId: "30000000000000",
     status: "received",
     claimToken: partialFirst.claimToken,
+    // 现行协议要求插件确认实际落盘快照的摘要，服务端才认可送达。
+    snapshotSha256: partialFirst.transferIntegrity.sha256,
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: true,
     pageStoreName: "Manual Target Shop"
 });
 assert.equal(partialReceived.status, "partial");
-// 服务器不判断平台商品是否重复：目标店插件没有处于提交中时，同店同货号允许再次下发，
-// 旧任务里重叠的未完成项在新任务落库的同一把锁内被撤销，避免同一货号在队列里堆积两份。
+// 人工再次发送同店同商品生成独立任务，不能取消旧任务或清除其收件凭证。
 const reissuedPartial = await queue.createJob({
     sourceStoreId: "27751811499835",
     targetStoreId: "30000000000000",
@@ -596,8 +606,9 @@ const reissuedPartial = await queue.createJob({
 assert.ok(reissuedPartial.id);
 const supersededPartial = await queue.getJob(partialManual.id);
 const supersededItem = supersededPartial.items.find((item) => item.spuId === "7744886733");
-assert.equal(supersededItem.status, "cancelled");
-assert.equal(supersededItem.replacedByJobId, reissuedPartial.id);
+assert.equal(supersededItem.status, "received");
+assert.equal(supersededItem.claimToken, partialFirst.claimToken);
+assert.equal(supersededItem.replacedByJobId, undefined);
 const cancelledPartial = await queue.cancelJob(partialManual.id);
 assert.equal(cancelledPartial.status, "cancelled");
 
@@ -616,7 +627,7 @@ const secondInstanceClaim = await queue.claimJobs({
     storeName: "Manual Target Shop",
     pluginInstanceId: "plugin-instance-manual-second",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true
 });
 assert.equal(secondInstanceClaim.claimed.length, 0);
@@ -625,7 +636,7 @@ const guardedManualClaim = await queue.claimJobs({
     storeName: "Manual Target Shop",
     pluginInstanceId: "plugin-instance-manual-target",
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     identityMatched: true
 });
 assert.equal(guardedManualClaim.claimed.filter((item) => item.jobId === guardedManual.id).length, 1);
@@ -636,23 +647,124 @@ await assert.rejects(() => queue.reportProgress({
     status: "received",
     claimToken: guardedManualClaim.claimed.find((item) => item.jobId === guardedManual.id).claimToken,
     pluginDetected: true,
-    pluginVersion: "10.3.0",
+    pluginVersion: "10.10.61",
     pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: false,
     pageStoreName: "Manual Target Shop"
 }), /新版目标插件/);
 
-// 覆盖必须产生新任务，并使已领取旧任务的迟到回执无法恢复它。
+// 新点击产生独立任务，旧任务的合法收件回执仍能确认，不因后一次投递失效。
 const replacement = await queue.createJob({
     sourceStoreId: "27565374641388", targetStoreId: "30000000000000",
     sourceBatchId: "batch-1", spuIds: ["7744886733"],
     requireOnline: true, replaceExisting: true
 });
 assert.notEqual(replacement.id, guardedManual.id);
-await assert.rejects(() => queue.reportProgress({
+const previousReceipt = await queue.reportProgress({
     jobId: guardedManual.id, spuId: "7744886733", storeId: "30000000000000",
     status: "received", claimToken: guardedManualClaim.claimed.find(item => item.jobId === guardedManual.id).claimToken,
-    pluginDetected: true, pluginVersion: "10.3.0", pluginInstanceId: "plugin-instance-manual-target",
+    snapshotSha256: guardedManualClaim.claimed.find(item => item.jobId === guardedManual.id).transferIntegrity.sha256,
+    pluginDetected: true, pluginVersion: "10.10.61", pluginInstanceId: "plugin-instance-manual-target",
     identityMatched: true, pageStoreName: "Manual Target Shop"
-}), /终态/);
+});
+assert.equal(previousReceipt.items.find(item => item.spuId === "7744886733").status, "received");
 console.log("job queue checks passed");
+
+/**
+ * 店铺被在线实例占用时，记录必须保持自洽。
+ *
+ * 曾经的缺陷：目标店被另一个在线实例占住时，只把 storeId 退回旧店，
+ * 店名与 mallId 仍写新请求的值 —— 同一条 agent 记录里"ID 指向 A 店、名字是 B 店"。
+ * 网站按 storeId 匹配店铺行、按店名核验身份，两者对不上时插件上报的状态
+ * 就落不到正确的店铺行上，表现为"插件已连接但页面状态不更新"。
+ */
+{
+    const { mkdtemp: mkTmp, readFile: readF } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const nodePath = await import("node:path");
+    const { createJobQueue: createQ } = await import("../lib/job-queue.mjs");
+
+    const root = await mkTmp(nodePath.join(os.tmpdir(), "agent-consistency-"));
+    const queue = createQ(root, null);
+    const A = "temu:634418210693849", AM = "634418210693849";
+    const B = "temu:634418214794848", BM = "634418214794848";
+    const rawAgents = async () => JSON.parse(await readF(nodePath.join(root, "data", "jobs.json"), "utf8")).agents;
+
+    // 实例 X 先在 A 店
+    await queue.registerAgent({ storeId: A, storeName: "Hair removal wax", pageStoreName: "Hair removal wax",
+        pluginInstanceId: "inst-X", pluginVersion: "10.10.61", identityMatched: true, pluginDetected: true,
+        executionMode: "plugin-api", mallId: AM });
+    // 实例 Y 占住 B 店（在线）
+    await queue.registerAgent({ storeId: B, storeName: "Nobeson for Pet Grooming", pageStoreName: "Nobeson for Pet Grooming",
+        pluginInstanceId: "inst-Y", pluginVersion: "10.10.61", identityMatched: true, pluginDetected: true,
+        executionMode: "plugin-api", mallId: BM });
+    // X 切到被占用的 B 店
+    await queue.registerAgent({ storeId: B, storeName: "Nobeson for Pet Grooming", pageStoreName: "Nobeson for Pet Grooming",
+        pluginInstanceId: "inst-X", pluginVersion: "10.10.61", identityMatched: true, pluginDetected: true,
+        executionMode: "plugin-api", mallId: BM });
+
+    const x = (await rawAgents()).find((agent) => agent.pluginInstanceId === "inst-X");
+    assert.equal(x.storeId, A, "被占用时应退回原店铺");
+    assert.equal(x.storeName, "Hair removal wax", "店名必须与退回的 storeId 一致，不能留下新店的店名");
+    assert.equal(x.mallId, AM, "mallId 必须与退回的 storeId 一致，否则记录自相矛盾");
+    assert.equal(x.pageStoreName, "Hair removal wax", "页面店名同样要退回，避免身份核验取错值");
+    console.log("agent consistency checks passed（被占用时 storeId/店名/mallId 同源，记录不再自相矛盾）");
+}
+
+/**
+ * 投递只检查插件是否可接收，不用旧商品的执行状态拦截新点击。
+ * 插件离线不等于平台请求失败，必须保留旧 creating 和凭证以接受迟到结果。
+ */
+{
+    const { mkdtemp: mkTmp, readFile: readF, writeFile: writeF } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const nodePath = await import("node:path");
+    const { createJobQueue: createQ } = await import("../lib/job-queue.mjs");
+
+    const root = await mkTmp(nodePath.join(os.tmpdir(), "offline-release-"));
+    const store = {
+        getBatch: async () => ({ sourceStoreId: "11111111", products: [{ spuId: "9100894431", ready: true, title: "t", images: ["x"], skuIds: ["1"], skcIds: ["2"], publicationData: { sourceProduct: { productId: "9100894431" } } }] }),
+        listOverview: async () => ({}),
+        // 人工下发前服务端要核对来源原包；桩只做一致性透传。
+        verifyBatchTransfer: async (_batch, items) => items,
+        markProductBlocked: async () => ({})
+    };
+    const queue = createQ(root, store);
+    const identity = { storeId: "temu:22222222", storeName: "target", pageStoreName: "target",
+        pluginInstanceId: "inst-off", pluginVersion: "10.10.61", pluginDetected: true, identityMatched: true,
+        executionMode: "plugin-api", mallId: "22222222" };
+    await queue.registerAgent(identity);
+
+    const job = await queue.createJob({ sourceStoreId: "11111111", targetStoreId: "temu:22222222", targetStoreName: "target",
+        sourceBatchId: "batch", spuIds: ["9100894431"], requireOnline: true, directCreate: true, complianceVersion: "V2.0" });
+    await queue.reportOpenResult({ jobId: job.id, storeId: identity.storeId, status: "opened" });
+    const { claimed } = await queue.claimJobs({ ...identity, claimManualUploads: true, manualUploadsOnly: true, pendingUploadCount: 0, pendingUploadBytes: 0 });
+    const base = { ...identity, jobId: job.id, spuId: "9100894431", claimToken: claimed[0].claimToken };
+    // 现行协议要求插件确认实际落盘快照的摘要，服务端才认可送达。
+    await queue.reportProgress({ ...base, status: "received", snapshotSha256: claimed[0].transferIntegrity.sha256 });
+    // 授权创建 → 项目进入 creating（模拟提交中）
+    await queue.directProgress({ ...base, phase: "begin", requestHash: "a".repeat(64), mallId: "22222222", authorizationKey: "k".repeat(20) });
+
+    const jobsPath = nodePath.join(root, "data", "jobs.json");
+    const readJobs = async () => JSON.parse(await readF(jobsPath, "utf8"));
+    const state = await readJobs();
+    assert.equal(state.jobs[0].items[0].directState, "creating", "前置条件：项目应处于 creating");
+
+    // 场景一：插件在线且旧商品在提交，新点击仍可以投递，但不改旧记录。
+    const blockedOnline = await queue.createJob({ sourceStoreId: "11111111", targetStoreId: "temu:22222222", targetStoreName: "target",
+        sourceBatchId: "batch", spuIds: ["9100894431"], requireOnline: true, directCreate: true, complianceVersion: "V2.0" })
+        .then(() => "allowed").catch((error) => error.status === 409 ? "blocked" : `err:${error.message}`);
+    assert.equal(blockedOnline, "allowed", "旧商品提交不应阻止新点击投递");
+    assert.deepEqual((await readJobs()).jobs.find(item => item.id === job.id), state.jobs.find(item => item.id === job.id));
+
+    // 场景二：插件离线明确返回接收条件错误，不能宣称旧创建已失败或自动释放。
+    const offline = await readJobs();
+    const agent = offline.agents.find((item) => item.pluginInstanceId === "inst-off");
+    agent.lastSeenAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();   // 10 分钟没心跳 = 离线
+    await writeF(jobsPath, JSON.stringify(offline));
+    await assert.rejects(queue.createJob({ sourceStoreId: "11111111", targetStoreId: "temu:22222222", targetStoreName: "target",
+        sourceBatchId: "batch", spuIds: ["9100894431"], requireOnline: true, directCreate: true, complianceVersion: "V2.0" }),
+        error => error.status === 503 && error.code === 'target_offline');
+    assert.equal((await queue.getJob(job.id)).items[0].directState, 'creating');
+    console.log("delivery checks passed（新点击独立投递，离线不释放旧执行凭证）");
+}

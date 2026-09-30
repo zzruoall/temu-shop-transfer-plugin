@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>管理控制台 · 中转仓</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./admin.css">
+</head>
+<body>
+<!--
+THESIS: 管理站只做管理，不参与日常业务，因此与业务工作台在视觉上明确分开。
+OWN-WORLD: 深色侧栏 + 浅灰内容区的运维控制台；侧栏承载分类导航与身份，内容区只有管理面板。
+STORY: 管理员进来先看店铺与账号总量，再处理归属、删除或恢复。
+FIRST VIEWPORT: 左侧深色侧栏（标题/三个分类/账号/退出）+ 右侧店铺列表。
+FORM: 运维控制台，与业务工作台（蓝白、侧栏导航）用配色区分，避免误把管理操作当日常操作。
+-->
+<div class="admin-shell">
+    <aside class="admin-rail">
+        <div class="admin-rail-brand">
+            <strong>管理控制台</strong>
+            <span>中转仓 · 仅管理员可见</span>
+        </div>
+        <nav class="admin-rail-nav" aria-label="管理分类">
+            <button type="button" class="active" data-admin-view-button="stores" role="tab" aria-selected="true">店铺 <b id="tab-count-stores">0</b></button>
+            <button type="button" data-admin-view-button="products" role="tab" aria-selected="false">商品 <b id="tab-count-products">0</b></button>
+            <button type="button" data-admin-view-button="users" role="tab" aria-selected="false">账号 <b id="tab-count-users">0</b></button>
+            <button type="button" data-admin-view-button="deleted" role="tab" aria-selected="false">已删除 <b id="tab-count-deleted">0</b></button>
+        </nav>
+        <div class="admin-rail-account">
+            <div class="admin-identity"><strong id="admin-username">—</strong><small id="admin-role"></small></div>
+            <a class="admin-back" href="./">返回工作台</a>
+            <button type="button" class="admin-logout" id="admin-logout">退出登录</button>
+        </div>
+    </aside>
+    <main class="admin-stage" id="admin-app">
+        <p class="admin-loading">正在读取管理数据…</p>
+    </main>
+</div>
+<dialog class="confirm-dialog" id="admin-confirm" hidden></dialog>
+<script src="./admin.js"></script>
+</body>
+</html>

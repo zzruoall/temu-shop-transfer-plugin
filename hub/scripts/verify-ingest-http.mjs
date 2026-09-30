@@ -9,6 +9,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { transferManifest } from "../lib/transfer-integrity.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const TOKEN = "http-ingest-verify-token";
@@ -199,17 +200,33 @@ try {
             authorization: `Bearer ${TOKEN}`,
             "x-ingest-filename": "temu-full-capture-http-verify.json"
         },
-        body: JSON.stringify({ packet, fileName: "temu-full-capture-http-verify.json" })
+        body: JSON.stringify({ packet, fileName: "temu-full-capture-http-verify.json", transferIntegrity: transferManifest(packet) })
     });
     assert(created.status === 200, `直推应返回 200，实际 ${created.status}`);
     assert(created.body && created.body.ok === true && created.body.batchId, "直推没有返回批次号");
     assert(created.body.reused === false, "首次直推被记成复用");
+    assert(created.body.transferIntegrity?.verified === true, "新协议必须确认接收及存储校验");
+    assert(created.body.transferIntegrity.receivedSha256 === transferManifest(packet).sha256, "接收摘要必须与来源一致");
+    // 错误摘要在仓库写入之前拒绝，不能只记录警告后继续成功。
+    const corrupt = await fetchJson(`${origin}/api/ingest`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ packet, transferIntegrity: { ...transferManifest(packet), sha256: "0".repeat(64) } }) });
+    assert(corrupt.status === 422, "错误传输摘要必须返回422");
 
     const overview = await fetchJson(`${origin}/api/overview`);
     assert(overview.status === 200, `overview 应返回 200，实际 ${overview.status}`);
     assert(Array.isArray(overview.body && overview.body.products), "overview 没有返回 products 数组");
     assert(overview.body.products.some((item) => item.spuId === "7744886733"), "直推后库存里没有该 SPU");
     assert(overview.body.excludedCount === 0, "首次直推后不应出现已删除商品");
+
+    const summary = await fetchJson(`${origin}/api/overview?productLimit=0`);
+    assert(summary.status === 200, `overview 摘要应返回 200，实际 ${summary.status}`);
+    assert(Array.isArray(summary.body?.products) && summary.body.products.length === 0, "摘要请求不应返回商品详情");
+    assert(summary.body?.productCount === 1 && summary.body?.productTotal === 1, "摘要请求应保留完整商品计数");
+    assert(summary.body?.productsHasMore === false, "productLimit=0 不能错误提示还有下一页");
+
+    const firstPage = await fetchJson(`${origin}/api/overview?productLimit=1&productOffset=0`);
+    assert(firstPage.status === 200, `商品分页应返回 200，实际 ${firstPage.status}`);
+    assert(firstPage.body?.products?.length === 1, "商品分页没有返回当前页商品");
+    assert(firstPage.body?.productTotal === 1 && firstPage.body?.productsHasMore === false, "商品分页总数或下一页状态错误");
 
     const deleted = await fetchJson(`${origin}/api/products`, {
         method: "DELETE",

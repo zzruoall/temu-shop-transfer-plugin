@@ -65,6 +65,8 @@ var TemuIngestQueue = (function () {
         if (!nextAttemptAt) nextAttemptAt = new Date(now).toISOString();
         return {
             id: asText(raw && raw.id) || ("ingest-" + hashFingerprint(fingerprint)),
+            // 自动重试只属于采集结束时的文档和插件版本，旧任务不得自动恢复。
+            pageBinding: raw && raw.pageBinding || null,
             fingerprint: fingerprint,
             eventIds: eventIds,
             allowedSpuIds: allowedSpuIds,
@@ -104,8 +106,7 @@ var TemuIngestQueue = (function () {
     }
 
     /**
-     * 队列最多保留 10 个任务。超出时淘汰最早的任务，调用方必须把淘汰写成可见终态，
-     * 不能再静默丢掉，否则页面会把“当前任务失败”显示成“别人还在排队”。
+     * 队列最多保留10个任务；满额时拒绝新任务并通知调用方，不能淘汰尚待核对的旧采集包。
      */
     function upsertJobWithEviction(jobs, incoming, nowMs) {
         var job = normalizeJob(incoming, nowMs);
@@ -119,11 +120,11 @@ var TemuIngestQueue = (function () {
         if (index >= 0) {
             next[index] = mergeQueuedJob(next[index], job);
         } else {
+            if (next.length >= MAX_JOBS) return { jobs: next, evicted: [job] };
             next.push(job);
             next.sort(function (left, right) {
                 return String(left.createdAt).localeCompare(String(right.createdAt));
             });
-            while (next.length > MAX_JOBS) evicted.push(next.shift());
         }
         return { jobs: next, evicted: evicted };
     }

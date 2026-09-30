@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fork, execFile } from "node:child_process";
+import { promisify } from "node:util";
+import mysql from "mysql2/promise";
+import { createStore } from "../lib/store.mjs";
+import { createJobQueue } from "../lib/job-queue.mjs";
+import { createStoreOwnership } from "../lib/store-ownership.mjs";
+import { openMysqlDatabase } from "../lib/mysql-database.mjs";
+import { createUsers } from "../lib/users.mjs";
+
+const admin=await mysql.createConnection({host:"127.0.0.1",port:33917,user:"root"});
+const name=`temu_migration_test_${Date.now()}`;
+await admin.query(`CREATE DATABASE ${name} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`);
+const root=await mkdtemp(path.join(tmpdir(),"temu-migration-http-"));
+const config=path.join(root,"mysql.json");
+await writeFile(config,JSON.stringify({host:"127.0.0.1",port:33917,user:"root",database:name}));
+const credentials=path.join(root,"credentials.json");
+await writeFile(credentials,JSON.stringify({deviceToken:"isolated-mysql-device-token"}));
+let child;
+let db;
+let success=false;
+try {
+    const files=createStore(root);
+    const packet={kind:"full-capture-packet",source:{sourceStoreId:"source"},records:[{payload:{result:{pageItems:[{productId:8000000001,goodsId:9000000001,productName:"迁移样本"}]}}}]};
+    const {batch}=await files.importFiles([{originalName:"migration.json",payload:packet}],{sourceStoreId:"source"});
+    const queue=createJobQueue(root,{getBatch:async()=>({sourceStoreId:"source",products:[{spuId:"8000000001",ready:true,title:"不可变旧快照"}]}),listOverview:async()=>({products:[]})});
+    const job=await queue.createJob({sourceStoreId:"source",targetStoreId:"target",sourceBatchId:batch.id,spuIds:["8000000001"]});
+    const users=createUsers(root);
+    const user=await users.register({username:"13800001111",password:"isolated-password-123"});
+    await createStoreOwnership(root).claim("other",user);
+    const before=await readFile(path.join(root,"data","index.json"),"utf8");
+    const env={...process.env,TEMU_MYSQL_CONFIG:config,TEMU_CREDENTIALS:credentials,ZINIAO_DATA_ROOT:root,ZINIAO_INSTANCE_ID:name,ZINIAO_TEST_EPHEMERAL:"1",ZINIAO_BIND:"127.0.0.1",ZINIAO_SEED:"0"};
+    const migrated=await promisify(execFile)(process.execPath,["scripts/migrate-mysql.mjs","--source",root,"--confirm-offline"],{cwd:process.cwd(),env,windowsHide:true});
+    assert.equal(JSON.parse(migrated.stdout).migrated,true);
+    assert.equal(await readFile(path.join(root,"data","index.json"),"utf8"),before);
+    await assert.rejects(promisify(execFile)(process.execPath,["scripts/migrate-mysql.mjs","--source",root,"--confirm-offline"],{cwd:process.cwd(),env,windowsHide:true}));
+    child=fork("server.mjs",[],{cwd:process.cwd(),env,windowsHide:true,stdio:["ignore","pipe","pipe","ipc"]});
+    let stderr="";
+    child.stderr.on("data",chunk=>stderr+=chunk);
+    const port=await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error(`隔离服务器启动超时 ${stderr}`)),15000);
+        child.once("error",reject);
+        child.once("exit",code=>{clearTimeout(timer);reject(new Error(`隔离服务器退出 ${code}: ${stderr}`));});
+        child.on("message",message=>{if(message.type==="listening"&&message.instanceId===name){clearTimeout(timer);resolve(message.port);}});
+    });
+    const origin=`http://127.0.0.1:${port}`;
+    const headers={authorization:"Bearer isolated-mysql-device-token"};
+    const overview=await fetch(`${origin}/api/overview?productLimit=20`,{headers}).then(r=>r.json());
+    assert.equal(overview.productCount,1);
+    assert.equal((await fetch(`${origin}/api/jobs?limit=20`,{headers}).then(r=>r.json())).total,1);
+    const session=await users.signSession(user.id);
+    const userHeaders={cookie:`temu_session=${session.value}`};
+    assert.equal((await fetch(`${origin}/api/overview?productLimit=20`,{headers:userHeaders})).status,200);
+    assert.equal((await fetch(`${origin}/api/jobs/${job.id}`,{headers:userHeaders})).status,403);
+    assert.equal((await fetch(`${origin}/api/jobs/${job.id}/cancel`,{method:"POST",headers:userHeaders})).status,403);
+    assert.equal((await fetch(`${origin}/api/batches/${batch.id}`,{headers:userHeaders})).status,403);
+    assert.equal((await fetch(`${origin}/api/products/8000000001`,{headers:userHeaders})).status,403);
+    db=await openMysqlDatabase(config);
+    const sqlQueue=createJobQueue(root,null,{database:db});
+    assert.equal((await sqlQueue.getJob(job.id)).status,"queued");
+    success=true;
+    console.log(JSON.stringify({migration:true,sourceUnchanged:true,repeatedMigrationRefused:true,http:true,foreignReadDenied:true,foreignCancelDenied:true}));
+} finally {
+    if(child&&child.exitCode===null){const exited=new Promise(resolve=>child.once("exit",resolve));child.kill();await exited;}
+    if(db) await db.close();
+    if(success) await admin.query(`DROP DATABASE ${name}`);
+    else console.error(`保留隔离迁移库 ${name},资料 ${root}`);
+    await admin.end();
+}

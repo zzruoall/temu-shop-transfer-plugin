@@ -6,12 +6,13 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {createJobQueue} from '../lib/job-queue.mjs';
 import {createDirectProduct} from '../../worker/direct-create.mjs';
-const product={spuId:'9100894431',ready:true,title:'测试',images:['https://example.com/a'],skuIds:['1'],skcIds:['2']};
+const product={spuId:'9100894431',ready:true,title:'测试',images:['https://example.com/a'],skuIds:['1'],skcIds:['2'],publicationData:{sourceProduct:{productId:'9100894431'}}};
 // 第二个商品只用于验证“插件掉线后人工重置”，与主流程商品隔离，避免两条链路互相占用同店同货号。
-const strayProduct={spuId:'9100894432',ready:true,title:'测试2',images:['https://example.com/b'],skuIds:['3'],skcIds:['4']};
+const strayProduct={spuId:'9100894432',ready:true,title:'测试2',images:['https://example.com/b'],skuIds:['3'],skcIds:['4'],publicationData:{sourceProduct:{productId:'9100894432'}}};
 const root=await mkdtemp(path.join(os.tmpdir(),'direct-create-test-'));
-const queue=createJobQueue(root,{getBatch:async()=>({sourceStoreId:'11111111',products:[product,strayProduct]}),listOverview:async()=>({})});
-const identity={storeId:'22222222',storeName:'target',pageStoreName:'target',pluginInstanceId:'test',pluginDetected:true,identityMatched:true,pluginVersion:'10.9.0'};
+// 人工下发前服务端要核对来源原包；桩只做一致性透传，不代表真实校验逻辑。
+const queue=createJobQueue(root,{getBatch:async()=>({sourceStoreId:'11111111',products:[product,strayProduct]}),listOverview:async()=>({}),verifyBatchTransfer:async(_batch,items)=>items});
+const identity={storeId:'22222222',storeName:'target',pageStoreName:'target',pluginInstanceId:'test',pluginDetected:true,identityMatched:true,pluginVersion:'10.10.61'};
 await queue.registerAgent(identity);
 const input={sourceStoreId:'11111111',targetStoreId:'22222222',targetStoreName:'target',sourceBatchId:'batch',spuIds:[product.spuId],requireOnline:true,directCreate:true,complianceVersion:'V2.0'};
 await assert.rejects(queue.createJob({...input,complianceVersion:''}));
@@ -20,19 +21,29 @@ await queue.reportOpenResult({jobId:job.id,storeId:identity.storeId,status:'open
 const {claimed}=await queue.claimJobs({...identity,claimManualUploads:true,manualUploadsOnly:true,pendingUploadCount:0,pendingUploadBytes:0});
 assert.equal(claimed[0].directCreate,true);
 const base={...identity,jobId:job.id,spuId:product.spuId,claimToken:claimed[0].claimToken};
-await queue.reportProgress({...base,status:'received'});
+await queue.reportProgress({...base,status:'received',snapshotSha256:claimed[0].transferIntegrity.sha256});
 await assert.rejects(queue.reportProgress({...base,status:'uploaded'}));
-const begin={...base,phase:'begin',requestHash:'a'.repeat(64),mallId:'123456'};
+const begin={...base,phase:'begin',requestHash:'a'.repeat(64),mallId:'123456',authorizationKey:'authkey-aaaaaaaaaaaaaaaa'};
+// 同一授权键的并发请求必须收敛到同一个许可：后到者幂等重放，不得再生成第二次提交。
 const results=await Promise.allSettled([queue.directProgress(begin),queue.directProgress(begin)]);
-assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+const fulfilled=results.filter(r=>r.status==='fulfilled');
+assert.equal(fulfilled.length,2,'同一授权键的并发请求都应得到应答');
+assert.equal(new Set(fulfilled.map(r=>r.value.attemptId)).size,1,'并发请求不得产生两个提交许可');
+assert.equal(fulfilled.filter(r=>r.value.resumed).length,1,'后到者必须是幂等重放');
 const attemptId=results.find(r=>r.status==='fulfilled').value.attemptId;
 await assert.rejects(queue.cancelJob(job.id));
-// 网站只做接收、存储、下发，不判断平台商品是否重复：发送侧唯一的约束是目标店插件仍在提交中，
-// 因此这里拦住的是“正在创建”的并发下发，而不是重复商品。
-await assert.rejects(queue.createJob({...input}));
+// 新点击可独立投递同一商品，不能改变旧执行尝试；投递成功不等于立即获得平台执行许可。
+const independentSend = await queue.createJob({...input});
+assert.notEqual(independentSend.id, job.id);
+assert.equal((await queue.getJob(job.id)).items[0].directAttemptId, attemptId);
+await queue.cancelJob(independentSend.id);
 await queue.directProgress({...base,phase:'unknown',attemptId,productId:'8002250622',reason:'测试未知结果'});
 assert.equal((await queue.getJob(job.id)).items[0].createdProductId,'8002250622');
-await assert.rejects(queue.directProgress(begin));
+// 同一授权键重传只确认原许可，绝不产生第二次提交；结果未知时也不得自动重发。
+const replayed=await queue.directProgress(begin);
+assert.equal(replayed.attemptId,attemptId,'重传不得生成新的提交许可');
+assert.equal(replayed.resumed,true,'重传必须是幂等重放');
+assert.equal(replayed.state,'unknown','未知结果必须保留，不能借重传重新提交');
 await assert.rejects(queue.cancelJob(job.id));
 await queue.directProgress({...base,phase:'created',attemptId,productId:'8002250622',verified:true});
 // 网络重传的相同完成回执可幂等确认，错误商品编号不能覆盖成功结果。
@@ -51,7 +62,11 @@ for(const file of await readdir(path.join(root,'data'))) {
     await writeFile(location,JSON.stringify(data));
 }
 assert.equal((await queue.directProgress({...base,phase:'created',attemptId,productId:'8002250622',verified:true})).state,'created');
-await assert.rejects(queue.directProgress(begin));
+// 心跳过期后重传同一授权键仍只确认原许可，不能因心跳变化重新授权或重复提交。
+const staleReplay=await queue.directProgress(begin);
+assert.equal(staleReplay.attemptId,attemptId,'心跳过期后重传不得生成新许可');
+assert.equal(staleReplay.resumed,true,'心跳过期后重传必须是幂等重放');
+assert.equal(staleReplay.state,'created','已提交成功的尝试不能被重传改写');
 // 心跳已过期的店铺不能拿到新的下发，恢复心跳后才允许重新创建；这里必须先恢复，否则下面会被离线校验拦住。
 await queue.registerAgent(identity);
 // 任务结束后同一店铺与商品可以再次下发，是否已存在由目标店插件在平台内自行检索。
@@ -88,12 +103,13 @@ const rejectedClaim=await queue.claimJobs({...identity,claimManualUploads:true,m
 const rejectedItem=rejectedClaim.claimed.find(item=>item.jobId===reissued.id);
 assert.ok(rejectedItem,'重新下发的任务必须能被目标店领取');
 const rejectedBase={...identity,jobId:reissued.id,spuId:product.spuId,claimToken:rejectedItem.claimToken};
-await queue.reportProgress({...rejectedBase,status:'received'});
-const rejectedAttempt=await queue.directProgress({...rejectedBase,phase:'begin',requestHash:'b'.repeat(64),mallId:'123456'});
+await queue.reportProgress({...rejectedBase,status:'received',snapshotSha256:rejectedItem.transferIntegrity.sha256});
+const rejectedAttempt=await queue.directProgress({...rejectedBase,phase:'begin',requestHash:'b'.repeat(64),mallId:'123456',authorizationKey:'authkey-bbbbbbbbbbbbbbbb'});
 await assert.rejects(queue.directProgress({...rejectedBase,phase:'preflight_failed',attemptId:'wrong-attempt',reason:'当前类目净含量必填'}));
 assert.equal((await queue.directProgress({...rejectedBase,phase:'preflight_failed',attemptId:rejectedAttempt.attemptId,reason:'当前类目净含量必填（错误码 2000135）'})).state,'preflight_failed');
 const rejectedJob=await queue.getJob(reissued.id);
-assert.equal(rejectedJob.items[0].directState,'preflight_failed');
+// 回执通道对旧插件仍回 preflight_failed，数据库存准确的 rejected；两者不能混为一谈。
+assert.equal(rejectedJob.items[0].directState,'rejected');
 assert.equal(rejectedJob.items[0].status,'failed');
 assert.match(String(rejectedJob.items[0].reason),/净含量/);
 // 人工确认重试是 unknown / preflight_failed / rejected 之后唯一能重新排队的入口：
@@ -123,7 +139,7 @@ const strandedClaim=await queue.claimJobs({...identity,claimUploads:true,claimMa
 const strandedItem=strandedClaim.claimed.find(item=>item.jobId===stranded.id);
 assert.equal(strandedItem.directRetrySequence,0,'首次下发不带人工重试代次');
 const strandedBase={...identity,jobId:stranded.id,spuId:strayProduct.spuId,claimToken:strandedItem.claimToken};
-await queue.reportProgress({...strandedBase,status:'received'});
+await queue.reportProgress({...strandedBase,status:'received',snapshotSha256:strandedItem.transferIntegrity.sha256});
 const strandedRetry=await queue.directRetry({jobId:stranded.id,storeId:identity.storeId,spuId:strayProduct.spuId,confirmed:true});
 assert.equal(strandedRetry.state,'queued_for_retry');
 assert.equal(strandedRetry.retrySequence,1,'人工重试必须递增代次，插件据此清掉本地旧 attempt');
@@ -136,8 +152,8 @@ const creating=await queue.createJob({...strayInput,replaceExisting:true});
 const creatingClaim=await queue.claimJobs({...identity,claimUploads:true,claimManualUploads:true,manualUploadsOnly:true,pendingUploadCount:0,pendingUploadBytes:0});
 const creatingItem=creatingClaim.claimed.find(item=>item.jobId===creating.id);
 const creatingBase={...identity,jobId:creating.id,spuId:strayProduct.spuId,claimToken:creatingItem.claimToken};
-await queue.reportProgress({...creatingBase,status:'received'});
-await queue.directProgress({...creatingBase,phase:'begin',requestHash:'c'.repeat(64),mallId:'123456'});
+await queue.reportProgress({...creatingBase,status:'received',snapshotSha256:creatingItem.transferIntegrity.sha256});
+await queue.directProgress({...creatingBase,phase:'begin',requestHash:'c'.repeat(64),mallId:'123456',authorizationKey:'authkey-cccccccccccccccc'});
 await assert.rejects(queue.directRetry({jobId:creating.id,storeId:identity.storeId,spuId:strayProduct.spuId,confirmed:true}),/尚未结束/);
 {
     // 直接改写落盘状态来模拟插件掉线 11 分钟：不能依赖测试环境真的等待静默窗口。
@@ -163,16 +179,18 @@ await assert.rejects(queue.directRetry({jobId:creating.id,storeId:'99999999',spu
 // 已取消的项目会留着历史 directState；人工重试不能让取消过的商品重新排队。
 await queue.cancelJob(creating.id);
 await assert.rejects(queue.directRetry({jobId:creating.id,storeId:identity.storeId,spuId:strayProduct.spuId,confirmed:true}),/已取消/);
-// 发送侧唯一的约束是“目标店插件还在执行提交”：插件信号新鲜时拒绝下发，
-// 插件掉线留下的陈旧 creating 项不算还在执行，否则一次异常会永久堵死该店的发送通道。
+// 已授权提交即使掉线、超时也不能被新任务覆盖；新点击允许独立投递，保留旧回执凭证。
 const liveGuard=await queue.createJob({...strayInput});
 const liveGuardClaim=await queue.claimJobs({...identity,claimUploads:true,claimManualUploads:true,manualUploadsOnly:true,pendingUploadCount:0,pendingUploadBytes:0});
 const liveGuardClaimItem=liveGuardClaim.claimed.find(item=>item.jobId===liveGuard.id);
-assert.ok(liveGuardClaimItem,'发送前的独占检查需要在途项，先确认目标店能领取该任务');
+assert.ok(liveGuardClaimItem,'先确认目标店能领取旧任务，再验证新点击不会覆盖它');
 const liveGuardBase={...identity,jobId:liveGuard.id,spuId:strayProduct.spuId,claimToken:liveGuardClaimItem.claimToken};
-await queue.reportProgress({...liveGuardBase,status:'received'});
-await queue.directProgress({...liveGuardBase,phase:'begin',requestHash:'e'.repeat(64),mallId:'123456'});
-await assert.rejects(queue.createJob({...strayInput}),/正在提交/);
+await queue.reportProgress({...liveGuardBase,status:'received',snapshotSha256:liveGuardClaimItem.transferIntegrity.sha256});
+await queue.directProgress({...liveGuardBase,phase:'begin',requestHash:'e'.repeat(64),mallId:'123456',authorizationKey:'authkey-eeeeeeeeeeeeeeee'});
+const liveResend = await queue.createJob({...strayInput});
+assert.notEqual(liveResend.id, liveGuard.id);
+assert.equal((await queue.getJob(liveGuard.id)).items[0].claimToken, liveGuardClaimItem.claimToken);
+await queue.cancelJob(liveResend.id);
 {
     // 同样直接改写落盘状态模拟插件掉线 11 分钟，避免测试真的等待静默窗口。
     const {readFile,writeFile}=await import('node:fs/promises');
@@ -191,19 +209,21 @@ await assert.rejects(queue.createJob({...strayInput}),/正在提交/);
         if(touched)await writeFile(location,JSON.stringify(data));
     }
 }
-const afterStale=await queue.createJob({...strayInput});
-assert.equal((await queue.getJob(liveGuard.id)).items[0].status,'cancelled','陈旧 creating 项被新任务撤销');
-assert.equal(afterStale.items[0].status,'queued');
+const lateResend = await queue.createJob({...strayInput});
+assert.notEqual(lateResend.id, liveGuard.id);
+await queue.cancelJob(lateResend.id);
+assert.equal((await queue.getJob(liveGuard.id)).items[0].directState,'creating');
+await queue.directRetry({jobId:liveGuard.id,storeId:identity.storeId,spuId:strayProduct.spuId,confirmed:true});
+await queue.cancelJob(liveGuard.id);
 // 同一个货号同时挂在两个任务下时，逐个重试必须保持只有一个在途项，否则两件都会各自提交。
 const pairA=await queue.createJob({...strayInput,replaceExisting:true});
 const pairAClaim=await queue.claimJobs({...identity,claimUploads:true,claimManualUploads:true,manualUploadsOnly:true,pendingUploadCount:0,pendingUploadBytes:0});
 const pairAItem=pairAClaim.claimed.find(item=>item.jobId===pairA.id);
-await queue.reportProgress({...identity,jobId:pairA.id,spuId:strayProduct.spuId,claimToken:pairAItem.claimToken,status:'received'});
-await queue.directProgress({...identity,jobId:pairA.id,spuId:strayProduct.spuId,claimToken:pairAItem.claimToken,phase:'begin',requestHash:'d'.repeat(64),mallId:'123456'});
+await queue.reportProgress({...identity,jobId:pairA.id,spuId:strayProduct.spuId,claimToken:pairAItem.claimToken,status:'received',snapshotSha256:pairAItem.transferIntegrity.sha256});
+await queue.directProgress({...identity,jobId:pairA.id,spuId:strayProduct.spuId,claimToken:pairAItem.claimToken,phase:'begin',requestHash:'d'.repeat(64),mallId:'123456',authorizationKey:'authkey-dddddddddddddddd'});
 const pairAAttempt=(await queue.directProgress({...identity,jobId:pairA.id,spuId:strayProduct.spuId,claimToken:pairAItem.claimToken,phase:'unknown',attemptId:(await queue.getJob(pairA.id)).items[0].directAttemptId,reason:'测试未知结果'})).state;
 assert.equal(pairAAttempt,'unknown');
-// 另一份同店同货号的历史任务无法通过 createJob 造出来（在途项会拦住新下发），只能直接写入落盘状态，
-// 这正是线上历史任务里同一个货号挂在多个任务下的真实形态。
+// 直接构造缺少现代投递编号的历史任务，继续覆盖人工重试的兼容保护，不代表新点击禁止投递。
 const pairBId='legacy-pair-b';
 {
     const {readFile,writeFile}=await import('node:fs/promises');

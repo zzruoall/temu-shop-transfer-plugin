@@ -2,11 +2,15 @@
 
 importScripts("packet.js");
 importScripts("ingest-queue.js");
+importScripts("ingest-outbox.js");
 importScripts("ingest-endpoint.js");
 importScripts("store-identity.js");
 importScripts("operation-log.js");
 importScripts("cli-receiver.js");
+importScripts("transfer-integrity.js");
+importScripts("direct-receipts.js");
 importScripts("direct-executor.js");
+importScripts("execution-round.js");
 
 const DATABASE_NAME = "temu-local-dataset";
 const DATABASE_VERSION = 2;
@@ -121,7 +125,8 @@ function runTransaction(mode, operation) {
 }
 
 function redactSensitiveData(value, depth = 0) {
-    if (depth > 30) return "[DEPTH_LIMIT]";
+    // 超深输入必须明确失败，不能截断原商品后继续上报采集成功。
+    if (depth > 128) throw new Error("采集响应嵌套过深，已停止保存以避免截断商品资料");
     if (Array.isArray(value)) return value.map(item => redactSensitiveData(item, depth + 1));
     if (!value || typeof value !== "object") return value;
     const result = {};
@@ -590,6 +595,7 @@ async function saveCapture(event, sender) {
         extensionVersion: chrome.runtime.getManifest().version,
         classifierVersion: 8,
         redactionVersion: 1,
+        payloadIntegrity: await TemuTransferIntegrity.manifest(payload),
         eventId,
         savedAt: new Date().toISOString(),
         dataType,
@@ -706,12 +712,19 @@ async function exportFullPacketToDownload(options = {}) {
     const allowedSpuIds = Array.isArray(options.allowedSpuIds)
         ? options.allowedSpuIds.map(value => String(value || "").trim()).filter(Boolean)
         : null;
-    const records = requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords;
+    // 队列引用丢失不能静默缩成半包上传，否则操作日志会把部分商品误报为全部成功。
+    if (requestedIds) {
+        const storedIds = new Set(allRecords.map(record => String(record?.eventId || "")));
+        if ([...requestedIds].some(id => !storedIds.has(id))) throw new Error("本次采集的原始记录有缺失，请重新采集后上传");
+    }
+    const records = !frozen && requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords;
     if (!records.length) return { skipped: true, reason: "empty_packet", recordCount: 0, productCount: 0 };
     const packet = makeFullCapturePacket(records, await packetSourceOptions({
         scope: requestedIds ? "current-capture-run" : "all-local-captured-records",
         allowedSpuIds
     }));
+    // 新采集在落库前已有响应摘要；上传前再次核对，捕获本地留存记录损坏。旧记录不伪造此证据。
+    for (const record of records) await TemuTransferIntegrity.verify(record.payload, record.payloadIntegrity);
     if (!packet.products.length) return { skipped: true, reason: "no_products", recordCount: packet.records.length, productCount: 0 };
     const text = JSON.stringify(packet, null, 2);
     const bytes = getUtf8ByteLength(text);
@@ -1299,6 +1312,38 @@ function captureEnabledKey(tabId) {
     return `captureEnabledTab:${tabId}`;
 }
 
+let platformAdmissionQueue = Promise.resolve();
+/** 同一紫鸟配置内的多个标签共享平台会话；先完成占用检查再启动，独立店铺配置互不阻塞。 */
+function withPlatformAdmission(action) {
+    const run = platformAdmissionQueue.then(action);
+    platformAdmissionQueue = run.catch(() => {});
+    return run;
+}
+
+/** 只把页面采集视为平台占用；已落库数据的云端上传和 finalizationPending 不占发布锁。 */
+async function acquirePlatformForDirect(tabId, storeId) {
+    return withPlatformAdmission(async () => {
+        if (directRunningTabs.has(tabId) || directRunningStores.has(storeId)) return false;
+        const state = await chrome.storage.session.get(null);
+        if (Object.entries(state).some(([key, value]) =>
+            (key.startsWith("captureEnabledTab:") && value === true)
+            || (key.startsWith(DETAIL_QUEUE_PREFIX) && (value?.active || value?.platformUncertain)))) return false;
+        directRunningTabs.add(tabId);
+        directRunningStores.set(storeId, tabId);
+        return true;
+    });
+}
+
+/** 发布正在执行或重启后仍有未核对尝试时，不允许采集刷新页面打断平台提交。 */
+async function assertPlatformAvailableForCapture() {
+    if (directRunningTabs.size) throw new Error("当前店铺正在发布商品，请等待本件处理结束后再采集");
+    const state = await chrome.storage.local.get(null);
+    if (Object.entries(state).some(([key, value]) => key.startsWith("directAttempt:") && !value?.done
+        && ["submitting", "verifying", "unknown"].includes(value?.stage))) {
+        throw new Error("当前店铺有提交中或待核对的商品，请先核对发布结果再采集");
+    }
+}
+
 function selectedCaptureKey(tabId) {
     return `selectedCaptureIntent:${tabId}`;
 }
@@ -1307,6 +1352,7 @@ function selectedCaptureKey(tabId) {
 async function saveSelectedCaptureIntent(input, sender) {
     const tabId = sender && sender.tab && sender.tab.id;
     if (!Number.isInteger(tabId)) throw new Error("missing_sender_tab");
+    await withPlatformAdmission(() => assertPlatformAvailableForCapture());
     const ids = [...new Set((Array.isArray(input && input.spuIds) ? input.spuIds : [])
         .map(normalizeProductId).filter(Boolean))].slice(0, 1000);
     if (!ids.length) throw new Error("no_selected_spu_ids");
@@ -1354,13 +1400,14 @@ function withDetailQueue(tabId, task) {
 }
 
 /**
- * 详情补采队列放在 session storage，跨商品导航仍能保留进度，但关闭浏览器后不会把旧任务带到下一次采集。
+ * 详情补采队列绑定当前文档；刷新、切店或插件升级后只能查看旧结果，不能继续旧队列。
  * 队列只保存 SPU、状态和事件指纹，不保存正文，正文仍由 IndexedDB 的原始响应负责承载。
  */
 async function loadDetailQueue(tabId) {
     const stored = await chrome.storage.session.get(detailQueueKey(tabId));
     const value = stored[detailQueueKey(tabId)];
     if (!value || typeof value !== "object" || value.version !== DETAIL_QUEUE_VERSION) return null;
+    if (value.active && !await isIngestPageActive(value.pageBinding)) return { ...value, active: false, status: 'stopped' };
     return value;
 }
 
@@ -1409,8 +1456,11 @@ function detailQueueView(queue) {
 
 /** 详情队列结束后只保存入库结果摘要；采集过程不再自动生成下载文件。 */
 function summarizeDetailFinalization(result, error) {
+    // 已持久排队的网络失败仍由队列接管，刷新面板后用本批指纹追踪，不能误显示为永久失败。
+    if (error?.queue?.currentPending) return { status: "pending", reason: "等待云端重试", fingerprint: error.fingerprint || "" };
     if (error) return { status: "error", error: String(error && error.message || error).slice(0, 160) };
     if (!result || typeof result !== "object") return { status: "unknown" };
+    if (result.queue?.currentPending && !result.batchId) return { status: "pending", reason: "已排队，等待云端入库", fingerprint: result.fingerprint || "" };
     if (result.exported) return {
         status: "done",
         fileName: String(result.fileName || "").slice(0, 240),
@@ -1431,10 +1481,13 @@ async function beginDetailSupplement(input, sender) {
     const tabId = sender && sender.tab && sender.tab.id;
     if (!Number.isInteger(tabId)) throw new Error("missing_sender_tab");
     if (!await isTabCaptureEnabled(tabId)) throw new Error("capture_not_enabled_for_tab");
+    const captureBinding = (await chrome.storage.session.get(`capturePageBinding:${tabId}`))[`capturePageBinding:${tabId}`];
+    if (!captureBinding?.captureToken || captureBinding.captureToken !== input.captureToken || captureBinding.documentId !== sender.documentId
+        || !await isIngestPageActive(captureBinding)) throw Error('stale_capture_round');
     if (!/^https:\/\/agentseller\.temu\.com\/goods\/list(?:[?#]|$)/.test(sender.tab.url || "")) throw new Error("当前仅支持 agentseller 商品列表页接口采集");
     const existing = await loadDetailQueue(tabId);
     if (existing && existing.active) {
-        // 用户手动返回列表页或页面刷新后，继续当前商品而不是创建第二条队列。
+        // 同一文档的重复消息只读取现有队列，不创建第二批采集。
         if (existing.mode !== "api") await navigateDetailQueue(tabId, existing);
         return detailQueueView(existing);
     }
@@ -1446,6 +1499,7 @@ async function beginDetailSupplement(input, sender) {
         version: DETAIL_QUEUE_VERSION,
         mode: "api",
         runId: crypto.randomUUID(),
+        pageBinding: captureBinding,
         contextUrl: String(sender.tab.url || ""),
         active: true,
         status: "running",
@@ -1510,6 +1564,9 @@ async function advanceDetailSupplement(input, sender) {
     }
     if (queue.mode === "api" && item.status === "failed") {
         // 权限、超时或ID冲突后不继续撞接口；未查询项保留queued供日志区分。
+        // 页面查询超时不代表底层请求已取消，刷新文档之前不得把页面交给发布执行器。
+        queue.platformUncertain = /超时|timeout/i.test(item.reason || "");
+        queue.platformUncertainAt = queue.platformUncertain ? Date.now() : 0;
         queue.active = false;
         queue.status = "partial";
         queue.finishedAt = new Date().toISOString();
@@ -1549,13 +1606,16 @@ async function finalizeDetailQueue(tabId, queue, options = {}) {
     queue.finalizationPending = true;
     queue.finalization = { download: { status: "skipped", reason: "采集完成不自动下载，请从导出页手动导出" }, ingest: { status: "pending" } };
     await saveDetailQueue(tabId, queue);
+    // 旧导航采集必须先返回列表再释放页面占用，不能在云端上传结束后突然导航打断发布。
+    if (options.returnToList && queue.listUrl) await chrome.tabs.update(tabId, { url: queue.listUrl });
     await chrome.storage.session.set({ [captureEnabledKey(tabId)]: false });
     try {
         const settings = await getIngestSettings();
         if (settings.autoPush === false) {
             queue.finalization.ingest = { status: "skipped", reason: "已关闭自动" };
         } else {
-            const result = await pushFullPacket({ eventIds, allowedSpuIds });
+            // 主批量采集也进入持久队列；限流只延后上传，不要求用户重采，也不占用发布页面。
+            const result = await maybeAutoPushFullPacket({ eventIds, allowedSpuIds, saved: eventIds.length, productEvents: eventIds.length }, queue.pageBinding);
             queue.finalization.ingest = summarizeDetailFinalization(result, null);
         }
     } catch (error) {
@@ -1563,14 +1623,15 @@ async function finalizeDetailQueue(tabId, queue, options = {}) {
     }
     queue.finalizationPending = false;
     await saveDetailQueue(tabId, queue);
-    if (options.returnToList && queue.listUrl) await chrome.tabs.update(tabId, { url: queue.listUrl });
 }
 
 /** 用户停止采集时取消未完成的详情导航，避免旧任务在下一次采集时继续串入当前页。 */
 async function clearDetailSupplement(sender) {
     const tabId = sender && sender.tab && sender.tab.id;
     if (!Number.isInteger(tabId)) throw new Error("missing_sender_tab");
+    await invalidateIngestTab(tabId);
     const queue = await loadDetailQueue(tabId);
+    if (queue?.platformUncertain) throw new Error("上一条采集请求结果未确认，请先刷新店铺页面再开始新操作");
     await chrome.storage.session.remove(detailQueueKey(tabId));
     return { cleared: true, queue: detailQueueView(queue) };
 }
@@ -1819,11 +1880,23 @@ async function pushFullPacket(options = {}) {
  * 并发推送串行化，防止采集结束和手动点击同时写出两份相同文件。
  */
 async function pushFullPacketNow(options = {}) {
+    if (options.pageBinding && !await isIngestPageActive(options.pageBinding)) throw Error('capture_round_ended');
     const settings = await bootstrapIngestToken(await getIngestSettings(), true);
     const allowed = await ensureIngestPermission(settings.endpoint);
     if (!allowed) throw new Error("ingest_permission_denied");
     if (!settings.token) throw new Error("missing_ingest_token");
-    const allRecords = await getAllRecords();
+    const outboxId = options.jobId || 'manual';
+    let frozen = await TemuIngestOutbox.get(outboxId);
+    if (frozen && (!frozen.pageBinding || !await isIngestPageActive(frozen.pageBinding)
+        || options.pageBinding && (frozen.pageBinding.tabId !== options.pageBinding.tabId || frozen.pageBinding.documentId !== options.pageBinding.documentId))) {
+        // 手动上传也不能复用刷新前的manual包；旧请求仅补发取消，新采集必须重新冻结内容。
+        await chrome.storage.local.set({ [`ingestStop:${frozen.requestId}`]: { requestId: frozen.requestId } });
+        await TemuIngestOutbox.retire(outboxId);
+        void flushIngestStops().catch(() => {});
+        frozen = null;
+        if (options.jobId) throw Object.assign(Error('capture_round_ended'), { scheduling: { action: 'stop', reasonCode: 'capture_round_ended' } });
+    }
+    const allRecords = frozen ? frozen.packet.records : await getAllRecords();
     const requestedIds = Array.isArray(options.eventIds)
         ? new Set(options.eventIds.map(value => String(value || "").trim()).filter(Boolean))
         : null;
@@ -1840,7 +1913,7 @@ async function pushFullPacketNow(options = {}) {
             productCount: 0
         };
     }
-    const packet = makeFullCapturePacket(records, await packetSourceOptions({
+    const packet = frozen?.packet || makeFullCapturePacket(records, await packetSourceOptions({
         scope: requestedIds ? "current-capture-run" : "all-local-captured-records",
         allowedSpuIds
     }));
@@ -1852,21 +1925,65 @@ async function pushFullPacketNow(options = {}) {
             productCount: 0
         };
     }
-    const fileName = stampPacketName("temu-full-capture");
+    const fileName = frozen?.fileName || stampPacketName("temu-full-capture");
     const ingestLabel = String(options.label || packet.source && packet.source.shopName || "插件直推");
-    const response = await authenticatedIngestFetch(settings.endpoint, settings, {
-        method: "POST",
-        headers: { "content-type": "application/json; charset=utf-8", "x-ingest-filename": fileName },
-        body: JSON.stringify({
-            // HTTP 请求头只接受 ByteString；中文批次名必须放 JSON 正文，否则浏览器会在发送前抛错。
-            label: ingestLabel,
-            shopName: options.shopName || packet.source && packet.source.shopName || "",
-            fileName,
-            packet
-        })
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `ingest_http_${response.status}`);
+    const transferIntegrity = await TemuTransferIntegrity.manifest(packet);
+    // 重试只读取同一份落盘采集包；采集记录后来变化不能悄悄变成另一次上传。
+    const requestId = frozen?.requestId || crypto.randomUUID();
+    if (!frozen) await TemuIngestOutbox.put(outboxId, { packet, fileName, requestId, transferIntegrity, pageBinding: options.pageBinding });
+    if (options.pageBinding) {
+        // 手动直推也登记页面绑定，不能只取消自动队列而遗漏手动受理的服务端请求。
+        await chrome.storage.local.set({ [`ingestRequest:${requestId}`]: { requestId, outboxId, pageBinding: options.pageBinding } });
+    }
+    if (options.pageBinding && !await isIngestPageActive(options.pageBinding)) throw Error('capture_round_ended');
+    const payload = JSON.stringify({ label: ingestLabel, shopName: options.shopName || packet.source?.shopName || '', fileName, packet, transferIntegrity });
+    const prepared = await hubJson('/api/ingest/prepare', { requestId, accountExecutionProtocol: 1, sha256: transferIntegrity.sha256, bytes: getUtf8ByteLength(payload),
+        pluginInstanceId: await getPluginInstanceId(), storeId: packet.source?.sourceStoreId || (await getBoundStore()).storeId });
+    if (prepared.scheduling) throw Object.assign(Error(prepared.scheduling.reasonCode), { scheduling: prepared.scheduling });
+    // POST 与回执正文共用 120 秒期限，避免正文挂起长期占用原有串行队列；取消不代表服务端未入库。
+    const uploadController = new AbortController();
+    const uploadTimeout = setTimeout(() => uploadController.abort(), 120000);
+    let response, data;
+    try {
+        if (prepared.state === 'completed') { response = { ok: true }; data = prepared.receipt; }
+        else if (['queued', 'running', 'failed', 'cancelled'].includes(prepared.state)) {
+            response = { ok: true };
+            data = await queryAccountIngestReceipt(requestId, settings, uploadController.signal);
+        }
+        else {
+        if (prepared.state !== 'ready' || !prepared.token) throw Error('ingest_protocol_invalid');
+        if (options.pageBinding && !await isIngestPageActive(options.pageBinding)) throw Error('capture_round_ended');
+        response = await authenticatedIngestFetch(settings.endpoint, settings, {
+            method: "POST",
+            signal: uploadController.signal,
+            headers: { "content-type": "application/json; charset=utf-8", "x-ingest-filename": fileName, 'x-ingest-permit': prepared.token, 'x-plugin-instance': await getPluginInstanceId() },
+            body: payload
+        });
+        data = await response.json().catch(error => {
+            // 保留原有非超时解析兜底，但不能把取消读取误报为服务端未确认完整接收。
+            if (uploadController.signal.aborted) throw error;
+            return {};
+        });
+        if (uploadController.signal.aborted) throw new Error('ingest_aborted');
+        if (response.status === 202 && data.accepted === true) {
+            // 202只说明受理；原请求留在outbox，后续只查询，不把排队误报成功或重新上传正文。
+            data = await queryAccountIngestReceipt(requestId, settings, uploadController.signal);
+        }
+        }
+    } catch (error) {
+        if (uploadController.signal.aborted) {
+            throw new Error("ingest_timeout: 入库上传或回执读取超过120秒，结果可能已入库，不能判定未入库；只能对同一采集包进行幂等核对重试");
+        }
+        throw error;
+    } finally {
+        clearTimeout(uploadTimeout);
+    }
+    if (!response.ok) throw Object.assign(new Error(data.error || `ingest_http_${response.status}`), { status: response.status, scheduling: data.scheduling });
+    // 去重复用的旧原包可有不同导出时间；核对本次接收摘要及服务端落盘回读结果，不强求两个包时间相同。
+    if (!data.transferIntegrity?.verified || data.transferIntegrity.algorithm !== transferIntegrity.algorithm
+        || data.transferIntegrity.receivedSha256 !== transferIntegrity.sha256) throw new Error("服务端未确认完整接收采集包，请检查网站版本或重新上传");
+    await TemuIngestOutbox.complete(outboxId, { requestId, batchId: data.batchId || data.batch?.id || '' });
+    await chrome.storage.local.remove(`ingestRequest:${requestId}`);
     return {
         reused: Boolean(data.reused),
         batchId: data.batchId || (data.batch && data.batch.id) || "",
@@ -1877,7 +1994,25 @@ async function pushFullPacketNow(options = {}) {
     };
 }
 
-async function maybeAutoPushFullPacket(context = {}) {
+/** 只查询不可变上传请求；没有完成回执就保持排队，业务失败和取消必须停止自动重试。 */
+async function queryAccountIngestReceipt(requestId, settings, signal) {
+    const response = await authenticatedIngestFetch(hubApiUrl(settings.endpoint, `/api/ingest/requests/${encodeURIComponent(requestId)}`), settings, {
+        method: 'GET', signal, headers: { 'x-plugin-instance': await getPluginInstanceId() }
+    });
+    const result = await response.json();
+    if (!response.ok) throw Object.assign(Error(result.error || `ingest_http_${response.status}`), { status: response.status });
+    if (result.state === 'completed') return result.receipt;
+    if (['failed', 'cancelled', 'needs_confirmation'].includes(result.state)) {
+        throw Object.assign(Error(`ingest_${result.state}`), { status: 409,
+            scheduling: { action: 'stop', reasonCode: `ingest_${result.state}` } });
+    }
+    throw Object.assign(Error('ingest_result_pending'), { scheduling: {
+        protocol: 1, action: 'reconcile', reasonCode: 'ingest_result_pending', retryAfterMs: 15000
+    } });
+}
+
+async function maybeAutoPushFullPacket(context = {}, pageBinding = null) {
+    if (!await isIngestPageActive(pageBinding)) return { skipped: true, reason: 'capture_round_ended' };
     const settings = await getIngestSettings();
     if (!settings.autoPush) return { skipped: true, reason: "auto_push_disabled" };
     // 自动推送只能代表刚结束的任务；没有本次商品回执时禁止把历史 IndexedDB 全量包误报为本次采集结果。
@@ -1890,6 +2025,8 @@ async function maybeAutoPushFullPacket(context = {}) {
     if (!allowedSpuIds.length) return { skipped: true, reason: "no_current_page_spu" };
     // 同一采集再次入队时，attempts/nextAttemptAt 由队列合并逻辑保留；这里只提交本次商品范围。
     await enqueueIngestJob({
+        id: `ingest-${crypto.randomUUID()}`,
+        pageBinding,
         eventIds,
         allowedSpuIds,
         saved: Number(context.saved) || 0,
@@ -1911,6 +2048,9 @@ async function maybeAutoPushFullPacket(context = {}) {
         return { skipped: true, reason: "queued", queue: await ingestQueueStatusFor(fingerprint, jobs), fingerprint };
     } catch (error) {
         const jobs = await loadPendingIngestJobs();
+        if (String(error?.message || "") === "ingest_capacity_wait") {
+            return { skipped: true, reason: "queued", queue: await ingestQueueStatusFor(fingerprint, jobs), fingerprint };
+        }
         if (error && error.fingerprint === fingerprint) throw error;
         const mine = jobs.find(job => job.fingerprint === fingerprint);
         if (!mine) throw error;
@@ -1959,9 +2099,9 @@ async function recordIngestOutcome(incoming) {
 
 async function enqueueIngestJob(job) {
     return withIngestStore(async () => {
-        const jobs = await loadPendingIngestJobs();
+        const jobs = await pruneInactiveIngestJobs(await loadPendingIngestJobs());
         const result = TemuIngestQueue.upsertJobWithEviction(jobs, job);
-        // 第 11 个任务会挤掉最早的失败任务；必须写成 error 终态，不能静默消失。
+        // 第11个新任务明确拒收，保留既有等待或核对中的任务，不静默覆盖旧任务。
         for (const evicted of result.evicted) {
             await recordIngestOutcome({
                 fingerprint: evicted.fingerprint,
@@ -2032,11 +2172,16 @@ async function ingestQueueStatusFor(fingerprint, jobs) {
 
 async function runPendingIngest() {
     const prepared = await withIngestStore(async () => {
-        const jobs = await loadPendingIngestJobs();
+        const jobs = await pruneInactiveIngestJobs(await loadPendingIngestJobs());
         const job = TemuIngestQueue.nextDueJob(jobs);
         if (!job) {
             await schedulePendingIngestAlarm(jobs);
             return { skipped: true, reason: "no_pending_ingest", queue: await ingestQueueStatusFor("", jobs), fingerprint: "" };
+        }
+        if (!await isIngestPageActive(job.pageBinding)) {
+            await retireIngestJob(job);
+            const remaining = await savePendingIngestJobs(TemuIngestQueue.removeJob(jobs, job.id));
+            return { skipped: true, reason: 'capture_round_ended', queue: await ingestQueueStatusFor(job.fingerprint, remaining) };
         }
         if (!TemuIngestQueue.isUsableJob(job)) {
             const remaining = await savePendingIngestJobs(TemuIngestQueue.removeJob(jobs, job.id));
@@ -2054,7 +2199,7 @@ async function runPendingIngest() {
     if (!prepared.job) return prepared;
     const job = prepared.job;
     try {
-        const result = await pushFullPacket({ eventIds: job.eventIds, allowedSpuIds: job.allowedSpuIds });
+        const result = await pushFullPacket({ jobId: job.id, eventIds: job.eventIds, allowedSpuIds: job.allowedSpuIds, pageBinding: job.pageBinding });
         return withIngestStore(async () => {
             const jobs = await loadPendingIngestJobs();
             // 空包和无商品不能写成成功。没有批次号也没有复用回执时，只能记阻断/错误终态。
@@ -2075,8 +2220,18 @@ async function runPendingIngest() {
         const code = String(error && error.message ? error.message : error);
         const remaining = await withIngestStore(async () => {
             const jobs = await loadPendingIngestJobs();
+            if (!jobs.some(entry => entry.id === job.id) || !await isIngestPageActive(job.pageBinding)) {
+                await retireIngestJob(job);
+                return savePendingIngestJobs(TemuIngestQueue.removeJob(jobs, job.id));
+            }
             // 缺令牌或未授权不会因为重试变好，继续排队只会在后台反复失败。
-            if (PERMANENT_INGEST_ERRORS.has(code) || job.attempts + 1 >= TemuIngestQueue.MAX_ATTEMPTS) {
+            if (['wait', 'reconcile'].includes(error.scheduling?.action) || code === "ingest_capacity_wait" || /ingest_timeout|Failed to fetch|NetworkError/.test(code)) {
+                // 服务端排队不是业务失败，不能消耗失败次数；加入抖动避免上百插件同时重连。
+                const next = jobs.map(entry => entry.id === job.id ? { ...entry, lastError: error.scheduling?.action === 'reconcile' || /timeout/.test(code) ? '核对服务端入库回执，未重复上传' : '等待服务端入库空位',
+                    nextAttemptAt: new Date(Date.now() + Math.min(300000, Math.max(15000, Number(error.scheduling?.retryAfterMs) || 30000)) + Math.random() * 15000).toISOString() } : entry);
+                return savePendingIngestJobs(next);
+            }
+            if (['stop', 'reauthenticate'].includes(error.scheduling?.action) || [401, 403, 413, 422].includes(error.status) || PERMANENT_INGEST_ERRORS.has(code) || job.attempts + 1 >= TemuIngestQueue.MAX_ATTEMPTS) {
                 const next = await savePendingIngestJobs(TemuIngestQueue.removeJob(jobs, job.id));
                 await recordIngestOutcome({
                     fingerprint: job.fingerprint,
@@ -2160,8 +2315,8 @@ async function saveTargetUploadTasks(tasks) {
     const deduped = [];
     const seen = new Set();
     for (const task of (Array.isArray(tasks) ? tasks : [])) {
-        const key = `${String(task && task.jobId || "")}::${String(task && task.spuId || "")}`;
-        if (!key || key === "::" || seen.has(key)) continue;
+        const key = JSON.stringify([String(task?.targetStoreId || ""), String(task?.jobId || ""), String(task?.spuId || "")]);
+        if (!task?.jobId || !task?.spuId || seen.has(key)) continue;
         seen.add(key);
         deduped.push(task);
     }
@@ -2180,13 +2335,34 @@ async function saveTargetUploadTasks(tasks) {
         if (getUtf8ByteLength(JSON.stringify(bucket)) > MAX_TARGET_UPLOAD_TASKS_BYTES) throw new Error("target_upload_tasks_too_large");
     }
     await chrome.storage.local.set({ [TARGET_UPLOAD_TASKS_KEY]: deduped });
+    // 接收成功以实际持久化内容为准，不以 storage.set 返回为准；历史任务无摘要时保持原兼容语义。
+    const saved = (await chrome.storage.local.get(TARGET_UPLOAD_TASKS_KEY))[TARGET_UPLOAD_TASKS_KEY];
+    if (await TemuTransferIntegrity.hash(saved) !== await TemuTransferIntegrity.hash(deduped)) throw new Error("目标插件存储回读不一致");
     return deduped;
 }
 
 /** 领取响应后立即落盘，避免目标店切换到商品新建页时丢失快照。 */
 async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "") {
     const current = await getTargetUploadTasks();
-    const incoming = (Array.isArray(claimed) ? claimed : []).filter(item => item && item.jobId && item.spuId && item.snapshot).map(item => ({
+    // 去重限定本次任务、目标店和商品；新点击的新 jobId 不受旧商品记录影响。
+    const taskKey = item => JSON.stringify([String(item.targetStoreId || ""), String(item.jobId), String(item.spuId)]);
+    const unique = new Map();
+    // 先核验整批及包内冲突，再计算容量和落盘，不能静默选择内容不同的重复条目。
+    for (const item of (Array.isArray(claimed) ? claimed : [])) {
+        if (!item?.jobId || !item.spuId || !item.snapshot) throw new Error("目标商品快照缺失");
+        await TemuTransferIntegrity.verify(item.snapshot, item.transferIntegrity);
+        const key = taskKey(item);
+        const repeated = unique.get(key);
+        if (repeated && await TemuTransferIntegrity.hash(repeated.snapshot) !== await TemuTransferIntegrity.hash(item.snapshot)) throw new Error("同一投递包的商品快照发生冲突");
+        const existing = current.find(task => taskKey(task) === key);
+        if (existing) {
+            await TemuTransferIntegrity.verify(existing.snapshot, existing.transferIntegrity);
+            if (await TemuTransferIntegrity.hash(existing.snapshot) !== await TemuTransferIntegrity.hash(item.snapshot)) throw new Error("同一任务重领的商品快照发生变化");
+        }
+        if (!repeated) unique.set(key, item);
+    }
+    const incoming = [...unique.values()].map(item => ({
+        executionRunId: String(item.executionRunId || ''),
         jobId: String(item.jobId),
         spuId: String(item.spuId),
         title: String(item.title || ""),
@@ -2195,14 +2371,17 @@ async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "") {
         targetStoreId: String(item.targetStoreId || ""),
         sourceBatchId: String(item.sourceBatchId || ""),
         snapshot: item.snapshot,
+        ...(item.transferIntegrity ? { transferIntegrity: item.transferIntegrity } : {}),
         directCreate: Boolean(item.directCreate),
         status: "received",
+        // 快照落盘后仍需服务端确认摘要；网络失败保留此标记，下次心跳继续补报，不能提前执行。
+        receivePending: true,
         receivedAt: new Date().toISOString(),
         uploadOpenedAt: "",
         directRetrySequence: Math.max(0, Number(item.directRetrySequence || 0))
     }));
-    const existingKeys = new Set(current.map(task => `${task.jobId}::${task.spuId}`));
-    const newTasks = incoming.filter(task => !existingKeys.has(`${task.jobId}::${task.spuId}`));
+    const existingKeys = new Set(current.map(taskKey));
+    const newTasks = incoming.filter(task => !existingKeys.has(taskKey(task)));
     const targetStoreIds = new Set(incoming.map(task => String(task.targetStoreId || "").trim()));
     // 一次领取只能属于一个目标店；混店响应即使服务端异常也不能污染本地分区。
     if (targetStoreIds.size > 1 || targetStoreIds.has("")) throw new Error("target_upload_task_store_mismatch");
@@ -2223,9 +2402,9 @@ async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "") {
         // 一直被插件自身的隔离规则挡住，必须按代次清掉，否则重新领取的任务永远不会再次提交。
         if(retrySequence>Math.max(0,Number(task.directRetrySequence||0))){
             resetAttemptKeys.push(`directAttempt:${task.jobId}:${task.spuId}`);
-            return {...task,claimToken:renewed.claimToken,directRetrySequence:retrySequence,directState:"",status:"received",reason:"已人工确认重试，插件重新开始对比与预检"};
+            return {...task,executionRunId:renewed.executionRunId,transferIntegrity:renewed.transferIntegrity || task.transferIntegrity,claimToken:renewed.claimToken,directRetrySequence:retrySequence,receivePending:true,directState:"",status:"received",reason:"已人工确认重试，插件重新开始对比与预检"};
         }
-        return {...task,claimToken:renewed.claimToken,directRetrySequence:Math.max(retrySequence,Math.max(0,Number(task.directRetrySequence||0)))};
+        return {...task,executionRunId:renewed.executionRunId,transferIntegrity:renewed.transferIntegrity || task.transferIntegrity,claimToken:renewed.claimToken,receivePending:true,directRetrySequence:Math.max(retrySequence,Math.max(0,Number(task.directRetrySequence||0)))};
     }), ...newTasks];
     if(resetAttemptKeys.length)await chrome.storage.local.remove(resetAttemptKeys);
     if (targetStoreId && getUtf8ByteLength(JSON.stringify([...existingForTarget, ...newTasks])) > MAX_TARGET_UPLOAD_TASKS_BYTES) throw new Error("target_upload_tasks_too_large");
@@ -2286,6 +2465,47 @@ async function retryDirectTask(sender, input = {}) {
     return { ok: true, queued: true, task: summarizeTargetUploadTasks(await getTargetUploadTasks(), storeId).find(item => item.jobId === jobId && item.spuId === spuId) };
 }
 
+/**
+ * 面板"取消本店待传任务"：服务端把未提交项置为取消，本地再清掉已领快照。
+ * 与停止轮次的区别：这是主动丢弃队列里还没提交的任务，不等自动清理。
+ */
+async function cancelStoreTasks(sender, identity = {}) {
+    const resolved = await directIdentity(sender, identity, true);
+    const storeId = String(resolved.storeId || "").trim();
+    if (!storeId) throw new Error('缺少目标店铺，无法取消任务');
+    const result = await hubJson('/api/jobs/cancel-store-tasks', {
+        storeId,
+        pluginInstanceId: await getPluginInstanceId(),
+        mallId: resolved.mallId || "",
+        identityMatched: resolved.identityMatched === true
+    });
+    if (!result?.ok) throw new Error(result?.error || '服务器未确认取消任务');
+    await TemuOperationLog.append({ action: 'direct-create', status: 'cancelled', phase: 'cancel_store_tasks',
+        storeId, reason: `操作者取消本店待传任务：取消 ${Number(result.cancelled || 0)}，保留 ${Number(result.kept || 0)}` });
+    return { ok: true, storeId, cancelled: Number(result.cancelled || 0), kept: Number(result.kept || 0) };
+}
+
+/** 服务端已取消后清本地已领快照：已有提交记录的项保留证据，不能连凭证一起删。 */
+async function purgeCancelledStoreTasks(_sender, { storeId = "" } = {}) {
+    const store = String(storeId || "").trim();
+    if (!store) return { ok: false, removed: 0 };
+    const tasks = await getTargetUploadTasks();
+    const keep = [], dropped = [];
+    for (const task of tasks) {
+        if (String(task.targetStoreId || "") !== store) { keep.push(task); continue; }
+        const key = `directAttempt:${task.jobId}:${task.spuId}`;
+        const record = (await chrome.storage.local.get(key))[key];
+        // 有尝试记录说明可能已经在平台提交过，保留证据，不能连凭证一起删。
+        if (record?.attemptId) keep.push(task);
+        else dropped.push(task);
+    }
+    if (dropped.length) {
+        await saveTargetUploadTasks(keep);
+        for (const task of dropped) await chrome.storage.local.remove(`directAttempt:${task.jobId}:${task.spuId}`);
+    }
+    return { ok: true, removed: dropped.length, kept: keep.length };
+}
+
 /** 创建进度推给当前列表页；页面关闭时只保留后台任务状态，不阻断创建。 */
 async function notifyDirectCreateProgress(tabId, payload = {}) {
     if (!tabId) return;
@@ -2314,7 +2534,7 @@ async function reconcileTargetUploadTasks(identity = {}) {
         tasks: scopedTasks.map(task => ({ jobId: task.jobId, spuId: task.spuId }))
     });
     const terminalKeys = new Set((Array.isArray(result.tasks) ? result.tasks : [])
-        .filter(task => ["cancelled", "failed", "identity_mismatch", "blocked", "uploaded"].includes(String(task.status || "")))
+        .filter(task => ["cancelled", "failed", "identity_mismatch", "blocked", "uploaded", "skipped"].includes(String(task.status || "")))
         .map(task => `${task.jobId}::${task.spuId}`));
     if (!terminalKeys.size) return tasks;
     return saveTargetUploadTasks(tasks.filter(task => !terminalKeys.has(`${task.jobId}::${task.spuId}`)));
@@ -2346,12 +2566,15 @@ async function reportTargetUploadTask(payload = {}) {
         }
         return { tasks: summarizeTargetUploadTasks(tasks, payload.storeId) };
     }
-    const result = await reportStoreJob({ ...payload, claimToken: task.claimToken, pluginDetected: true, pluginVersion: chrome.runtime.getManifest().version });
+    // 回执摘要只从后台已落盘快照生成，不采信页面传来的校验结果。
+    const verified = await TemuTransferIntegrity.verify(task.snapshot, task.transferIntegrity);
+    const result = await reportStoreJob({ ...payload, snapshotSha256: verified ? task.transferIntegrity.sha256 : "", claimToken: task.claimToken, pluginDetected: true, pluginVersion: chrome.runtime.getManifest().version });
     if (["uploaded", "failed", "cancelled", "identity_mismatch"].includes(payload.status)) {
         // 服务端已结束或否决的任务不应长期占用目标店本地容量；取消任务同样由下一次状态回传清理。
         await saveTargetUploadTasks(tasks.filter(item => item !== task));
     } else {
         task.status = String(payload.status || task.status);
+        if (payload.status === 'received') delete task.receivePending;
         if (payload.status === "upload_opened") task.uploadOpenedAt = new Date().toISOString();
         await saveTargetUploadTasks(tasks);
     }
@@ -2464,7 +2687,7 @@ async function hubJson(pathname, body) {
     const response = await authenticatedIngestFetch(hubApiUrl(settings.endpoint, pathname), settings, {
         signal: controller.signal,
         method: "POST",
-        headers: { "content-type": "application/json; charset=utf-8" },
+        headers: { "content-type": "application/json; charset=utf-8", 'x-plugin-instance': await getPluginInstanceId() },
         body: JSON.stringify(body || {})
     });
     // 正文超时或损坏不能当作成功确认，否则领取状态会与服务端分离。
@@ -2473,7 +2696,7 @@ async function hubJson(pathname, body) {
     try { data = raw ? JSON.parse(raw) : {}; } catch {
         throw new Error(`hub_http_${response.status}_${String(raw).slice(0,120) || "invalid_response"}`);
     }
-    if (!response.ok) throw new Error(directBackgroundErrorText(data.error) || `hub_http_${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(directBackgroundErrorText(data.error) || `hub_http_${response.status}`), { status: response.status, scheduling: data.scheduling });
     return data;
     } finally {
         clearTimeout(timeout);
@@ -2522,6 +2745,8 @@ async function registerStoreAgent(identity = {}) {
         pageUrl: identity.pageUrl || "",
         pluginVersion: chrome.runtime.getManifest().version,
         pluginDetected: true,
+        schedulingProtocol: 1,
+        executionRunProtocol: 1,
         identityMatched: identity.identityMatched === true,
         pageStoreName: identity.pageStoreName || "",
         pageType: identity.pageType || "",
@@ -2537,35 +2762,98 @@ async function registerStoreAgent(identity = {}) {
 }
 
 async function claimStoreJobs(identity = {}) {
+    await flushExecutionStops().catch(() => {});
     const bound = await getBoundStore();
     const usableBound = boundMatchesPage(bound, identity.pageStoreName || identity.storeName) ? bound : { storeId: "", storeName: "" };
     const storeId = String(identity.storeId || usableBound.storeId || "").trim();
     if (!storeId) throw new Error("missing_mapped_store");
     const pendingTasks = (await getTargetUploadTasks()).filter(task => String(task.targetStoreId || "") === storeId);
+    /** 暂停不领新任务，但本地已收妥的快照与已创建结果仍补报，不借反馈入口申请新执行授权。 */
+    const pausedResult = async () => {
+        // 补报本身是这条路的目的，但同样不能被挂起的请求拖住：超时就留给下一轮心跳重试。
+        await withTimeout(recoverPausedDirectResults(identity), EXECUTION_STOP_TIMEOUT_MS).catch(() => {});
+        for (const task of pendingTasks.filter(task => task.receivePending)) {
+            try {
+                await reportTargetUploadTask({ jobId: task.jobId, spuId: task.spuId, storeId, status: 'received',
+                    pageUrl: identity.pageUrl || '', pageStoreName: identity.pageStoreName || '', identityMatched: identity.identityMatched === true,
+                    reason: '接口创建已暂停，仅补报此前已落盘的商品快照' });
+            } catch (error) {
+                await TemuOperationLog.append({ action: 'receive-recovery', status: 'retry_wait', jobId: task.jobId,
+                    spuId: task.spuId, error: String(error.message || error) });
+                break;
+            }
+        }
+        return { claimed: [], receivedCount: 0, directPaused: true,
+            tasks: summarizeTargetUploadTasks(await getTargetUploadTasks(), storeId) };
+    };
+    if (await readDirectPause(storeId, identity)) return pausedResult();
     const pendingUploadBytes = getUtf8ByteLength(JSON.stringify(pendingTasks));
+    // 已落盘任务同时充当接收回执队列；正文只在本地校验，HTTP仅发送摘要和原领取凭证。
+    const receivedReceipts = [];
+    for (const task of pendingTasks) {
+        try {
+            await TemuTransferIntegrity.verify(task.snapshot, task.transferIntegrity);
+            const manifest = task.transferIntegrity || await TemuTransferIntegrity.manifest(task.snapshot);
+            receivedReceipts.push({ jobId: task.jobId, spuId: task.spuId, claimToken: task.claimToken,
+                directRetrySequence: task.directRetrySequence || 0, snapshotSha256: manifest.sha256 });
+        } catch (error) {
+            // 单件损坏不阻断其他正常回执，但损坏的商品不能借恢复入口申请执行许可。
+            await TemuOperationLog.append({ action: 'receive-recovery', status: 'failed', jobId: task.jobId, spuId: task.spuId, error: String(error.message || error) });
+        }
+    }
+    const pluginInstanceId = await getPluginInstanceId();
+    // 摘要计算可能耗时，发领取请求前再检查停止；已发出的领取响应只落盘，执行入口仍会拦截新增。
+    if (await readDirectPause(storeId, identity)) return pausedResult();
     const result = await hubJson("/api/jobs/claim", {
+        executionRunProtocol: 1,
+        executionRunId: identity.executionRunId,
         storeId,
         storeName: identity.storeName || usableBound.storeName || "",
         pageUrl: identity.pageUrl || "",
         pluginVersion: chrome.runtime.getManifest().version,
         pluginDetected: true,
+        schedulingProtocol: 1,
         identityMatched: identity.identityMatched === true,
         pageStoreName: identity.pageStoreName || "",
-        pluginInstanceId: await getPluginInstanceId(),
+        pluginInstanceId,
         // 服务端按扩展剩余任务槽位分批领取，避免超过本地 30 条硬上限后整批落盘失败。
         pendingUploadCount: pendingTasks.length,
         pendingUploadBytes,
+        receivedReceipts,
+        // 完整本地清单只用于恢复从未获执行授权的丢失快照，不能重置已经提交的任务。
+        inventoryComplete: true,
+        heldTasks: pendingTasks.map(task => ({ jobId: task.jobId, spuId: task.spuId })),
         source: "plugin-content"
         ,executionMode: identity.executionMode || "", mallId: identity.mallId || ""
+    }).catch(async error => {
+        if (Number(error.status) === 409 && /本轮任务已结束|execution_run_inactive/.test(String(error.message))) {
+            const state = (await chrome.storage.local.get(directPauseKey(storeId)))[directPauseKey(storeId)];
+            if (state?.executionRunId === identity.executionRunId) await stopExecutionRound(state, '服务端轮次已结束').catch(() => {});
+        }
+        throw error;
     });
     const claimed = Array.isArray(result && result.claimed) ? result.claimed : [];
     const manualJobs = claimed.filter(job => job && job.mode === "manual-plugin-upload");
     const legacyJobs = claimed.filter(job => !job || job.mode !== "manual-plugin-upload");
+    // 恢复的凭证只能写回后台私有存储，不透传到content页面；人工重试的旧快照让位给下一轮重新领取。
+    if (Array.isArray(result.receivedReceipts) && result.receivedReceipts.length) {
+        const next = [];
+        for (const task of await getTargetUploadTasks()) {
+            const reply = task.targetStoreId === storeId && result.receivedReceipts.find(item => item.jobId === task.jobId && item.spuId === task.spuId);
+            if (reply?.release || reply?.reload) continue;
+            if (reply?.status === 'received' && reply.claimToken) {
+                await TemuTransferIntegrity.verify(task.snapshot, reply.transferIntegrity);
+                task.claimToken = reply.claimToken; task.transferIntegrity = reply.transferIntegrity; delete task.receivePending;
+            }
+            next.push(task);
+        }
+        await saveTargetUploadTasks(next);
+    }
     if (manualJobs.length) {
         // 完整快照和领取凭证在后台完成落盘、回传，content script 只会拿到无敏感字段的任务摘要。
         await receiveTargetUploadTasks(manualJobs, storeId);
         for (const job of manualJobs) {
-            await reportTargetUploadTask({
+            const acknowledged = await reportTargetUploadTask({
                 jobId: job.jobId,
                 spuId: job.spuId,
                 storeId,
@@ -2574,7 +2862,13 @@ async function claimStoreJobs(identity = {}) {
                 pageStoreName: identity.pageStoreName || "",
                 identityMatched: identity.identityMatched === true,
                 reason: job.directCreate ? "目标插件已通过API接收商品快照，正在排队进行接口预检" : "目标插件已接收历史手动任务，等待操作者处理"
+            }).then(() => true).catch(async error => {
+                await TemuOperationLog.append({ action: 'receive-recovery', status: 'retry_wait', jobId: job.jobId,
+                    spuId: job.spuId, error: String(error.message || error) });
+                return false;
             });
+            // 网络中断时不串行等待30次超时；剩余标记已持久化，下次心跳一次恢复。
+            if (!acknowledged) break;
         }
     }
     for (const job of legacyJobs) {
@@ -2594,8 +2888,9 @@ async function claimStoreJobs(identity = {}) {
         });
     }
     // 给页面的领取结果仅用于显示状态，不能包含 snapshot 或 claimToken。
+    const { receivedReceipts: privateReceipts, ...publicResult } = result;
     return {
-        ...result,
+        ...publicResult,
         claimed: claimed.map(job => ({
             jobId: String(job && job.jobId || ""),
             spuId: String(job && job.spuId || ""),
@@ -2604,20 +2899,32 @@ async function claimStoreJobs(identity = {}) {
         })),
         receivedCount: manualJobs.length,
         // 面板据此显示“已停止接口创建”，不再依赖操作者展开工具区才发现自动创建已被关掉。
-        directPaused: Boolean(await readDirectPause(storeId)),
+        directPaused: Boolean(await readDirectPause(storeId, identity)),
         tasks: summarizeTargetUploadTasks(await getTargetUploadTasks(), storeId)
     };
 }
 
 /**
- * 面板“停止/继续接口创建”：停止需要落盘并让正在跑的那一轮在安全点收手；
- * 继续由后台立即补跑一次，避免操作者恢复后还要等下一次心跳才看到动作。
+ * 面板停止取消旧轮待办；启用创建新页面轮次，不恢复旧任务。
  */
+let directPauseControlQueue = Promise.resolve();
+/** 从收到命令起按顺序处理含身份读取的全过程，避免较早的继续因读身份慢而覆盖较晚的停止。 */
 async function setDirectCreatePaused(sender, identity = {}, paused = false) {
-    const resolved = await directIdentity(sender, identity);
+    const run = directPauseControlQueue.then(() => applyDirectCreatePaused(sender, identity, paused));
+    directPauseControlQueue = run.catch(() => {});
+    return run;
+}
+
+/** 每条控制命令仍独立核验真实商城，串行化不能替代跨店权限边界。 */
+async function applyDirectCreatePaused(sender, identity = {}, paused = false) {
+    let resolved = await directIdentity(sender, identity, true);
     const storeId = String(resolved.storeId || "").trim();
-    // 停止标记先落盘：这一步之后即使插件被刷新或后台被回收，刷新页面也不会重新开始上传。
-    const value = await writeDirectPause(storeId, paused, paused ? "操作者点击停止接口创建" : "");
+    const state = (await chrome.storage.local.get(directPauseKey(storeId)))[directPauseKey(storeId)];
+    if (paused) {
+        // 操作者主动暂停是唯一保留任务的终止方式：任务留在队列，下次可继续。
+        if (state?.executionRunId) await stopExecutionRound(state, '操作者停止本轮，保留已接收任务', 'manual_stop');
+        else await writeDirectPause(storeId, true, '操作者停止本轮');
+    } else resolved = await startExecutionRound(sender, resolved);
     await TemuOperationLog.append({
         action: "direct-create",
         status: paused ? "skipped" : "started",
@@ -2625,19 +2932,11 @@ async function setDirectCreatePaused(sender, identity = {}, paused = false) {
         storeId,
         reason: paused
             ? "操作者已停止接口创建：不再发起新的提交，已在读取中的预检会自行结束且不会提交，刷新页面也不会自动恢复"
-            : "操作者已恢复接口创建：继续处理本店剩余任务"
+            : "操作者已启用新一轮：等待网站重新发送商品，旧任务不会恢复"
     });
-    if (!paused) {
-        const canRunDirect = Boolean(sender.tab?.id && /^https:\/\/agentseller\.temu\.com\/goods\/list(?:[?#]|$)/i.test(sender.tab.url || ''));
-        const pendingDirect = (await getTargetUploadTasks()).some(task => task.directCreate && task.targetStoreId === storeId
-            && task.directState !== "created" && task.directState !== "duplicate_exists");
-        if (pendingDirect && canRunDirect) {
-            runDirectTasks(sender.tab.id, resolved).catch(error => {
-                TemuOperationLog.append({ action: "direct-create", status: "failed", error: directBackgroundErrorText(error) || String(error?.message || error || ""), storeId }).catch(() => {});
-            });
-        }
-    }
-    return { paused: Boolean(value), storeId, tasks: summarizeTargetUploadTasks(await getTargetUploadTasks(), storeId) };
+    // 控制队列不等待任务写队列，避免与领取的身份绑定形成反向锁；下次状态同步清理本地摘要。
+    const tasks = await getTargetUploadTasks();
+    return { paused, storeId, tasks: summarizeTargetUploadTasks(tasks, storeId) };
 }
 
 async function reportStoreJob(payload = {}) {
@@ -2748,9 +3047,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === "ensureIngestConnection") return ensureIngestConnection();
         if (message.type === "saveIngestSettings") return saveIngestSettings(message.settings, message.requestPermission === true);
         if (message.type === "testIngest") return testIngestConnection();
-        if (message.type === "pushFullPacket") return pushFullPacket(message.options || {});
+        if (message.type === "pushFullPacket") return pushFullPacket({ ...message.options,
+            ...(sender.tab ? { pageBinding: await ingestPageBinding(sender.tab.id, sender.documentId) } : {}) });
         if (message.type === "exportFullPacketToDownload") return exportFullPacketToDownload(message.options || {});
-        if (message.type === "autoPushFullPacket") return maybeAutoPushFullPacket(message.context || {});
+        if (message.type === "autoPushFullPacket") {
+            const key = `capturePageBinding:${sender.tab?.id}`;
+            const binding = (await chrome.storage.session.get(key))[key];
+            if (binding?.documentId !== sender.documentId || !binding?.captureToken || binding.captureToken !== message.context?.captureToken) return { skipped: true, reason: 'capture_round_ended' };
+            return maybeAutoPushFullPacket(message.context || {}, binding);
+        }
         if (message.type === "getIngestQueue") {
             const jobs = await loadPendingIngestJobs();
             await schedulePendingIngestAlarm(jobs);
@@ -2782,11 +3087,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === "claimStoreJobs") {
             const identity=await directIdentity(sender,message.identity||{});
             const result=await claimStoreJobs(identity);
-            // 刷新后即使本轮 claimed 为空，本地未完成的接口任务也必须自动继续，不能等人点击。
-            // 唯一例外是 unknown：请求可能已被平台受理，自动继续会把它变成第二次创建，
-            // 因此必须等人工确认重试（网站任务台或面板按钮），服务端会用 directRetrySequence 通知插件解除隔离。
+            // 仅当前文档的有效轮次可处理待办，刷新后的新文档必须重新人工启用。
+            // unknown 仍不能自动重发：先核对平台结果，再由人工重试递增 directRetrySequence 解除隔离。
             const pendingDirect=(result.tasks||[]).some((task)=>task.directCreate&&task.directState!=="created"&&task.directState!=="duplicate_exists");
-            // 操作者点过“停止接口创建”后，自动继续必须让位：这正是运营用刷新页面也停不下来的原因。
+            // 人工停止和版本升级待确认都优先于心跳自动继续，不能只在页面按钮层拦截。
             const directPaused=Boolean(result.directPaused);
             // 身份连接可在详情页提前完成，但接口预检/提交必须回到商品列表页；否则执行器会被页面路由拒绝。
             const canRunDirect = Boolean(sender.tab?.id && /^https:\/\/agentseller\.temu\.com\/goods\/list(?:[?#]|$)/i.test(sender.tab.url || ''));
@@ -2799,10 +3103,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (message.type === "setDirectCreatePaused") return setDirectCreatePaused(sender, message.identity || {}, message.paused === true);
         if (message.type === "retryDirectTask") return retryDirectTask(sender, message.input || {});
+        if (message.type === "cancelStoreTasks") return cancelStoreTasks(sender, message.identity || {});
+        if (message.type === "purgeCancelledStoreTasks") return purgeCancelledStoreTasks(sender, message || {});
         if (message.type === "reportStoreJob") return reportStoreJob(message.payload || {});
         if (message.type === "getCaptureEnabled") {
+            const binding = (await chrome.storage.session.get(`capturePageBinding:${sender.tab?.id}`))[`capturePageBinding:${sender.tab?.id}`];
             return {
-                enabled: Boolean(sender.tab && await isTabCaptureEnabled(sender.tab.id))
+                captureToken: binding?.captureToken || '',
+                enabled: Boolean(sender.tab && binding?.documentId === sender.documentId && await isIngestPageActive(binding) && await isTabCaptureEnabled(sender.tab.id))
             };
         }
         if (message.type === "saveSelectedCaptureIntent") return saveSelectedCaptureIntent(message.input || {}, sender);
@@ -2810,13 +3118,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === "clearSelectedCaptureIntent") return clearSelectedCaptureIntent(sender);
         if (message.type === "setCaptureEnabled") {
             if (!sender.tab) throw new Error("missing_sender_tab");
+            return withPlatformAdmission(async () => {
             if (message.enabled === true) {
+                await assertPlatformAvailableForCapture();
                 const diagnostic = await readInterfaceDiagnosticSession(sender.tab.id);
                 if (diagnostic.active) throw new Error("interface_diagnostics_active_cannot_capture");
+                await chrome.storage.session.set({ [`capturePageBinding:${sender.tab.id}`]: { ...await ingestPageBinding(sender.tab.id, sender.documentId), captureToken: crypto.randomUUID() } });
             }
             const key = captureEnabledKey(sender.tab.id);
+            const binding = (await chrome.storage.session.get(`capturePageBinding:${sender.tab.id}`))[`capturePageBinding:${sender.tab.id}`];
+            // 同页新采集已启动时，旧轮迟到的结束消息不得关闭新轮。
+            if (message.enabled !== true && binding?.captureToken && binding.captureToken !== message.captureToken) return { enabled: await isTabCaptureEnabled(sender.tab.id), stale: true };
             await chrome.storage.session.set({ [key]: message.enabled === true });
-            return { enabled: message.enabled === true };
+            return { enabled: message.enabled === true, captureToken: binding?.captureToken || '' };
+            });
         }
         throw new Error("unsupported_message");
     };
@@ -2853,9 +3168,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {
+    invalidateIngestTab(tabId).catch(() => {});
+    // 关闭页面属于外部终止：该轮任务按操作者要求清走，不是暂停。
+    invalidateExecutionTab(tabId, '店铺页面已关闭，本轮终止', 'page_close').catch(() => {});
+    captureReloadStarted.delete(tabId);
     TemuOperationLog.append({ action: "tab-closed", status: "observed", tabId });
     // 关闭卖家页后停止该页诊断；导出页仍可读取其最近会话数据，数据会由 LRU 上限统一淘汰。
     chrome.storage.session.remove([captureEnabledKey(tabId), detailQueueKey(tabId), selectedCaptureKey(tabId), interfaceDiagnosticTabKey(tabId)]).catch(() => {});
+});
+
+/** 文档重载终止旧页采集脚本后才解除超时占用，不用固定秒数猜测平台请求已结束。 */
+const captureReloadStarted = new Map();
+chrome.tabs.onUpdated?.addListener((tabId, change) => {
+    if (change.status === 'loading' || change.url) invalidateIngestTab(tabId).catch(() => {});
+    // 刷新或页面内导航属于外部终止：该轮任务清走，避免刷新后旧任务继续自动上传。
+    if (change.status === 'loading' || change.url) invalidateExecutionTab(tabId, '店铺页面刷新或导航，本轮终止', 'page_refresh').catch(() => {});
+    if (change.status === "loading") captureReloadStarted.set(tabId, Date.now());
+    if (change.status !== "complete" || !captureReloadStarted.has(tabId)) return;
+    const startedAt = captureReloadStarted.get(tabId);
+    captureReloadStarted.delete(tabId);
+    withDetailQueue(tabId, async () => {
+        const queue = await loadDetailQueue(tabId);
+        if (queue?.platformUncertain && !queue.active && startedAt >= Number(queue.platformUncertainAt || Infinity)) {
+            queue.platformUncertain = false;
+            await saveDetailQueue(tabId, queue);
+        }
+    }).catch(() => {});
 });
 
 // 下载请求成功不等于磁盘文件落地，只记录本扩展创建的下载，不监听用户其他文件。
@@ -2871,10 +3209,15 @@ if (chrome.downloads?.onChanged) chrome.downloads.onChanged.addListener(async de
 
 if (chrome.alarms && typeof chrome.alarms.onAlarm === "object") {
     chrome.alarms.onAlarm.addListener(alarm => {
+        if (alarm?.name === EXECUTION_STOP_ALARM) { flushExecutionStops().catch(() => {}); return; }
+        if (alarm?.name === TemuDirectReceipts.ALARM_NAME) { TemuDirectReceipts.flush().catch(() => {}); return; }
         if (!alarm || alarm.name !== TemuIngestQueue.ALARM_NAME) return;
         enqueuePendingIngest().catch(() => {});
     });
 }
 
-// 页面切走后 service worker 仍可能被唤醒；启动时继续执行未完成的自动入库任务。
+// 后台唤醒只处理同文档同版本的入库任务；旧任务退出执行队列，不重传大包。
 enqueuePendingIngest().catch(() => {});
+// 执行结果补报独立于采集与页面心跳，关闭商品页也不会丢掉已落盘回执。
+TemuDirectReceipts.flush().catch(() => {});
+flushExecutionStops().catch(() => {});

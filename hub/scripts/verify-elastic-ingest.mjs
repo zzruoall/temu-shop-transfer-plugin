@@ -1,0 +1,23 @@
+/** 接收配额变化只控制新请求，验证借用、公平收回、恢复唤醒与旧请求可释放。 */
+import assert from 'node:assert/strict';
+import { createIngestAdmission } from '../lib/ingest-admission.mjs';
+let capacity = 2;
+const admission = createIngestAdmission({ limit: 4, capacity: () => capacity, waitMs: 2000 });
+const first = await admission.acquire(1, null, 'A');
+const second = await admission.acquire(1, null, 'A');
+const order = [];
+const nextA = admission.acquire(1, null, 'A').then(release => { order.push('A'); return release; });
+const nextB = admission.acquire(1, null, 'B').then(release => { order.push('B'); return release; });
+first(); const b = await nextB;
+assert.deepEqual(order, ['B'], 'B先获得份额，A不能一直续借');
+capacity = 0; second(); b();
+assert.equal(admission.snapshot().active, 0);
+assert.equal(admission.snapshot().pending, 1);
+capacity = 1; admission.refreshCapacity(); const a = await nextA; a();
+assert.equal(admission.snapshot().pending, 0);
+capacity = NaN;
+const abort = new AbortController();
+const rejected = assert.rejects(admission.acquire(1, abort.signal, 'C'), /upload_aborted/);
+abort.abort(); await rejected;
+assert.equal(admission.snapshot().active, 0);
+console.log('PASS ingest elastic borrowing/fair-return/shrink/no-interruption/wakeup/invalid-budget/cancel');

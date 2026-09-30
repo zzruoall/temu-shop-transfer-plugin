@@ -1,13 +1,14 @@
 /**
  * 锁定“提交成功后回查失败”的真实行为：详情回查拿不到结果时，必须能按提交时的货号回目标店列表确认商品已创建，
- * 报告 created 而不是结果未知；列表也无法确认时仍停在 unknown，且任何情况下都不能再次提交同一件商品。
+ * 平台已返回商品编号时始终报告 created，回查失败只保留诊断原因，不能再次提交同一件商品。
  * 这里用假平台运行时驱动真实的 direct-executor.js，不联网、不接触真实 Temu 页面。
  */
 import vm from "node:vm";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../../plugin/direct-executor.js", import.meta.url), "utf8");
+import { directExecutorFixture, seedExecutionRounds } from './direct-platform-fixture.mjs';
+const source = await directExecutorFixture();
 const PRODUCT = "9294042985";
 const CREATED_ID = "8002250622";
 const EXTS = ["UAD05*2"];
@@ -16,7 +17,7 @@ const EXTS = ["UAD05*2"];
  * 搭一个最小插件后台。verifyFails 控制详情回查是否“拿不到结果”，listConfirms 控制货号回查能否在目标店列表命中。
  * 定时器被压缩到 1ms，让有限重试窗口在测试里快速跑完，同时保留真实的等待/重试逻辑。
  */
-function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms = true } = {}) {
+async function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms = true } = {}) {
     const data = {};
     const calls = [];
     const logs = [];
@@ -78,19 +79,20 @@ function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms
         TemuOperationLog: { append: async entry => { logs.push(entry); } },
         hubJson: async (url, body) => { calls.push({ kind: "hub", url, body }); return { attemptId: "attempt" }; }
     });
+    await seedExecutionRounds(context, [{ storeId: 'temu:123', mallId: '123', tabId: 7 }]);
     vm.runInContext(source, context);
     return {
         data, calls, logs, progress, context,
         lastState: () => progress.filter(patch => patch.directState).at(-1)?.directState || "",
         get submits() { return submits; },
         reports: () => calls.filter(call => call.kind === "hub").map(call => call.body),
-        run: () => vm.runInContext(`runDirectTasks(7,{storeId:'temu:123',mallId:'123'})`, context)
+        run: () => vm.runInContext("runDirectTasks(7,executionIdentities['temu:123'])", context)
     };
 }
 
 // 一、详情回查拿不到结果，但货号能在目标店列表查到：必须报告创建成功，且不重复提交。
 {
-    const harness = createHarness({ verifyFails: true, listConfirms: true });
+    const harness = await createHarness({ verifyFails: true, listConfirms: true });
     await harness.run();
     assert.equal(harness.submits, 1, "回查失败不能触发第二次新增请求");
     const reports = harness.reports();
@@ -117,7 +119,7 @@ function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms
 // 回查（详情查询与货号列表）是插件自己的核对手段，不能反过来推翻平台已经给出的成功结果，
 // 否则平台创建成功的商品会被判成失败并标红，运营还得去重抓一件好商品。
 {
-    const harness = createHarness({ verifyFails: true, listConfirms: false });
+    const harness = await createHarness({ verifyFails: true, listConfirms: false });
     await harness.run();
     assert.equal(harness.submits, 1, "无法确认时同样不能重发新增请求");
     const reports = harness.reports();
@@ -138,7 +140,7 @@ function createHarness({ verifyFails = false, verifyErrorText = "", listConfirms
 
 // 三、内容比对不通过（回查返回的商品与请求不一致）：商品确实已创建，仍要按货号确认成功，并把比对不通过的原因写进结论。
 {
-    const harness = createHarness({ verifyErrorText: "主图数量不一致", listConfirms: true });
+    const harness = await createHarness({ verifyErrorText: "主图数量不一致", listConfirms: true });
     await harness.run();
     assert.equal(harness.submits, 1, "内容比对失败不能触发第二次新增请求");
     const created = harness.reports().find(report => report.phase === "created");

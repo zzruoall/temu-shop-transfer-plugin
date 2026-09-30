@@ -147,12 +147,15 @@ try {
     assert.deepEqual(await queue.liveSignature(), empty, "没有任何变化时信号必须保持稳定");
 
     await queue.registerAgent(heartbeat);
+    const initialDirectory = await queue.listAgents({ limit: 1, online: true });
+    assert.match(initialDirectory.directoryVersion, /^[a-f0-9]{64}$/, "分页目录必须携带一致性版本");
     const online = await queue.liveSignature();
     assert.notEqual(online.agents, empty.agents, "插件上线必须改变在线店铺信号");
-    assert.ok(online.agents.includes(`${TARGET_STORE_ID}:1:`), "在线店铺信号必须标记该店在线且可接收上传");
+    assert.ok(online.agents.includes(`${TARGET_STORE_ID}:Hair removal wax:1:`), "在线店铺信号必须标记该店在线且可接收上传");
 
     // 插件每 8 秒心跳一次；信号必须忽略 lastSeenAt，否则商品库会被无意义地反复重绘。
     await queue.registerAgent({ ...heartbeat });
+    assert.equal((await queue.listAgents({ limit: 1, online: true })).directoryVersion, initialDirectory.directoryVersion, "普通心跳不改变目录版本");
     assert.deepEqual(await queue.liveSignature(), online, "重复心跳只刷新 lastSeenAt，不能改变刷新信号");
 
     // 心跳停止超过在线窗口后没有任何写入，信号仍必须自行翻转为离线。
@@ -161,8 +164,9 @@ try {
     persisted.agents[0].lastSeenAt = new Date(Date.now() - 90 * 1000).toISOString();
     await writeFile(statePath, JSON.stringify(persisted, null, 2), "utf8");
     const offline = await queue.liveSignature();
+    assert.notEqual((await queue.listAgents({ limit: 1, online: true })).directoryVersion, initialDirectory.directoryVersion, "掉线必须改变分页目录版本");
     assert.notEqual(offline.agents, online.agents, "心跳超时后必须被识别为离线");
-    assert.ok(offline.agents.includes(`${TARGET_STORE_ID}:0:`), "离线店铺必须标记为不在线");
+    assert.ok(offline.agents.includes(`${TARGET_STORE_ID}:Hair removal wax:0:`), "离线店铺必须标记为不在线");
     assert.deepEqual(await queue.liveSignature(), offline, "离线状态必须稳定，不能每次轮询都变化");
 
     const created = await queue.createJob({
@@ -178,6 +182,13 @@ try {
     assert.ok(afterJob.jobs.includes(created.id), "任务信号必须包含新建任务编号");
     assert.notEqual(afterJob.logs, offline.logs, "创建任务写下工作日志后，日志信号必须变化");
     assert.deepEqual(await queue.liveSignature(), afterJob, "任务稳定后信号必须保持稳定");
+    const page = await queue.listJobsPage({ limit: 1, offset: 0 });
+    assert.equal(page.jobs.length, 1, "分页接口必须只返回请求页");
+    assert.equal(page.total, 1, "分页接口必须返回总任务数");
+    assert.equal(page.hasMore, false, "最后一页必须标记没有更多任务");
+    const dashboard = await queue.listDashboard();
+    assert.equal(dashboard.todaySent, 1, "首页汇总必须统计今天发送的商品项");
+    assert.equal(dashboard.topProducts[0]?.id, "7744886733", "首页排行必须包含发送最多的商品");
     console.log("live signal checks passed（店铺在线、掉线、任务与日志）");
 } finally {
     await rm(queueRoot, { recursive: true, force: true });
@@ -248,7 +259,7 @@ try {
 
     const before = await fetchJson(`${origin}/api/live`);
     assert.equal(before.status, 200, `/api/live 应可读取，实际 ${before.status}`);
-    for (const field of ["inbox", "inventory", "agents", "jobs", "logs"]) {
+    for (const field of ["inventory", "claims", "agents", "jobs", "logs", "directory"]) {
         assert.equal(typeof before.body[field], "string", `/api/live 缺少 ${field} 字段`);
     }
     const beforeAgain = await fetchJson(`${origin}/api/live`);

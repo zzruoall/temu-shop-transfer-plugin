@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.mjs",
     "start:all": "node start-all.mjs",
-    "verify": "node scripts/verify-ingest-queue.mjs && node scripts/verify-page-context.mjs && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-full-capture.mjs && node scripts/verify-inbox-transfer.mjs && node scripts/verify-ingest.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-job-queue.mjs && node scripts/verify-live-refresh.mjs && node scripts/verify-direct-prepare-fields.mjs && node scripts/verify-direct-stop.mjs && node scripts/verify-direct-verify-page.mjs && node scripts/verify-direct-verify-fallback.mjs && node scripts/verify-direct-no-code.mjs && node scripts/verify-direct-transient.mjs && node scripts/verify-direct-create.mjs && node scripts/verify-blocked-products.mjs",
+    "verify": "node scripts/verify-ingest-queue.mjs && node scripts/verify-page-context.mjs && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-full-capture.mjs && node scripts/verify-inbox-transfer.mjs && node scripts/verify-ingest.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-job-queue.mjs && node scripts/verify-live-refresh.mjs && node scripts/verify-data-pagination.mjs && node scripts/verify-direct-prepare-fields.mjs && node scripts/verify-direct-stop.mjs && node scripts/verify-plugin-direct.mjs && node scripts/verify-duplicate-check.mjs && node scripts/verify-direct-verify-page.mjs && node scripts/verify-direct-verify-fallback.mjs && node scripts/verify-direct-no-code.mjs && node scripts/verify-direct-transient.mjs && node scripts/verify-direct-create.mjs && node scripts/verify-multiuser.mjs && node scripts/verify-plugin-token-persist.mjs && node scripts/verify-users-state-race.mjs && node scripts/verify-blocked-products.mjs && node scripts/verify-block-exemption.mjs && node scripts/verify-panel-shell.mjs && node scripts/verify-isolation.mjs && node scripts/verify-legacy-admin.mjs && node scripts/verify-admin-console.mjs && node scripts/verify-admin-site.mjs && node scripts/verify-login-next.mjs && node scripts/verify-product-store-scope.mjs && node scripts/verify-account-fairness.mjs && node scripts/verify-ingest-fairness.mjs && node scripts/verify-execution-runs.mjs && node scripts/verify-transfer-integrity.mjs && node scripts/probe-queue-isolation-boundaries.mjs && node scripts/verify-runtime-resource-budget.mjs",
     "verify:live": "node scripts/verify-full-capture-live.mjs",
     "verify:api": "node scripts/verify-api-batch.mjs",
     "verify:downloads": "node scripts/verify-download-discovery.mjs",
@@ -17,6 +17,15 @@
     "verify:prepare": "node scripts/verify-direct-prepare-fields.mjs",
     "verify:direct-stop": "node scripts/verify-direct-stop.mjs",
     "verify:verify-fallback": "node scripts/verify-direct-verify-fallback.mjs",
-    "verify:verify-page": "node scripts/verify-direct-verify-page.mjs"
+    "verify:verify-page": "node scripts/verify-direct-verify-page.mjs",
+    "verify:account": "node scripts/verify-account-process-baseline.mjs && node scripts/verify-account-process-migration.mjs && node scripts/verify-account-process-work.mjs && node scripts/verify-account-process-race.mjs && node scripts/verify-account-process-lifecycle.mjs && node scripts/verify-account-process-mode.mjs && node scripts/verify-account-broker.mjs && node scripts/verify-account-dispatcher.mjs && node scripts/verify-bulk-reliability.mjs && node scripts/verify-account-resource-boundaries.mjs && node scripts/verify-account-integration.mjs && node scripts/verify-account-mode-gate.mjs && node scripts/verify-account-runtime.mjs",
+    "verify:budget": "node scripts/verify-runtime-resource-budget.mjs",
+    "verify:integration": "node scripts/verify-account-integration.mjs",
+    "verify:workflow": "node scripts/verify-account-workflow.mjs",
+    "verify:completion": "node scripts/verify-account-completion.mjs"
+  },
+  "dependencies": {
+    "mysql2": "^3.24.4",
+    "stream-json": "3.7.0"
   }
 }

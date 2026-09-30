@@ -1,0 +1,353 @@
+/*
+ * 管理站样式：与业务工作台（蓝白、左侧深蓝导航）刻意区分。
+ * 这里是深色顶栏 + 浅灰内容区，让管理员一眼知道自己在管理站，
+ * 不会把删除店铺这类不可逆操作当成日常业务操作。
+ */
+@font-face {
+    font-family: "Archivo";
+    src: url("./fonts/Archivo.ttf") format("truetype");
+    font-weight: 400 700;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Archivo Narrow";
+    src: url("./fonts/ArchivoNarrow.ttf") format("truetype");
+    font-weight: 600 700;
+    font-display: swap;
+}
+
+:root {
+    --ink: #10243a;
+    --ink-soft: #5b7288;
+    --paper: #eef2f6;
+    --line: #d3dde7;
+    --bar: #16283d;
+    --bar-soft: #23394f;
+    --accent: #2f7cd0;
+    --danger: #b03030;
+}
+
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--paper);
+    color: var(--ink);
+    font: 14px/1.6 "Archivo", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* ---------- 左侧竖列：深色侧栏，承载分类导航与身份 ---------- */
+.admin-shell { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; align-items: start; }
+.admin-rail {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 18px;
+    padding: 20px 14px 18px;
+    background: var(--bar);
+    color: #eaf1f8;
+}
+.admin-rail-brand { display: grid; gap: 4px; padding: 0 8px; }
+.admin-rail-brand strong { font-size: 17px; letter-spacing: .4px; }
+.admin-rail-brand span { color: #8fa8c0; font-size: 11px; line-height: 1.5; }
+/* 分类导航竖排：一项一行，选中项整行高亮，比顶栏的胶囊标签更容易扫读 */
+.admin-rail-nav { display: grid; gap: 4px; align-content: start; }
+.admin-rail-nav button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #b9cde0;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+}
+.admin-rail-nav button:hover { color: #fff; background: rgba(255, 255, 255, .09); }
+.admin-rail-nav button.active { color: #10243a; background: #fff; }
+.admin-rail-nav b {
+    min-width: 20px;
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, .16);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+.admin-rail-nav button.active b { background: #e2eefb; color: #1c5a97; }
+.admin-rail-account { display: grid; gap: 8px; padding: 12px 4px 0; border-top: 1px solid rgba(255, 255, 255, .12); }
+.admin-identity { display: grid; gap: 2px; padding: 0 4px 2px; }
+.admin-identity strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-identity small { color: #8fa8c0; font-size: 11px; }
+.admin-back, .admin-logout {
+    padding: 8px 10px;
+    border: 1px solid rgba(255, 255, 255, .28);
+    border-radius: 6px;
+    background: transparent;
+    color: #eaf1f8;
+    font: inherit;
+    font-size: 12px;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+}
+.admin-back:hover, .admin-logout:hover { background: rgba(255, 255, 255, .12); }
+
+/* ---------- 内容区 ---------- */
+/* 内容区：侧栏占掉左侧，这里靠左排满可用宽度，不再整体居中 */
+.admin-stage { width: min(1120px, calc(100% - 44px)); margin: 22px 0 60px 28px; }
+.admin-loading { color: var(--ink-soft); text-align: center; padding: 40px 0; }
+
+.admin-panel {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(16, 36, 58, .06);
+    padding: 20px 22px 24px;
+}
+.admin-panel + .admin-panel { margin-top: 16px; }
+.admin-panel[hidden] { display: none; }
+
+.admin-panel-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 6px;
+}
+.admin-panel-head h2 { margin: 0; color: #0e3050; font-size: 16px; }
+.admin-panel-head .admin-count { color: var(--ink-soft); font-size: 12px; margin-left: auto; }
+.admin-note { margin: 4px 0 14px; color: var(--ink-soft); font-size: 12.5px; line-height: 1.7; }
+
+.admin-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin: 12px 0 14px; }
+.admin-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-soft);
+    font-size: 12px;
+}
+.admin-search input {
+    width: min(340px, 40vw);
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid #c9d8e5;
+    border-radius: 7px;
+    background: #fbfdff;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12.5px;
+}
+.admin-search input:focus { border-color: #6aa9e0; box-shadow: 0 0 0 3px #e2f1ff; outline: 0; }
+.admin-filter { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 12px; }
+.admin-filter select {
+    min-height: 36px;
+    padding: 7px 9px;
+    border: 1px solid #c9d8e5;
+    border-radius: 7px;
+    background: #fbfdff;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12.5px;
+}
+
+/* ---------- 行 ---------- */
+.admin-list { display: grid; gap: 8px; }
+.admin-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) minmax(140px, 200px) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 15px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #fff;
+}
+.admin-row:hover { border-color: #a9c6e0; background: #fbfdff; }
+.admin-row[hidden] { display: none; }
+/* 已认领/已停用的行压灰：一眼看出哪些需要关注 */
+.admin-row.is-muted { background: #f5f7f9; }
+.admin-row.is-muted .admin-row-body strong { color: #5a7189; }
+
+.admin-row-body { min-width: 0; display: grid; gap: 5px; }
+.admin-row-body strong { overflow: hidden; color: #123c60; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-row-body span { overflow: hidden; color: #7b8fa3; font-size: 11.5px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.admin-row-owner { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; color: #295a81; font-size: 12px; }
+.admin-row-owner b { flex: none; color: #698297; font-size: 10px; font-weight: 600; }
+.admin-row-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+.admin-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.admin-dot.online { background: #17a34a; box-shadow: 0 0 0 2px #d6f2e0; }
+.admin-dot.offline { background: #c0392b; box-shadow: 0 0 0 2px #f7dcd8; }
+.admin-dot.role { background: #7c5cd6; box-shadow: 0 0 0 2px #e6dffa; }
+
+/* ---------- 按钮 ---------- */
+.admin-btn {
+    padding: 7px 12px;
+    border: 1px solid #c3d5e4;
+    border-radius: 6px;
+    background: #fff;
+    color: #21527a;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.admin-btn:hover:not(:disabled) { border-color: #8fb8db; background: #f1f8ff; }
+.admin-btn:disabled { cursor: not-allowed; opacity: .55; }
+.admin-btn.primary { border-color: #2f7cd0; background: #2f7cd0; color: #fff; }
+.admin-btn.primary:hover:not(:disabled) { background: #2668b3; }
+.admin-btn.danger { border-color: #dcb5b5; color: var(--danger); }
+.admin-btn.danger:hover:not(:disabled) { border-color: #c07878; background: #fdf4f4; }
+
+.admin-select {
+    min-height: 34px;
+    padding: 6px 8px;
+    border: 1px solid #c9d8e5;
+    border-radius: 6px;
+    background: #fbfdff;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+}
+.admin-switch { display: inline-flex; align-items: center; gap: 8px; color: #2c5578; font-size: 12.5px; cursor: pointer; }
+.admin-empty { padding: 26px; border: 1px dashed #cfe0ec; border-radius: 9px; color: var(--ink-soft); font-size: 12.5px; text-align: center; }
+
+/* ---------- 破坏性操作确认弹窗 ---------- */
+.confirm-dialog {
+    width: min(580px, calc(100% - 32px));
+    max-height: min(760px, calc(100vh - 40px));
+    padding: 0;
+    border: 1px solid #c3d5e4;
+    border-radius: 12px;
+    background: #fff;
+    color: var(--ink);
+    box-shadow: 0 24px 70px rgba(10, 30, 50, .28);
+}
+.confirm-dialog::backdrop { background: rgba(10, 30, 50, .45); backdrop-filter: blur(2px); }
+.confirm-dialog form { display: grid; gap: 14px; padding: 20px; max-height: inherit; overflow: auto; }
+.confirm-dialog h3 { margin: 0; color: #0e3050; font-size: 16px; }
+.confirm-details {
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #f7fafd;
+    color: #3c5b76;
+    font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.confirm-options { display: grid; gap: 8px; }
+.confirm-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    cursor: pointer;
+}
+.confirm-option:hover { border-color: #9fc8e8; background: #fbfdff; }
+/* 选中态加边框与底色：两种模式后果差别很大，必须让当前选择一目了然 */
+.confirm-option:has(input:checked) { border-color: #4b8ec9; background: #f2f9ff; box-shadow: inset 0 0 0 1px #4b8ec9; }
+.confirm-option input { margin-top: 3px; flex: none; }
+.confirm-option-body { display: grid; gap: 4px; min-width: 0; }
+.confirm-option-body strong { color: #12456e; font-size: 13px; }
+.confirm-option-body small { color: #5f7c93; font-size: 12px; line-height: 1.6; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+
+/*
+ * 窄屏：侧栏从左侧竖排改为顶部横排。
+ * 216px 的侧栏在 760px 以下会吃掉近三分之一宽度，商品名与操作按钮都会被挤扁。
+ */
+@media (max-width: 860px) {
+    .admin-shell { grid-template-columns: minmax(0, 1fr); }
+    .admin-rail {
+        position: static;
+        height: auto;
+        grid-template-rows: none;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+        padding: 14px 16px;
+    }
+    .admin-rail-nav { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+    .admin-rail-nav button { justify-content: center; }
+    .admin-rail-nav b { margin-left: 0; }
+    .admin-rail-account { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding-top: 10px; }
+    .admin-identity { padding: 0; }
+    .admin-stage { width: calc(100% - 28px); margin: 16px auto 40px; }
+    .admin-row { grid-template-columns: 16px minmax(0, 1fr); row-gap: 8px; }
+    .admin-row-owner, .admin-row-actions { grid-column: 2; justify-content: flex-start; }
+    .confirm-actions { flex-direction: column-reverse; }
+    .confirm-actions .admin-btn { width: 100%; }
+}
+
+/* ---------- 商品列表：一行一件，来源店铺在行内 ---------- */
+/* 表格栅格而不是卡片：核对型数据要能纵向扫读对齐，卡片会把字段拆散 */
+.admin-product-table {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #fff;
+    overflow: hidden;
+}
+.admin-product-thead,
+.admin-product-row {
+    display: grid;
+    grid-template-columns: 34px minmax(160px, 1.5fr) 108px minmax(120px, 1fr) minmax(140px, 1.1fr) 76px;
+    align-items: center;
+    gap: 12px;
+    padding: 0 14px;
+}
+.admin-product-thead {
+    min-height: 34px;
+    background: #f2f6fa;
+    border-bottom: 1px solid var(--line);
+    color: #698297;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .3px;
+}
+/* 表头首列放全选，与行首勾选对齐 */
+.admin-product-head-check { display: grid; place-items: center; }
+.admin-product-body { display: grid; }
+.admin-product-row {
+    min-height: 46px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.admin-product-row + .admin-product-row { border-top: 1px solid #eef3f8; }
+.admin-product-row:hover { background: #fbfdff; }
+.admin-product-row[hidden] { display: none; }
+.admin-product-row:has(input:checked) { background: #f2f9ff; box-shadow: inset 2px 0 0 #2f7cd0; }
+.admin-product-check { display: grid; place-items: center; }
+.admin-product-check input { margin: 0; }
+/* 商品名可截断但悬停给全文；数字列用等宽数位保证纵向对齐 */
+.admin-product-name { overflow: hidden; color: #14395c; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.admin-product-num,
+.admin-product-codes { overflow: hidden; color: #4d6b84; font-size: 12px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.admin-product-codes { color: #6b8598; }
+/* 来源店铺：行内标注，灯点区分有无归属 */
+.admin-product-store { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; color: #295a81; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-product-store .admin-dot { width: 7px; height: 7px; box-shadow: none; }
+.admin-product-state { font-size: 11px; font-weight: 700; }
+.admin-product-state.ready { color: #17a34a; }
+.admin-product-state.blocked { color: #c0392b; }
+.admin-product-state.pending { color: #b7791f; }
+.admin-selection { color: #1c5a97; font-size: 12px; font-weight: 700; }
+
+@media (max-width: 900px) {
+    /* 窄屏隐藏货号列，保留最能定位商品的四列；表格栅格改为两行式 */
+    .admin-product-thead span:nth-child(4) { display: none; }
+    .admin-product-thead,
+    .admin-product-row { grid-template-columns: 34px minmax(0, 1fr) 104px minmax(120px, 1fr) 76px; }
+    .admin-product-codes { display: none; }
+}

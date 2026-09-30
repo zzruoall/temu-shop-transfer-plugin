@@ -22,10 +22,17 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         <nav class="nav">
             <a href="#/" data-nav="home">查验台</a>
             <a href="#/products" data-nav="products">商品库</a>
+            <a href="#/stores" data-nav="stores">店铺认领</a>
             <a href="#/jobs" data-nav="jobs">任务台</a>
             <a href="#/logs" data-nav="logs">工作日志</a>
+            <!-- 管理站是独立页面：跳出去而不是本页切路由，管理员界面与业务界面彻底分开。 -->
+            <a href="./admin" id="nav-admin" hidden>管理控制台</a>
         </nav>
         <p class="rail-note">商品入库后可选择一个或多个目标店，确认合规后通过接口创建。请保持目标店商品列表页打开；在工作日志核对新SPU，创建不等于审核上架。</p>
+        <div class="rail-account" id="rail-account" hidden>
+            <div class="rail-account-copy"><strong id="rail-username">—</strong><span id="rail-role"></span></div>
+            <button type="button" class="rail-logout" id="rail-logout">退出登录</button>
+        </div>
     </aside>
     <main class="stage" id="app"></main>
 </div>

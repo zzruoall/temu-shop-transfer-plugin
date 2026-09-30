@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 const SENSITIVE_KEY = /(?:access|refresh|auth|csrf)?token|cookie|authorization|password|passwd|secret|session(?:id)?|credential|api[-_]?key/i;
 
 export function redactSensitive(value, depth = 0) {
-    if (depth > 24) return "[DEPTH_LIMIT]";
+    // 超深输入明确拒绝，不能截断后仍宣称商品已完整入库；正常未知字段按原结构保留。
+    if (depth > 128) throw Object.assign(new Error("采集包嵌套过深，已停止入库以避免截断原始资料"), { status: 422 });
     if (Array.isArray(value)) return value.map((item) => redactSensitive(item, depth + 1));
     if (!value || typeof value !== "object") return value;
     const result = {};
@@ -507,30 +508,12 @@ function readListAttributes(object) {
 function mergePublicationProperties(product) {
     const sourceProduct = product && product.publicationData && product.publicationData.sourceProduct;
     if (!sourceProduct || typeof sourceProduct !== "object") return;
-    const merge = (current, incoming) => {
-        const result = { ...(current || {}) };
-        for (const [key, value] of Object.entries(incoming || {})) {
-            if (value !== undefined && value !== null && value !== "") result[key] = value;
-        }
-        return result;
-    };
-    const map = new Map();
-    const put = item => {
-        if (!item || typeof item !== "object") return;
-        const name = asText(item.propName || item.name);
-        const value = asText(item.propValue || item.value);
-        if (!name || !value) return;
-        const refPid = asText(item.refPid);
-        const vid = asText(item.vid);
-        // 同一属性可以合法返回多个值（例如多个适用香型），所以编号不全时仍需把名称和值纳入键，
-        // 不能只按 refPid 合并并把后一个值覆盖掉。
-        const key = refPid && vid
-            ? `${refPid}\u0000${vid}`
-            : `${refPid || vid || name}\u0000${name}\u0000${value}\u0000${asText(item.valueUnit || item.unit)}`;
-        map.set(key, merge(map.get(key), item));
-    };
-    (Array.isArray(sourceProduct.productPropertyList) ? sourceProduct.productPropertyList : []).forEach(put);
-    (Array.isArray(product.attributes) ? product.attributes : []).forEach(item => put({
+    // 原数组中的未知格式、空值、重复项和顺序均是采集证据；补充列表属性不得通过重建映射删除它们。
+    if (sourceProduct.productPropertyList != null && !Array.isArray(sourceProduct.productPropertyList)) return;
+    const properties = Array.isArray(sourceProduct.productPropertyList) ? sourceProduct.productPropertyList : [];
+    for (const item of Array.isArray(product.attributes) ? product.attributes : []) {
+        if (!item?.name || !item.value) continue;
+        const incoming = {
         templatePid: item.templatePid,
         pid: item.pid,
         refPid: item.refPid,
@@ -540,8 +523,15 @@ function mergePublicationProperties(product) {
         valueUnit: item.unit,
         valueExtendInfo: item.valueExtendInfo,
         numberInputValue: item.numberInputValue
-    }));
-    if (map.size) sourceProduct.productPropertyList = [...map.values()];
+        };
+        const current = properties.find(entry => entry && asText(entry.propName) === asText(item.name)
+            && asText(entry.propValue) === asText(item.value) && asText(entry.valueUnit) === asText(item.unit));
+        if (!current) properties.push(incoming);
+        else for (const [key, value] of Object.entries(incoming)) {
+            if (!Object.hasOwn(current, key) && value !== undefined && value !== null && value !== "") current[key] = value;
+        }
+    }
+    if (properties.length) sourceProduct.productPropertyList = properties;
 }
 
 function compactDetailValue(value, depth = 0) {
@@ -628,13 +618,14 @@ function readDetailFields(object, depth = 0, output = {}, allowGenericBody = fal
 function extractProductsFromRecord(record) {
     const products = [];
     const pageContextSpu = asText(record && record.source && record.source.pageProductId);
-    // 不信任完整包预计算布尔值：只有成功的核心详情对象、ID一致、真实标题/SKU结构才提供采集证据。
+    // 来源身份只认成功的详情接口和 SPU；标题/SKU 模板仅用于诊断，不能决定原对象是否保留。
     const rootPayload = record?.payload;
     const rootProduct = rootPayload?.result || rootPayload?.res || rootPayload;
-    const primaryDetail = /\/visage-agent-seller\/product\/query(?:$|[?])/.test(record?.source?.requestUrl || "")
+    const sourceDetail = /\/visage-agent-seller\/product\/query(?:$|[?])/.test(record?.source?.requestUrl || "")
         && rootPayload?.success !== false && (!rootPayload?.errorCode || rootPayload.errorCode === 1000000)
-        && rootProduct && typeof rootProduct.productName === "string" && Array.isArray(rootProduct.productSkcList)
+        && rootProduct && typeof rootProduct === "object" && !Array.isArray(rootProduct)
         && asText(rootProduct.productId) && (!pageContextSpu || asText(rootProduct.productId) === pageContextSpu);
+    const primaryDetail = sourceDetail && typeof rootProduct.productName === "string" && Array.isArray(rootProduct.productSkcList);
     const descriptionFields = ["goodsLayerDecorationVOList", "goodsLayerDecorationCustomizeI18nVOList"].filter(key => Object.hasOwn(rootProduct || {}, key));
     const descriptionState = descriptionFields.length && descriptionFields.every(key => rootProduct[key] === null || (Array.isArray(rootProduct[key]) && rootProduct[key].length === 0)) ? "empty" : "unknown";
     const visit = (value, depth = 0) => {
@@ -676,7 +667,7 @@ function extractProductsFromRecord(record) {
                     detail: singular ? readDetailFields(value, 0, {}, record && record.dataType === "product-detail") : null,
                     captureEvidence: primaryDetail && value === rootProduct ? { primaryDetail: true, descriptionState } : null,
                     // 保留 SKU 成分、规格标识、计量原值及媒体角色；尚未经过目标店铺校验。
-                    publicationData: primaryDetail && value === rootProduct ? { schemaVersion: 1, validationState: "target-unverified", sourceProduct: structuredClone(rootProduct) } : undefined,
+                    publicationData: sourceDetail && value === rootProduct ? { schemaVersion: 2, validationState: "target-unverified", sourceProduct: structuredClone(rootProduct) } : undefined,
                     sources: ["full-packet"]
                 }));
         }
@@ -737,6 +728,34 @@ function extractProductsFromRecord(record) {
 }
 
 // SKU 归属只采信列表接口 pageItems[i].productSkuSummaries，不从无 SPU 的附加行猜测。
+
+/** 单商品流式聚合沿用批量解析器的合并语义，避免为账户worker另写一套货号/详情规则。 */
+export function createSingleProductCapture(metadata, spuId) {
+    const products = new Map();
+    const add = partial => {
+        if (asText(partial?.spuId) !== asText(spuId)) return;
+        const product = upsertProduct(products, partial);
+        if (Buffer.byteLength(JSON.stringify(product)) > 8 * 1024 * 1024) throw Error('capture_product_workset_exceeded');
+    };
+    return {
+        seed: item => add({ ...item, captureEvidence: null, publicationData: undefined, sources: ['full-packet'] }),
+        record: record => extractProductsFromRecord(record).forEach(add),
+        finish() {
+            const product = products.get(asText(spuId));
+            if (!product) throw Error('capture_assigned_product_missing');
+            mergePublicationProperties(product);
+            const completeness = getProductCompleteness(product);
+            const final = { ...product, completeness, ready: isProductReadyForTransfer(completeness) };
+            const parsed = parseImportedFiles([{ originalName: 'capture.json', payload: { ...metadata, products: [], records: [] } }]);
+            parsed.products = [final];
+            parsed.counts = { spu: 1, goods: Number(Boolean(final.goodsId)), skc: final.skcIds.length, sku: final.skuIds.length, ready: Number(final.ready) };
+            parsed.status = final.ready ? 'ready-for-map' : 'packet-incomplete';
+            parsed.readiness = final.ready ? '待映射' : '完整包未齐，不可导入';
+            // 完整度仍仅用于诊断，不阻止列表资料或不同品类原样入库。
+            return parsed;
+        }
+    };
+}
 
 export function parseImportedFiles(files) {
     const products = new Map();
@@ -878,7 +897,7 @@ export function parseImportedFiles(files) {
         return {
             ...product,
             completeness,
-            // 交付门槛由共享函数计算，避免批次与库存目录对同一件商品给出相反结论。
+            // 完整度仅保留为诊断指标，不作为人工下发或一键上架的资格门槛。
             ready: isProductReadyForTransfer(completeness)
         };
     });

@@ -1,0 +1,8 @@
+# 已发布源码保留原始字节，避免自动换行转换破坏与安装包及线上哈希的核对。
+/hub/** -text
+/plugin/** -text
+/worker/direct-create-prepare.js -text
+/worker/direct-integrity.js -text
+
+# 既有测试样本不是此次发布快照，沿用文本换行处理。
+/hub/fixtures/** text=auto

@@ -95,7 +95,7 @@
         ,detailTimeoutTimer: null
         ,detailSupplementStarted: false
         ,transferTasks: []
-        // “停止接口创建”是逐店的落盘开关；面板只在展示层跟随它，真正拦截在扩展后台。
+        // 面板展示当前页面轮次状态；是否允许执行由扩展后台与服务端共同核验。
         ,directPaused: false
         // 接口诊断独立于普通采集开关；用户可在不开启采集的情况下，打开一个商品后只导出接口结构摘要。
         ,interfaceDiagnostics: { active: false, sessionId: "", sampleCount: 0, skippedCount: 0, droppedCount: 0, startedAt: "" }
@@ -230,6 +230,9 @@
         const existing = document.getElementById(PANEL_HOST_ID);
         if (isCurrentPanelHost(existing)) {
             panelHost = existing;
+            // 同一页面重复初始化时也重新校正位置，避免旧版留下不可见的宿主状态。
+            restorePanelPlacement(existing);
+            syncPanelVisibility();
             return;
         }
         const host = document.createElement("div");
@@ -240,10 +243,10 @@
         root = host.attachShadow({ mode: "closed" });
         root.innerHTML = `
             <style>
-                .panel{width:320px;background:#fff;border:1px solid #dbe3f0;border-radius:12px;box-shadow:0 8px 28px rgba(15,23,42,.2);font:12px/1.6 Arial,"Microsoft YaHei",sans-serif;color:#1f2937}
-                .head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border-radius:11px 11px 0 0;font-size:13px;font-weight:700}
+                .panel{display:flex;flex-direction:column;width:320px;max-height:calc(100vh - 16px);box-sizing:border-box;overflow:hidden;background:#fff;border:1px solid #dbe3f0;border-radius:12px;box-shadow:0 8px 28px rgba(15,23,42,.2);font:12px/1.6 Arial,"Microsoft YaHei",sans-serif;color:#1f2937}
+                .head{display:flex;flex:none;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border-radius:11px 11px 0 0;font-size:13px;font-weight:700}
                 .head-copy{display:flex;align-items:center;gap:8px;min-width:0}.head-stage{font-size:11px;font-weight:600;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-                .core{padding:10px 12px 12px}.tools{display:none;padding:0 12px 12px;max-height:min(52vh,430px);overflow:auto;border-top:1px solid #eef2f7}
+                .core{flex:none;padding:10px 12px 12px}.tools{display:none;flex:1 1 auto;min-height:0;padding:0 12px 12px;max-height:min(52vh,430px);overflow:auto;border-top:1px solid #eef2f7}
                 .row{display:flex;justify-content:space-between;gap:10px}.value{font-weight:700;text-align:right;word-break:break-all;max-width:165px}.on{color:#2563eb}.done{color:#16a34a}.off{color:#dc2626}.warn{color:#d97706}.bad{color:#dc2626}
                 .progress-block{margin:7px 0 8px}.progress-label{display:flex;justify-content:space-between;gap:10px;color:#475569}
                 .progress{height:8px;background:#eef2ff;border-radius:999px;overflow:hidden}
@@ -289,7 +292,8 @@
                         </div>
                         <div class="transfer-progress-detail"></div>
                         <button type="button" class="btn secondary wide transfer-retry" hidden>人工确认后重试</button>
-                        <button type="button" class="btn secondary wide transfer-pause">停止接口创建</button>
+                        <button type="button" class="btn secondary wide transfer-cancel" hidden>取消本店待传任务</button>
+                        <button type="button" class="btn secondary wide transfer-pause">停止并清理</button>
                     </div>
                     <div class="row selection-row"><span>已选商品</span><span class="value selected-count">0 个</span></div>
                     <div class="core-actions">
@@ -342,6 +346,17 @@
         restorePanelPlacement(host);
         syncPanelVisibility();
         keepCurrentPanelInCharge();
+        /**
+         * 面板高度会随工具区展开和内容变化，窗口也可能在运行时被缩放。
+         * 顶部定位必须持续夹在当前视口内，否则历史位置会让面板再次落到屏幕外。
+         */
+        const correctPanelPosition = () => {
+            if (!panelHost) return;
+            const top = Number.parseFloat(panelHost.style.top);
+            if (Number.isFinite(top)) applyPanelVerticalPlacement(panelHost, top);
+        };
+        window.addEventListener("resize", correctPanelPosition);
+        if (typeof ResizeObserver === "function") new ResizeObserver(correctPanelPosition).observe(host);
 
         const head = root.querySelector(".head");
         let drag = null;
@@ -393,6 +408,7 @@
         root.querySelector(".transfer-done").addEventListener("click", confirmCurrentTransferTask);
         root.querySelector(".transfer-pause").addEventListener("click", toggleDirectCreatePaused);
         root.querySelector(".transfer-retry").addEventListener("click", retryUnknownDirectTask);
+        root.querySelector(".transfer-cancel").addEventListener("click", cancelStoreTransferTasks);
         root.querySelector(".settings").addEventListener("click", openSettings);
     }
 
@@ -644,15 +660,12 @@
             ? helper.isGenuineListContextChange(state.pageKey, currentPageKey)
             : Boolean(state.pageKey) && state.pageKey !== currentPageKey;
         if (genuine) {
-            if (state.apiRunning) {
-                // 列表切换后不能继续用旧SPU队列；保留已落库资料，要求用户在新列表重新启动。
-                state.enabled = false;
-                state.runGeneration += 1;
-                send("clearDetailSupplement").catch(() => {});
-                send("setCaptureEnabled", { enabled: false }).catch(() => {});
-            }
+            // 页码或分类发生真实变化时，连采集结束后仍在等待入库的旧轮也终止，不能自动重开采集。
+            state.enabled = false;
+            state.runGeneration += 1;
+            send("clearDetailSupplement").catch(() => {});
+            send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
             resetPageContext(true);
-            if (state.enabled) beginRun();
             return true;
         }
         if (helper && typeof helper.parsePageContextKey === "function") {
@@ -1009,11 +1022,20 @@
         document.addEventListener("change", event => { handleNativeProductSelection(event); schedulePageScan(); }, true);
     }
 
-    /** 面板只允许出现在 Temu 卖家中心管理路由；登录页、营销页及其他站点不挂载可见 UI。 */
-    function isManagementPage() {
+    /**
+     * 插件只在商品列表页工作。
+     * 面板此前会出现在首页、新建商品页、草稿页等管理路由上，遮挡平台内容且容易误操作；
+     * 而所有实际动作（判重、预检、提交、回查、采集）都必须在商品列表页发起——
+     * directPage 对这些操作会直接校验 location.pathname === '/goods/list'，在别的页面根本执行不了。
+     * 因此这里收敛到列表页一种，面板与心跳共用同一判定，避免出现"面板显示正常但点了没用"。
+     */
+    function isWorkPage() {
         if (location.hostname !== "agentseller.temu.com") return false;
-        const type = typeof TemuStoreIdentity !== "undefined" && typeof TemuStoreIdentity.readPageType === "function" ? TemuStoreIdentity.readPageType() : "other";
-        return ["home", "goods-list", "goods-edit", "goods-create", "goods-draft"].includes(type);
+        return location.pathname === "/goods/list";
+    }
+    /** 兼容旧调用名：面板显隐与工作判定现在是同一个条件。 */
+    function isManagementPage() {
+        return isWorkPage();
     }
     function syncPanelVisibility() {
         if (panelHost) panelHost.hidden = !isManagementPage();
@@ -1109,6 +1131,7 @@
         if (ingest.status === "done") notes.push(ingest.reused ? "仓库已存在相同批次" : "已提交到仓库");
         else if (ingest.status === "skipped") notes.push(`仓库未提交：${ingest.reason || "已跳过"}`);
         else if (ingest.status === "error") notes.push(`仓库提交失败：${ingest.error || "未知错误"}`);
+        else if (ingest.status === "pending") notes.push("已排队，等待云端入库");
         applyDetailFinalizationState(download, ingest);
         state.phase = queue.status === "done" ? "采集完成" : "部分完成";
         state.message = queue.status === "done"
@@ -1146,7 +1169,9 @@
             return;
         }
         if (ingest && ingest.status === "pending") {
-            setIngestState("pushing", "正在推送");
+            // 恢复本批指纹后，已有队列轮询才能把等待更新为真实入库结果。
+            if (ingest.fingerprint) ingestFingerprint = String(ingest.fingerprint);
+            setIngestState("retry", "已排队，等待云端入库");
         }
     }
 
@@ -1159,7 +1184,7 @@
         if (verificationTargetIds.size && !removal.checked) {
             state.detailSupplementStarted = false;
             state.enabled = false;
-            await send("setCaptureEnabled", { enabled: false }).catch(() => {});
+            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
             state.phase = "待人工确认";
             state.message = `未能核验当前页商品的店铺删除状态：${removal.reason || "未知原因"}。为避免误传，本轮已停止，未上传；请刷新页面后重试。`;
             render();
@@ -1181,6 +1206,7 @@
         send("captureRun", { summary: makeRunSummary("列表采集完成，详情补采开始") }).catch(() => {});
         render();
         const result = await send("beginDetailSupplement", { input: {
+            captureToken: state.captureToken,
             spuIds: Array.from(targetIds),
             eventIds: Array.from(state.runEventIds),
             listUrl: location.href
@@ -1188,7 +1214,7 @@
         if (!result || result.transportError || result.ok === false || (result.active === false && !result.total)) {
             state.detailSupplementStarted = false;
             state.enabled = false;
-            await send("setCaptureEnabled", { enabled: false }).catch(() => {});
+            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
             state.phase = "采集失败";
             state.message = `详情补采队列启动失败：${result && result.error || "未知错误"}`;
             render();
@@ -1453,6 +1479,7 @@
     /**
      * 收缩为贴边小球，只保留一个指向展开方向的箭头。
      * 小球态与工具区折叠互相独立：还原时回到收缩前的工具区状态，运行进度始终留在主面板。
+     * 收缩与还原都要落盘：刷新页面或切换路由后保持用户选择，否则收起的面板会自己弹回来。
      */
     function setPanelCompact(compact) {
         if (!root) return;
@@ -1460,11 +1487,14 @@
         const toggle = root.querySelector(".toggle");
         panel.classList.toggle("compact", compact);
         if (!compact) {
+            // 还原时不改停靠位置，只把"已还原"记下来；位置沿用当前值。
+            savePanelPlacement(undefined, { compact: false });
             syncToolsToggle();
             return;
         }
         // 先切换成小球再贴边，保证按 42px 的实际尺寸计算贴边位置和箭头方向。
         dockPanelToEdge();
+        savePanelPlacement(undefined, { compact: true });
         toggle.textContent = panelHost?.style.left === "0px" ? "›" : "‹";
         toggle.title = "展开面板";
         toggle.setAttribute("aria-expanded", "false");
@@ -1500,19 +1530,67 @@
         stop.textContent = "停止本次采集";
     }
 
-    /** 仅保存面板位置与停靠侧，不保存商品或店铺数据；页面刷新后恢复用户工作区布局。 */
-    function savePanelPlacement(side) {
-        try { localStorage.setItem(PANEL_STATE_KEY, JSON.stringify({ side, top: panelHost?.style.top || "" })); } catch {}
+    /**
+     * 保存面板布局：停靠侧、纵向位置，以及是否处于收缩成小球的状态。
+     * 收缩态必须一起存：用户把面板收起来就是为了不挡商品列表，
+     * 刷新或切换路由后又弹回来会反复打扰操作。只存布局，不存商品或店铺数据。
+     */
+    function savePanelPlacement(side, extra = {}) {
+        try {
+            const saved = readPanelPlacement();
+            // 合并写入：调用方只关心自己那一项时，不能把另一项抹掉。
+            localStorage.setItem(PANEL_STATE_KEY, JSON.stringify({
+                side: side ?? saved.side ?? "right",
+                top: panelHost?.style.top || saved.top || "",
+                compact: extra.compact ?? saved.compact ?? false
+            }));
+        } catch {}
     }
-    function restorePanelPlacement(host) {
+    function readPanelPlacement() {
         try {
             const saved = JSON.parse(localStorage.getItem(PANEL_STATE_KEY) || "null");
-            if (!saved) return;
+            return saved && typeof saved === "object" ? saved : {};
+        } catch { return {}; }
+    }
+    /** 纵坐标必须按当前视口和面板高度重新夹取，不能原样套用旧窗口的数值。 */
+    function clampPanelTop(host, top) {
+        const minTop = 8;
+        const maxTop = Math.max(minTop, window.innerHeight - host.offsetHeight - 8);
+        return Math.max(minTop, Math.min(maxTop, top));
+    }
+    /**
+     * 有历史纵坐标时使用顶部定位，无历史位置时保留默认右下角。
+     * 两者不能同时把 top 和 bottom 设为 auto，否则 fixed 元素会按文档静态位置落到列表末端。
+     */
+    function applyPanelVerticalPlacement(host, top) {
+        if (!host || !Number.isFinite(top)) {
+            if (host) {
+                host.style.top = "auto";
+                host.style.bottom = "18px";
+            }
+            return;
+        }
+        host.style.top = `${clampPanelTop(host, top)}px`;
+        host.style.bottom = "auto";
+    }
+    function restorePanelPlacement(host) {
+        const saved = readPanelPlacement();
+        const savedTop = saved.top == null || saved.top === "" ? null : Number.parseFloat(saved.top);
+        try {
             host.style.left = saved.side === "left" ? "0px" : "auto";
-            host.style.right = saved.side === "right" ? "0px" : "auto";
-            if (saved.top) host.style.top = saved.top;
-            host.style.bottom = "auto";
+            host.style.right = saved.side === "left" ? "auto" : "0px";
+            applyPanelVerticalPlacement(host, savedTop);
         } catch {}
+        // 首次挂载时先按默认锚点布局，下一帧尺寸可用后再校正历史坐标。
+        if (Number.isFinite(savedTop)) requestAnimationFrame(() => applyPanelVerticalPlacement(host, savedTop));
+        /**
+         * 收缩态在面板挂载后恢复。
+         * 必须等一帧再执行：贴边定位要读 panelHost.offsetHeight，宿主刚插入时布局还没算出来，
+         * 此时读到 0 会把面板贴到错误的位置。这里用双帧确保尺寸已就绪。
+         */
+        if (saved.compact) {
+            requestAnimationFrame(() => requestAnimationFrame(() => setPanelCompact(true)));
+        }
     }
 
     /** 接口诊断必须显式开启，且不会修改普通采集状态；诊断完成后同一按钮负责停止并打开导出页。 */
@@ -1558,9 +1636,11 @@
             created: "创建成功",
             unknown: "结果待核对",
             preflight_failed: "预检失败",
+            rejected: "平台拒绝",
+            duplicate_wait: "等待重复检索",
             duplicate_exists: "已存在，未重复创建"
         };
-        const terminalError = state === "unknown" || state === "preflight_failed";
+        const terminalError = ["unknown", "preflight_failed", "rejected"].includes(state);
         const terminalDone = state === "created" || state === "duplicate_exists";
         const index = terminalError ? Math.max(0, stages.indexOf(state === "unknown" ? "verifying" : "authorizing")) : Math.max(0, stages.indexOf(stage));
         const percent = terminalDone ? 100 : Math.round(((index + 1) / stages.length) * 100);
@@ -1701,6 +1781,8 @@
                 created: "已创建",
                 unknown: "结果待核对",
                 preflight_failed: "预检失败",
+                rejected: "平台拒绝",
+                duplicate_wait: "等待重复检索",
                 duplicate_exists: "已存在"
             };
             transferStatus.textContent = directPaused
@@ -1750,9 +1832,9 @@
         const pauseButton = root.querySelector(".transfer-pause");
         if (pauseButton) {
             // 只有本店确实有接口创建任务（或已停止）时才露出按钮，避免普通采集店铺看到无关入口。
-            pauseButton.hidden = !directPaused && !directTasks.length;
+            pauseButton.hidden = false;
             pauseButton.disabled = directPauseBusy;
-            pauseButton.textContent = directPaused ? "继续接口创建" : "停止接口创建";
+            pauseButton.textContent = directPaused ? "启用本轮" : "停止并清理";
             pauseButton.classList.toggle("primary", directPaused);
             pauseButton.classList.toggle("secondary", !directPaused);
         }
@@ -1762,6 +1844,17 @@
             // 按钮长期不露出来会让“结果待核对”的任务永远占位，同店同货号再也发不出去。
             retryButton.hidden = !(current?.directCreate
                 && ['unknown', 'preflight_failed', 'rejected'].includes(String(current.directState || '')));
+        }
+        const cancelButton = root.querySelector(".transfer-cancel");
+        if (cancelButton) {
+            // 本店还有待传任务时才露出：没有任务时这个入口只会造成误操作。
+            const storeId = String(currentPageIdentity()?.storeId || "");
+            const storeTasks = storeId
+                ? (state.transferTasks || []).filter(task => String(task.targetStoreId || "") === storeId)
+                : [];
+            cancelButton.hidden = storeTasks.length === 0;
+            cancelButton.disabled = directPauseBusy;
+            cancelButton.textContent = storeTasks.length ? `取消本店待传任务（${storeTasks.length}）` : "取消本店待传任务";
         }
         const nextButton = root.querySelector(".transfer-next");
         const exportButton = root.querySelector(".transfer-export");
@@ -1996,7 +2089,7 @@
                 agentRegisteredAt = Date.now();
                 agentRegisteredPageStoreName = String(identity.pageStoreName || "");
             } else {
-                registered = { ok: true, agent: { pluginInstanceId, storeId: mappedStore.storeId, storeName: mappedStore.storeName } };
+                registered = { ok: true, agent: { ...mappedStore, pluginInstanceId } };
             }
             if (!registered?.ok) throw new Error(registered?.error || "agent_register_failed");
             if (registered && registered.ok && registered.agent) {
@@ -2004,19 +2097,25 @@
                 if (registered.agent.storeId) {
                     mappedStore = {
                         storeId: String(registered.agent.storeId || ""),
-                        storeName: String(registered.agent.storeName || expectedName || identity.pageStoreName || "")
+                        storeName: String(registered.agent.storeName || expectedName || identity.pageStoreName || ""),
+                        mallId: String(registered.agent.mallId || ''),
+                        executionMode: registered.agent.executionMode || '',
+                        identityMatched: registered.agent.identityMatched === true
                     };
                     agentIdentity.storeId = mappedStore.storeId;
                     agentIdentity.storeName = mappedStore.storeName;
                     const mappedName = mappedStore.storeName;
-                    agentIdentity.identityMatched = Boolean(identity.pageStoreName && mappedName && helper && (
+                    // 后台已从当前页面运行时核验商城ID，名称变化不能在面板层再次否决；服务端仍核验实例和领取凭证。
+                    const mallVerified = mappedStore.executionMode === 'plugin-api' && mappedStore.identityMatched
+                        && /^\d+$/.test(mappedStore.mallId) && mappedStore.storeId === `temu:${mappedStore.mallId}`;
+                    agentIdentity.identityMatched = mappedStore.executionMode === 'plugin-api' ? mallVerified : Boolean(identity.pageStoreName && mappedName && helper && (
                         helper.namesMatch(identity.pageStoreName, mappedName)
                         || (helper.namesCompatible && helper.namesCompatible(identity.pageStoreName, mappedName))
                         || (helper.nameFoundInText && helper.nameFoundInText(document.body && document.body.innerText || "", mappedName))
                     ));
                 }
             }
-            if (!identity.pageStoreName) {
+            if (!identity.pageStoreName && !(mappedStore.executionMode === 'plugin-api' && agentIdentity.identityMatched)) {
                 agentState = { phase: "idle", detail: "未识别店铺", claimed: 0 };
                 render();
                 return;
@@ -2069,7 +2168,7 @@
                     claimed: jobs.length
                 };
                 if (state.directPaused) {
-                    state.message = "接口创建已停止，插件不会继续上传；点“继续接口创建”才会恢复。";
+                    state.message = "本轮已停止，旧任务不会恢复。";
                 } else if (currentTask.reason) {
                     state.message = currentTask.reason;
                 } else if (!currentTask.directState || currentTask.directState === "received") {
@@ -2133,6 +2232,7 @@
             return;
         }
         if (outcome && outcome.status === "error") {
+            if (outcome.error === 'capture_round_ended') { setIngestState('blocked', '本轮上传已停止，已发送结果待核对'); return; }
             setIngestState("error", ingestErrorText(outcome.error || outcome.reason));
             return;
         }
@@ -2415,15 +2515,16 @@
         state.message = message;
         clearCompletionTimers();
         const summary = makeRunSummary(phase);
-        send("setCaptureEnabled", { enabled: false }).catch(() => {});
+        send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
         send("captureRun", { summary }).catch(() => {});
         render();
         pushAfterCapture(message, {
+            captureToken: state.captureToken,
             saved: summary.saved,
             productEvents: summary.productEvents,
             pendingWrites: summary.pendingWrites,
             eventIds: Array.from(state.runEventIds),
-            // 选择性采集锁定的是跨页 SPU 清单；终态上传不能退回刷新后的当前页集合。
+            // 选择性采集只使用本轮锁定的SPU清单，不能混入其他页历史集合。
             allowedSpuIds: Array.from(captureProductIds())
         });
     }
@@ -2431,7 +2532,7 @@
     /**
      * 采集终态后默认把本地完整包推进入库台。
      * 用户在设置里关闭自动推送时才跳过；空包不创建批次，避免把“没抓到”写成一次成功入库。
-     * 终态确定后立刻把当前页 SPU 白名单交给后台排队执行，不依赖页面继续停留。
+     * 终态确定后按原文档代次排队，页面离开或新采集启动后停止旧轮上传。
      */
     function pushAfterCapture(message, runContext) {
         // 终态可能来自 DOM 识别失败或空页面；本次没有商品响应时不能把 IndexedDB 里的旧包冒充本次结果上传。
@@ -2446,6 +2547,7 @@
             return;
         }
         const ingestContext = {
+            captureToken: runContext.captureToken,
             saved: runContext.saved,
             productEvents: runContext.productEvents,
             eventIds: runContext.eventIds,
@@ -2469,7 +2571,7 @@
         rememberIngestFingerprint(ingestContext);
         setIngestState("pushing", "正在推送");
         render(`${message} 正在推送到入库台…`);
-        // 立刻把当前页 SPU 白名单交给后台落盘执行；页面切走后由 service worker 继续。
+        // 当前页SPU白名单交给后台持久化；后台休眠可恢复，但页面刷新或切走会终止旧轮次。
         send("autoPushFullPacket", { context: ingestContext }).then(result => {
                 ingestFingerprint = String(result && result.fingerprint || ingestFingerprint);
                 if (result && result.queue) applyIngestQueue(result.queue);
@@ -2688,13 +2790,14 @@
             // 新采集显式丢弃旧终态，防止刷新后恢复上一批“完成”而跳过本次执行。
             await send("clearDetailSupplement");
             result = await send("setCaptureEnabled", { enabled: true });
-        } catch (_) {
-            result = null;
+            state.captureToken = result?.captureToken || '';
+        } catch (error) {
+            result = { error: error?.message || "无法启动采集" };
         }
         state.enabled = Boolean(result && result.ok && result.enabled);
         if (!state.enabled) {
             state.phase = "采集失败";
-            render("无法启动采集，请确认扩展后台正常运行。");
+            render(result?.error || "无法启动采集，请确认扩展后台正常运行。");
             return;
         }
         // 采集范围必须从点击时的当前页重建，不能沿用平台切页后累积的上一页 SPU 集合。
@@ -2708,7 +2811,7 @@
         await startDetailSupplement();
     }
 
-    /** 锁定当前勾选 SPU 后刷新页面以重新触发接口；队列恢复依赖 SPU 清单，不依赖刷新后的页码。 */
+    /** 选择性采集沿用当前文档的接口采集，不能再用刷新继承队列绕过轮次终止。 */
     async function startSelectedCapture() {
         readSelectedProductIds();
         if (!state.selectedProductIds.size) {
@@ -2717,18 +2820,26 @@
         }
         state.selectionMode = true;
         await persistSelectedProductIds();
+        let captureError = "";
         try {
             await send("clearDetailSupplement");
             const result = await send("setCaptureEnabled", { enabled: true });
+            state.captureToken = result?.captureToken || '';
             state.enabled = Boolean(result && result.ok && result.enabled);
-        } catch (_) { state.enabled = false; }
+        } catch (error) { state.enabled = false; captureError = error?.message || ""; }
         if (!state.enabled) {
             state.phase = "采集失败";
-            render("无法启动选择性采集，请确认扩展后台正常运行。");
+            render(captureError || "无法启动选择性采集，请确认扩展后台正常运行。");
             return;
         }
+        resetDetailRuntimeForNewCapture();
+        resetPageContext(true);
         beginRun();
-        setTimeout(() => location.reload(), 300);
+        if (!await waitForCurrentPageScan()) {
+            finishCapture('采集超时', '当前页商品未就绪，未上传。');
+            return;
+        }
+        await startDetailSupplement();
     }
 
     async function stopCapture() {
@@ -2736,14 +2847,14 @@
         state.enabled = false;
         state.phase = "已暂停";
         clearCompletionTimers();
-        if (state.detailMode || state.detailSupplementStarted) {
+        {
             // 清队列回执在后台排在在途落库之后，暂停也保留最后已保存的当前批次范围。
             const stopped = await send("clearDetailSupplement").catch(() => null);
             if (stopped?.queue?.total) state.detailQueue = { ...stopped.queue, active: false, status: "partial" };
         }
         // 暂停本身也是一次可分析的终态；即使用户没有打开日志页，也保留当时的完成度和待写入数量。
         await send("captureSnapshot", { summary: makeRunSummary("已暂停") }).catch(() => {});
-        await send("setCaptureEnabled", { enabled: false });
+        await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken });
         render("已停止本次采集。现有数据仍保留在本地；再次采集会重新读取当前页面，不会从断点继续。");
     }
 
@@ -2801,8 +2912,8 @@
     }
 
     /**
-     * 停止/继续接口创建。
-     * 停止标记由扩展后台落盘，刷新页面不会恢复；这里只负责把操作者的意图发过去并如实回显结果，
+     * 停止并清理当前轮次，或人工启用新轮次。
+     * 刷新页面不会继承旧授权；这里只负责把操作者的意图发过去并如实回显结果，
      * 不能在本地先改状态，否则后台拒绝时面板会显示成“已停止”而上传仍在继续。
      */
     async function toggleDirectCreatePaused() {
@@ -2820,13 +2931,13 @@
                 action: state.directPaused ? "stop-direct-create" : "resume-direct-create",
                 status: "clicked",
                 storeId: identity.storeId,
-                reason: state.directPaused ? "操作者停止接口创建" : "操作者继续接口创建"
+                reason: state.directPaused ? "操作者停止并清理本轮" : "操作者启用新一轮"
             });
             render(state.directPaused
-                ? "已停止接口创建：插件不会继续上传，刷新页面也不会自动恢复。点“继续接口创建”才会恢复。"
-                : "已恢复接口创建：插件会继续处理本店剩余商品。");
+                ? "本轮已停止，未提交项正在清理；已提交项保留结果核对。"
+                : "新一轮已启用，等待接收商品。");
         } catch (error) {
-            render(`停止接口创建失败：${String(error?.message || error)}。请导出操作日志排查。`);
+            render(`操作未完成：${String(error?.message || error)}。`);
         } finally {
             directPauseBusy = false;
             render();
@@ -2883,6 +2994,42 @@
         if (!result?.ok) return render(`人工重试失败：${result?.error || '请稍后再试'}`);
         await refreshTargetUploadTasks();
         render('已确认重试，商品已排到上传队列末尾。');
+    }
+
+    /**
+     * 取消本店还没提交到平台的待传任务。
+     *
+     * 与"停止并清理"的区别：停止是终止当前轮次（后续还能启用新一轮继续）；
+     * 取消是主动丢弃本店队列里还没提交的任务，不等自动清理。
+     * 已提交或结果未知的项不会被取消——它们可能已在平台建成商品，删掉会导致重复创建。
+     */
+    async function cancelStoreTransferTasks() {
+        if (directPauseBusy) return;
+        const identity = currentPageIdentity();
+        if (!identity?.storeId) return render("未识别到本店，无法取消任务。");
+        const pending = (state.transferTasks || []).filter(task => String(task.targetStoreId || "") === String(identity.storeId));
+        const confirmed = window.confirm(`取消本店 ${pending.length} 个待上传任务？\n\n已提交到平台或结果待核对的任务会保留，不会被取消。`);
+        if (!confirmed) return;
+        directPauseBusy = true;
+        render(`正在取消本店 ${pending.length} 个待传任务…`);
+        try {
+            const result = await send("cancelStoreTasks", { identity });
+            if (!result?.ok) throw new Error(result?.error || "cancel_store_tasks_failed");
+            // 服务端把未提交项置为取消后，本地已领快照也要跟着删掉，否则下次仍会显示待上传。
+            const purged = await send("purgeCancelledStoreTasks", { storeId: identity.storeId }).catch(() => ({ removed: 0 }));
+            await refreshTargetUploadTasks();
+            const kept = Number(result.kept || 0);
+            render(kept
+                ? `已取消 ${Number(result.cancelled || 0)} 个待传任务，保留 ${kept} 个已在平台提交或结果待核对的任务。`
+                : `已取消 ${Number(result.cancelled || 0)} 个待传任务（本地清理 ${Number(purged?.removed || 0)} 个）。`);
+            await logOperation({ action: "cancel-store-tasks", status: "clicked", storeId: identity.storeId,
+                reason: `操作者取消本店待传任务：取消 ${Number(result.cancelled || 0)}，保留 ${kept}` });
+        } catch (error) {
+            render(`取消失败：${String(error?.message || error)}。`);
+        } finally {
+            directPauseBusy = false;
+            render();
+        }
     }
 
     /**
@@ -3239,6 +3386,7 @@
             if (area === "local" && (changes.pendingIngestQueueV1 || changes.pendingIngestV1 || changes.lastIngestOutcomesV1)) refreshIngestQueue();
         });
         send("getCaptureEnabled").then(async result => {
+            state.captureToken = result?.captureToken || '';
             state.enabled = Boolean(result && result.ok && result.enabled);
             await restoreSelectedProductIds();
             // 等待 document_start 发起的恢复请求，不能等 DOM 就绪后再重新问一次，
@@ -3274,7 +3422,16 @@
             if (instance && instance.ok && instance.pluginInstanceId) pluginInstanceId = instance.pluginInstanceId;
             await syncStoreAgent();
             window.addEventListener(STATUS_REQUEST_EVENT, () => { publishPublicStatus(); });
-            setInterval(() => { syncStoreAgent().catch(() => {}); }, AGENT_SYNC_INTERVAL_MS);
+            /**
+             * 心跳只在商品列表页跑。
+             * 在其他页面（新建商品、草稿、首页）它同样会把店铺登记成"在线"，
+             * 但那里的插件根本执行不了创建任务——directPage 的判重/预检/提交都要求页面在 /goods/list，
+             * 于是网站显示绿灯、任务却一直没进展。让心跳与真实可工作状态一致，避免这种假在线。
+             */
+            setInterval(() => {
+                if (!isWorkPage()) return;
+                syncStoreAgent().catch(() => {});
+            }, AGENT_SYNC_INTERVAL_MS);
         }).catch(() => {
             state.ready = true;
             state.phase = "采集失败";

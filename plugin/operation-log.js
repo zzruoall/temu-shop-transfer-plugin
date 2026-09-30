@@ -22,7 +22,8 @@ globalThis.TemuOperationLog = (() => {
             if (key === "pageUrl" || key === "endpoint") {
                 try { const url = new URL(value); entry[key] = `${url.origin}${url.pathname}`.slice(0, 240); } catch { entry[key] = ""; }
             } else if (ids.has(key)) {
-                entry[key] = /^[\w-]{1,80}$/.test(value) ? value : "[invalid-id]";
+                // 店铺身份使用 temu:商城ID 命名空间，冒号不是敏感信息，必须保留以关联服务端回执。
+                entry[key] = (key === "storeId" ? /^(?:temu:)?[\w-]{1,80}$/ : /^[\w-]{1,80}$/).test(value) ? value : "[invalid-id]";
             } else {
                 // 错误只保留短摘要；剥离链接参数、常见凭证、邮箱及长随机值，禁止存储任意 HTML/正文。
                 entry[key] = value.replace(/https?:\/\/\S+/gi, "[url]")

@@ -20,3 +20,23 @@ __pycache__/
 .DS_Store
 Thumbs.db
 test-artifacts/
+
+# 发布源码不携带机器配置、数据库备份或插件签名私钥
+.local-mysql/
+shared/
+/output/*
+!/output/reviews/
+/output/reviews/*
+!/output/reviews/account-process-slow-worker-fixture.mjs
+*.sql.gz
+*.pem.*
+mysql-v*.json
+mysql-config*.json
+admin.json
+
+# 本地文件模式的账号、归属和令牌状态同样属于私有运行数据。
+/hub/users.json*
+/hub/store-ownership.json*
+/hub/deleted-stores.json*
+/hub/plugin-tokens.json*
+/hub/ingest-auth.json*

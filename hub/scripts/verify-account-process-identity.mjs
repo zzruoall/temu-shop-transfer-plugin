@@ -1,0 +1,20 @@
+/** 不启动真实业务：反证PID重用、身份不可读与fork登记窗口不能误释放。 */
+import assert from 'node:assert/strict';
+import { inspectProcess, leaseProcessGone } from '../lib/account-process-recovery.mjs';
+const oldIdentity = '12345678-1234-1234-1234-123456789012:100';
+const newIdentity = '12345678-1234-1234-1234-123456789012:200';
+const live = { state: 'live', pid: process.pid, boot_id: oldIdentity };
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'alive', identity: oldIdentity })), false);
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'unknown' })), false);
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'alive', identity: '' })), false);
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'alive', identity: newIdentity })), true);
+assert.equal(await leaseProcessGone({ ...live, boot_id: '12345' }, async () => ({ state: 'alive', identity: newIdentity })), false, '旧PID格式不是进程退出证据');
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'alive', identity: 'unrecognized' })), false, '探针身份异常不得释放');
+assert.equal(await leaseProcessGone(live, async () => ({ state: 'dead' })), true);
+const reserved = { state: 'reserved', boot_id: `parent:123:${oldIdentity}`, lease_id: 'reservation' };
+assert.equal(await leaseProcessGone({ ...reserved, boot_id: 'parent:123:123' }, async () => ({ state: 'alive', identity: newIdentity }), async () => ({ state: 'dead' })), false);
+assert.equal(await leaseProcessGone(reserved, async () => ({ state: 'dead' }), async () => ({ state: 'alive' })), false);
+assert.equal(await leaseProcessGone(reserved, async () => ({ state: 'dead' }), async () => ({ state: 'unknown' })), false);
+assert.equal(await leaseProcessGone(reserved, async () => ({ state: 'dead' }), async () => ({ state: 'dead' })), true);
+assert.equal((await inspectProcess(process.pid)).state, 'alive');
+console.log('进程启动身份与保守回收12项通过');

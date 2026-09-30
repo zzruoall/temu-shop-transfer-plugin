@@ -1,5 +1,5 @@
 /**
- * 紫鸟店名和 Temu 页头店名的比对。紫鸟 ID 不在页面 DOM 里，只能用店名核验；
+ * 旧CLI路径的紫鸟店名和 Temu 页头店名比对。紫鸟 ID 不在页面 DOM 里，旧路径用店名核验；
  * 页头常省略托管备注，因此允许长名与核心短名对应，但不允许单个短词前缀。
  */
 function asText(value) {
@@ -48,6 +48,20 @@ export function namesCompatible(left, right) {
     const bc = normalizeName(coreStoreName(right));
     if (ac && bc && ac === bc) return true;
     return isNamePrefix(a, b) || isNamePrefix(b, a) || isNamePrefix(ac, b) || isNamePrefix(bc, a);
+}
+
+/** API任务以已登记实例的商城ID为身份依据；店名仅展示，旧CLI任务仍保留名称核验。 */
+export function taskIdentityMatches(job, agent, input = {}) {
+    const target = asText(job?.targetStoreId);
+    if (job?.directCreate && /^temu:\d+$/.test(target)) {
+        return Boolean(agent?.executionMode === 'plugin-api' && agent.identityMatched && agent.pluginDetected
+            && asText(agent.storeId) === target && target === `temu:${asText(agent.mallId)}`
+            && (!input.storeId || asText(input.storeId) === target)
+            && (!input.mallId || asText(input.mallId) === asText(agent.mallId))
+            && (!input.executionMode || input.executionMode === 'plugin-api')
+            && (!input.pluginInstanceId || asText(input.pluginInstanceId) === asText(agent.pluginInstanceId)));
+    }
+    return namesCompatible(job?.targetStoreName, input.pageStoreName || input.storeName || agent?.storeName);
 }
 
 /**
