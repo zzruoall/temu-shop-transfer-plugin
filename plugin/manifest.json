@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "店铺中转插件",
-    "version": "10.10.68",
-    "description": "采集商品上传云仓；目标店按当前页面轮次接收任务，刷新或停止后取消未提交项，执行结果独立补报。",
+    "version": "10.10.75",
+    "description": "采集商品上传云仓；目标店独立执行，仅错误通知商品货号及原因，成功和正常进度不回传。",
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzPbLlK4UTx7OdOi0b/1YbfNi603gI7AlqqY7tHcIxS4DSFNsVjr5zofuFiwXHEPDeVrhYY9Ri9+ttgnYryAm+dahrH8y+DA/XOvHObTW4MFVMUukxriWlTIg+tdMl+or7s/sVPTz5JdFrbbPIJzxl4fa8Qp2hCM4Jy8URrjvbpS56PDFBYx9JwI5Z5Bl4fYWE7vj6NTDYPCT/drfI2ucLC0KPnhCKdkcxtwKUbIBuzsi27opps0ehwxDzjwuUyPEVaVwhDZaPEpWEJoys9A0CJhrtWTtEw+YcVO/gp/bNoqOsNx4j2SWcP/t9X1vdevFeHxyNY88S9ep16lFQxSVdQIDAQAB",
     "background": {
         "service_worker": "background.js"
@@ -19,8 +19,7 @@
         {
             "js": [
                 "page-hook.js",
-                "api-reader.js",
-                "form-fill.js"
+                "api-reader.js"
             ],
             "matches": [
                 "*://*.temu.com/*",

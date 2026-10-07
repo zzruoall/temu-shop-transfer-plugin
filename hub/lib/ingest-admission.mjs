@@ -105,6 +105,8 @@ export function createIngestAdmission({ limit = 2, maxPending = 128, maxBytes = 
     return {
         // 采样恢复时主动唤醒，不依赖另一个请求到来或已有请求释放。
         refreshCapacity: pump,
+        // 容量回调不能调用包含currentLimit的snapshot，否则会递归计算自身。
+        snapshotActive: () => active,
         snapshot: () => ({ active, pending: queue.length, bytes, limit: currentLimit(), maxBytes, perAccountPending, perAccountBytes,
             parsing: parsingCount(), parserSlots }),
         /**

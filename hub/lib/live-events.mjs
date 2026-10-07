@@ -25,12 +25,12 @@ export function createLiveEvents({ rootDir, snapshot, authorize }) {
 
     /** 监听目录而非文件，兼容业务文件通过临时文件原子替换；缺失目录在保活时补挂。 */
     function ensureWatchers() {
-        for (const dir of [rootDir, path.join(rootDir, "data"), path.join(rootDir, "data", "work-logs")]) {
+        for (const dir of [rootDir, path.join(rootDir, "data")]) {
             if (watchers.has(dir)) continue;
             try {
                 const watcher = watch(dir, { persistent: false }, (_event, filename) => {
                     const name = String(filename || "");
-                    if (!name || /\.json$/.test(name) || name === "work-logs") notify();
+                    if (!name || /\.json$/.test(name)) notify();
                 });
                 watcher.on("error", () => { watcher.close(); watchers.delete(dir); });
                 watchers.set(dir, watcher);

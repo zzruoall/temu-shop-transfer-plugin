@@ -245,6 +245,8 @@ function summarizeAgent(agent) {
         pageUrl: agent.pageUrl || "",
         pageType: agent.pageType || "",
         pluginVersion: agent.pluginVersion || "",
+        relayProtocol: agent.relayProtocol || 0,
+        relaySessionId: agent.relaySessionId || "",
         lastSeenAt: agent.lastSeenAt,
         lastClaimedJobId: agent.lastClaimedJobId || "",
         pluginDetected: Boolean(agent.pluginDetected),
@@ -252,15 +254,10 @@ function summarizeAgent(agent) {
         pageStoreName: agent.pageStoreName || "",
         nameSource: agent.nameSource || "",
         nameConfidence: agent.nameConfidence || "",
-        expectedCount: agent.expectedCount == null ? null : agent.expectedCount,
-        completedCount: agent.completedCount == null ? null : agent.completedCount,
-        capturePhase: agent.capturePhase || "",
-        ingestPhase: agent.ingestPhase || "",
-        pendingUploadCount: Number.isInteger(agent.pendingUploadCount) ? agent.pendingUploadCount : 0,
         source: agent.source || "",
         online: isAgentOnline(agent),
         onlineWindowMs: AGENT_ONLINE_MS,
-        canReceiveUploads: hasManualTransferPlugin(agent) && hasTransferIntegrityPlugin(agent) && (agent.executionRunProtocol !== 1 || runActive)
+        canReceiveUploads: hasManualTransferPlugin(agent) && hasTransferIntegrityPlugin(agent) && (agent.relayProtocol === 1 || agent.executionRunProtocol !== 1 || runActive)
     };
 }
 
@@ -849,6 +846,9 @@ export function createJobQueue(rootDir, store, options = {}) {
                 pageUrl: asText(input.pageUrl) || (existing && existing.pageUrl) || "",
                 pageType: asText(input.pageType) || (existing && existing.pageType) || "",
                 pluginVersion: asText(input.pluginVersion) || (existing && existing.pluginVersion) || "",
+                // 中转页面只标识接收连接，不记录暂停、执行进度或平台结果；店铺身份核验保持原规则。
+                relayProtocol: input.relayProtocol === 1 ? 1 : 0,
+                relaySessionId: input.relayProtocol === 1 ? asText(input.relaySessionId).slice(0, 255) : "",
                 lastSeenAt: now,
                 lastClaimedJobId: pageChanged ? "" : (existing && existing.lastClaimedJobId || ""),
                 pluginDetected,
@@ -858,11 +858,6 @@ export function createJobQueue(rootDir, store, options = {}) {
                 pageStoreName: requestedPageStoreName || (existing && existing.pageStoreName) || "",
                 nameSource: asText(input.nameSource) || (existing && existing.nameSource) || "",
                 nameConfidence: asText(input.nameConfidence) || (existing && existing.nameConfidence) || "",
-                expectedCount: Number.isInteger(input.expectedCount) ? input.expectedCount : (existing && existing.expectedCount),
-                completedCount: Number.isInteger(input.completedCount) ? input.completedCount : (existing && existing.completedCount),
-                capturePhase: asText(input.capturePhase) || (existing && existing.capturePhase) || "",
-                ingestPhase: asText(input.ingestPhase) || (existing && existing.ingestPhase) || "",
-                pendingUploadCount: Number.isInteger(input.pendingUploadCount) ? input.pendingUploadCount : (existing && existing.pendingUploadCount) || 0,
                 source: asText(input.source) || (existing && existing.source) || ""
                 ,mallId: requestedMallId || existing?.mallId || "", executionMode: asText(input.executionMode) || existing?.executionMode || ""
                 // 撤销记录不随心跳重建：清空它会让刚停止的轮次在下次心跳后重新可被启动。
@@ -873,6 +868,9 @@ export function createJobQueue(rootDir, store, options = {}) {
                 : -1;
             if (index >= 0) state.agents[index] = { ...existing, ...agent };
             else state.agents = [agent, ...(state.agents || [])].slice(0, sql ? undefined : MAX_AGENTS);
+            // 心跳只维护连接和绑定；移除旧采集统计，不改变店铺身份、在线时间和认领归属。
+            const identityAgent = index >= 0 ? state.agents[index] : agent;
+            for (const field of ['expectedCount', 'completedCount', 'capturePhase', 'ingestPhase', 'pendingUploadCount']) delete identityAgent[field];
             await writeState(state);
             const saved = index >= 0 ? state.agents[index] : agent;
             // 队列也可独立运行；只有配置仓库时才回填来源身份。

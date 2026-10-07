@@ -3,7 +3,7 @@
 读取已打开的目标店后，由本机工人核验页面店名并检测 10.3.1 以上插件。人工上传任务的完整商品快照由目标店插件自己领取，工人不代领、不填写、不上传、不发布。
 
 ```powershell
-cd worker
+cd E:\project\ziniao_cj\worker
 node .\worker.mjs
 ```
 

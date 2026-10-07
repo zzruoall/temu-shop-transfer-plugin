@@ -40,3 +40,13 @@ admin.json
 /hub/deleted-stores.json*
 /hub/plugin-tokens.json*
 /hub/ingest-auth.json*
+
+# 发布目录不接收本地诊断产物、数据库转储或临时调试脚本。
+/hub/output/
+/hub/test-artifacts/
+/hub/.playwright-cli/
+/hub/.deploy-*/
+/hub/scripts/_*.mjs
+*.sql
+*.sqlite
+*.sqlite3

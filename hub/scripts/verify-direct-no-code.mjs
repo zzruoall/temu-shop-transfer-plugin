@@ -6,9 +6,9 @@
  */
 import vm from "node:vm";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { directExecutorFixture } from './direct-platform-fixture.mjs';
 
-const source = await readFile(new URL("../../plugin/direct-executor.js", import.meta.url), "utf8");
+const source = await directExecutorFixture();
 
 /** 构造一次判重注入环境：记录页面侧真正发出的查询请求，用于确认“有没有提前阻断”。 */
 async function runDuplicateCheck(payload) {
@@ -17,14 +17,14 @@ async function runDuplicateCheck(payload) {
         mallIdClient: { getMallIdAsync: async () => "123" },
         post: async (path, body) => {
             queries.push({ path, body });
-            // 空页作为分页终止条件；同时证明无货号路径不会拿名称或 SPU 去猜同款。
+            // total=0 明确表示精确查询无匹配；无货号路径不会拿名称或 SPU 去猜同款。
             return { result: { pageItems: [], total: 0 } };
         }
     };
     const runtime = () => client;
     runtime.m = { only: "getMallIdAsync .postWithoutMallId= .mallIdClient=" };
     const context = vm.createContext({
-        console, crypto, Set, Map, String, Number, Object, Array, JSON, Error, Promise, setTimeout,
+        console, crypto, Set, Map, String, Number, Object, Array, JSON, Error, Promise, setTimeout, clearTimeout,
         location: { origin: "https://agentseller.temu.com", pathname: "/goods/list" },
         window: { chunkLoadingGlobal_temu_sca_goods: { push: entry => entry[2](runtime) } },
         chrome: {

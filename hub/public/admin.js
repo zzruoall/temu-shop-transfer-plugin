@@ -25,7 +25,11 @@ async function api(path, options) {
     } catch {
         data = { error: `服务器返回了无法解析的响应（HTTP ${response.status}）` };
     }
-    if (!response.ok) throw new Error(data.error || `请求失败（HTTP ${response.status}）`);
+    if (!response.ok) {
+        const error = new Error(data.error || `请求失败（HTTP ${response.status}）`);
+        error.status = response.status;
+        throw error;
+    }
     return data;
 }
 
@@ -84,10 +88,10 @@ function confirmDestructive({ title, details = [], options = [], confirmLabel = 
 /** 管理站退出：走管理站自己的退出端点，退出后回到管理登录页而不是业务登录页。 */
 async function logout() {
     try { await fetch(`${siteRoot()}/admin/logout`, { method: "POST", credentials: "same-origin" }); } catch {}
-    location.href = `${siteRoot()}/admin`;
+    location.href = `${siteRoot()}/admin/login`;
 }
 
-/** 顶栏身份：不是管理员时说明情况并给出返回入口，不渲染任何管理数据。 */
+/** 顶栏身份仅用于管理页展示；会话失效或变为普通用户时由入口重新要求管理员登录。 */
 async function loadIdentity() {
     const me = await api("/temu/api/me");
     const nameEl = document.getElementById("admin-username");
@@ -570,7 +574,7 @@ function bindEvents({ users, stores, products = [], batches = [] }) {
     }));
 }
 
-/** 入口：先验身份，非管理员直接拦下，不渲染任何管理数据。 */
+/** 入口先验身份；跨标签页切换账号或会话失效时回到管理员登录，不把普通账号留在拒绝页面。 */
 async function boot() {
     document.getElementById("admin-logout")?.addEventListener("click", logout);
     viewButtons = [...document.querySelectorAll("[data-admin-view-button]")];
@@ -579,12 +583,16 @@ async function boot() {
     let me = null;
     try { me = await loadIdentity(); }
     catch (error) {
+        if ([401, 403].includes(error.status)) {
+            location.replace(`${siteRoot()}/admin/login`);
+            return;
+        }
         stage.innerHTML = `<div class="admin-panel"><div class="admin-empty">读取身份失败：${escapeHtml(error.message)}</div></div>`;
         return;
     }
     if (!me.isAdmin) {
-        // 服务端也会拦（/api/admin/* 返回 403），这里只是给一句可读的说明。
-        stage.innerHTML = `<div class="admin-panel"><div class="admin-empty">当前账号不是管理员，无法使用管理控制台。<br><br><a href="./">返回工作台</a></div></div>`;
+        // 跳转不提升普通会话权限，后续管理员操作仍需通过服务端角色检查。
+        location.replace(`${siteRoot()}/admin/login`);
         return;
     }
     renderShell();

@@ -8,19 +8,25 @@ import mysql from 'mysql2/promise';
 import { openMysqlDatabase } from '../lib/mysql-database.mjs';
 import { initializeMysqlSchema } from '../lib/mysql-schema.mjs';
 import { transferManifest } from '../lib/transfer-integrity.mjs';
-const admin = await mysql.createConnection({ host: '127.0.0.1', port: 33917, user: 'root' });
+// 发布验收只连明确的本机测试入口，数据库名称始终随机生成，不能把生产配置当测试配置。
+const socketPath = process.env.TEMU_TEST_MYSQL_SOCKET;
+if (socketPath) assert.equal(socketPath, '/var/run/mysqld/mysqld.sock');
+const testMysql = socketPath ? { socketPath, user: 'root' } : { host: '127.0.0.1', port: 33917, user: 'root' };
+const admin = await mysql.createConnection(testMysql);
 const name = `temu_http_${Date.now()}`;
 await admin.query(`CREATE DATABASE ${name} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`);
 const root = await mkdtemp(path.join(tmpdir(), 'temu-http-'));
 const config = path.join(root, 'mysql.json');
-await writeFile(config, JSON.stringify({ host: '127.0.0.1', port: 33917, user: 'root', database: name }));
+await writeFile(config, JSON.stringify({ ...testMysql, database: name }));
 const db = await openMysqlDatabase(config);
 let child, success = false;
 try {
     await initializeMysqlSchema(db);
     await db.query('maintenance', "INSERT INTO hub_schema(id,version,state,data_root) VALUES(1,1,'ready',?)", [root]);
     const token = crypto.randomUUID(), instanceId = crypto.randomUUID();
+    // Windows没有cgroup，隔离验收显式提供容器预算；生产环境仍读取真实资源事实。
     child = fork(new URL('../server.mjs', import.meta.url), [], { env: { ...process.env, TEMU_CREDENTIALS: '', TEMU_MYSQL_CONFIG: config, ZINIAO_DATA_ROOT: root,
+        ZINIAO_SERVICE_MEMORY_BYTES: String(768 * 1024 * 1024),
         ZINIAO_INGEST_TOKEN: token, ZINIAO_TEST_EPHEMERAL: '1', ZINIAO_INSTANCE_ID: instanceId, ZINIAO_BIND: '127.0.0.1', ZINIAO_SEED: '0', ZINIAO_WATCH_DIR: root }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true });
     let stderr = ''; child.stderr.on('data', value => { stderr += value; });
     const port = await new Promise((resolve, reject) => {

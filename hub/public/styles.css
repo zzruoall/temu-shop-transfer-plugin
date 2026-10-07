@@ -385,36 +385,6 @@ table.data a { font-weight: 600; }
     border: 1px solid var(--line);
 }
 
-.product-hero {
-    display: grid;
-    grid-template-columns: 180px 1fr;
-    gap: 20px;
-    align-items: start;
-}
-.carton {
-    min-height: 180px;
-    background:
-        linear-gradient(180deg, transparent 22px, rgba(23,21,15,.12) 22px, rgba(23,21,15,.12) 24px, transparent 24px),
-        #c9a36a;
-    border: 1px solid var(--line);
-    position: relative;
-}
-.carton::after {
-    content: "";
-    position: absolute;
-    inset: 18% 46% 18% 46%;
-    background: rgba(23,21,15,.18);
-}
-.carton span {
-    position: absolute;
-    left: 12px;
-    bottom: 10px;
-    font-family: var(--narrow);
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    font-size: 12px;
-}
-
 @media (max-width: 980px) {
     .app { grid-template-columns: 1fr; }
     .rail { position: relative; height: auto; }
@@ -429,7 +399,7 @@ table.data a { font-weight: 600; }
         padding: 14px 16px;
     }
     .board-row .num { font-size: 20px; }
-    .grid-two, .product-hero, .checks { grid-template-columns: 1fr; }
+    .grid-two, .checks { grid-template-columns: 1fr; }
     h1 { font-size: 40px; }
     .stage { padding: 20px 16px 48px; }
 }
@@ -445,6 +415,8 @@ body { background: #f4f8fc; color: var(--ink); }
 .rail {
     display: flex;
     flex-direction: column;
+    /* 短视口允许导航独立滚动，账户区置底后也不能遮住登录或退出入口。 */
+    overflow-y: auto;
     padding: 28px 18px;
     background: #0f3c64;
     color: #fff;
@@ -545,24 +517,10 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
 .detail-products-heading { margin-top: 34px; }
 .product-detail-top { margin-bottom: 26px; }
 .back-link { font-size: 13px; white-space: nowrap; }
-.product-hero { grid-template-columns: 150px 1fr; gap: 24px; align-items: center; padding: 22px; background: #fff; border: 1px solid #dce8f2; border-radius: 12px; box-shadow: var(--shadow); }
-.product-hero h2 { font-size: 28px; letter-spacing: -.03em; }
-.carton { min-height: 150px; border: 1px solid #c9e0f3; border-radius: 9px; background: #edf6ff; }
-.carton::after { background: #c8e1f7; }
-.carton span { color: #5685aa; text-transform: none; font-family: var(--font); letter-spacing: 0; }
-.product-gallery { min-height: 150px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.product-gallery img { width: 100%; height: 150px; object-fit: contain; border: 1px solid #c9e0f3; border-radius: 9px; background: #edf6ff; }
-.detail-text { margin: 14px 0 0; max-height: 320px; overflow: auto; padding: 14px; border-radius: 8px; background: #f5f9fd; color: #385b75; font: 12px/1.65 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .empty-state { line-height: 1.65; }
 .checks { gap: 8px; grid-template-columns: repeat(8, 1fr); }
 .check { padding: 10px 8px; border: 1px solid #e0eaf2; border-radius: 7px; background: #f7fafc; color: #557188; font-size: 12px; text-align: center; }
 .check.on { background: #eaf8f1; border-color: #bfe4d1; color: #13795b; }
-.sku-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
-.sku-table th, .sku-table td { padding: 8px 7px; border-bottom: 1px solid #dce8f2; text-align: left; vertical-align: top; }
-.sku-table th { color: #5d7d96; font-weight: 600; }
-.attr-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
-.attr-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #e7eef5; }
-.attr-list span { color: #5d7d96; }
 
 .ingest-card {
     margin: 0 0 22px;
@@ -660,8 +618,6 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
     .stamp { justify-self: end; }
     .detail-summary span { flex: 1 1 50%; border-bottom: 1px solid #cde4f8; }
     .detail-summary span:nth-child(2n) { border-right: 0; }
-    .product-hero { grid-template-columns: 1fr; }
-    .product-gallery { max-width: 260px; }
     .checks { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -906,22 +862,8 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
     .single-target-dialog-actions .toolbar-button { flex: 1 1 0; }
 }
 
-/* 商品库视图切换沿用现有配色；标题旁独立成组，窄屏按组换行。 */
+/* 商品库标题保持与现有工具栏一致，窄屏按完整标题换行。 */
 .catalog-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; min-width: 0; }
-.catalog-view-switch { display: inline-flex; flex: none; gap: 4px; padding: 4px; border: 1px solid #c8d9e7; border-radius: 8px; background: #eaf1f6; }
-.catalog-view-switch a { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 8px 14px; border-radius: 5px; color: #49677e; font-size: 13px; font-weight: 700; line-height: 1.3; text-decoration: none; white-space: nowrap; }
-.catalog-view-switch a:hover { color: #164b73; background: #f5f9fc; }
-.catalog-view-switch a[aria-current="page"] { color: #164b73; background: #fff; box-shadow: 0 2px 6px rgba(15, 23, 42, .08); }
-.catalog-view-switch a:focus-visible { outline: 2px solid #0b74de; outline-offset: 2px; }
-/* 预览控件由 fieldset 禁用，布局保持与真实库存一致，不隐藏未接入状态。 */
-.catalog-preview-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
-.catalog-preview-label { flex: none; color: #58758b; font-size: 12px; }
-.catalog-preview-table-wrap { overflow-x: auto; border: 1px solid #d7e4ef; border-radius: 8px; background: #fff; }
-.catalog-preview-table { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
-.catalog-preview-table th { padding: 12px; border-bottom: 1px solid #d7e4ef; background: #f2f7fa; color: #49677e; font-weight: 700; text-align: left; }
-.catalog-preview-table th:first-child { width: 36px; }
-.catalog-preview-table th:nth-child(2) { width: 28%; }
-.catalog-preview-empty { height: 240px; padding: 24px; color: #607b92; text-align: center; vertical-align: middle; }
 
 /* 筛选与搜索位于上行；标签不拆字，空间不足时按完整控件换行。 */
 .catalog-filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; padding: 10px 14px; border: 1px solid #d9e3ec; border-radius: 9px; background: #fff; box-shadow: 0 6px 16px rgba(15,23,42,.04); }
@@ -939,13 +881,13 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
 .catalog-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 54px; margin: 0 0 12px; padding: 9px 14px; border: 1px solid #d9e3ec; border-radius: 9px; background: #fff; box-shadow: 0 6px 16px rgba(15,23,42,.04); }
 .catalog-action-left > .toolbar-button, .store-batch-controls > .toolbar-button { flex: none; padding-inline: 10px; white-space: nowrap; }
 .catalog-action-left > .select-all, .store-batch-controls > .select-all { flex: none; white-space: nowrap; }
-.catalog-action-right > .selection-count { flex: none; }
+.catalog-action-right > .selection-count { flex: 0 1 auto; max-width: 100%; }
 .catalog-action-row > .select-all { flex: 0 0 auto; }
 .catalog-action-buttons { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .batch-store-inline select { width: 180px; min-height: 36px; height: 36px; border: 1px solid #c8d9e7; border-radius: 6px; background: #fbfdff; color: #28506f; padding: 5px 7px; }
 .batch-store-inline select[multiple] { height: 36px !important; min-height: 36px !important; }
 .catalog-count-total { color: #54738a; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.catalog-action-row .selection-count { white-space: nowrap; }
+.catalog-action-row .selection-count { white-space: normal; overflow-wrap: anywhere; }
 .catalog-workspace { border-radius: 10px; }
 .catalog-workspace > .transfer-hint { margin: 0; }
 .product-row { grid-template-columns: 30px 64px minmax(180px,1.65fr) minmax(115px,1fr) minmax(165px,1.2fr) 105px minmax(220px,1.4fr); min-height: 84px; }
@@ -1546,11 +1488,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
     color: #a32626;
 }
 
-/* 侧栏账户区：显示当前登录账号与角色，并提供退出登录入口。 */
+/* 侧栏账户区置于导航底部；窄屏导航改为横向布局时仍保持正常文档流。 */
 .rail-account {
     display: grid;
     gap: 8px;
-    margin: 14px 0 10px;
+    margin: auto 0 0;
+    flex-shrink: 0;
     padding: 10px 12px;
     border: 1px solid #dbe6f0;
     border-radius: 8px;
@@ -1571,6 +1514,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
     cursor: pointer;
 }
 .rail-logout:hover { border-color: #9fc0dc; background: #f1f8ff; }
+
+@media (max-width: 980px) {
+    .rail-account { margin-top: 14px; }
+}
 
 /* 店铺页：红绿灯与已认领行灰色底 */
 .store-light {
@@ -1804,3 +1751,71 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 /* 分组视图下商品行不再各自留边距，由组容器统一收边 */
 .product-list.grouped { display: grid; gap: 0; }
 .product-list.grouped > .business-product-group + .business-product-group { margin-top: 10px; }
+
+/* 商品详情采用资料页的纵向分区；只约束详情内元素，不改变商品库或店铺目录。 */
+.product-detail-top h1 { font-size: 28px; letter-spacing: 0; }
+.detail-meta { color: #536b7f; font-size: 13px; line-height: 1.7; margin: 8px 0 0; overflow-wrap: anywhere; }
+.product-detail { background: #fff; padding: 0 28px; min-width: 0; }
+.detail-section { padding: 24px 0; border-bottom: 1px solid #dce7f0; }
+.detail-section:last-child { border-bottom: 0; }
+.detail-section > h2 { font-size: 17px; line-height: 1.5; letter-spacing: 0; margin: 0 0 16px; color: #173c56; }
+.detail-field { display: grid; grid-template-columns: 120px minmax(0, 1fr); column-gap: 24px; padding: 10px 0; }
+.detail-label { min-width: 0; overflow-wrap: anywhere; color: #536b7f; font-size: 13px; line-height: 1.8; }
+.detail-value { min-width: 0; color: #1d3447; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.detail-value p { margin: 0; max-width: 75ch; white-space: pre-wrap; }
+.detail-value .detail-field { grid-template-columns: 90px minmax(0, 1fr); padding: 0 0 6px; }
+.detail-images { display: flex; flex-wrap: wrap; gap: 10px; }
+.detail-images a { display: block; width: 96px; aspect-ratio: 1; border: 1px solid #dce7f0; border-radius: 4px; overflow: hidden; background: #fff; }
+.detail-images img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.detail-images a:hover { border-color: #2878b8; }
+.detail-images-body { margin: 12px 0; }
+.detail-images-body a { width: min(100%, 420px); aspect-ratio: auto; }
+.detail-images-body img { height: auto; }
+.detail-value video { display: block; width: min(100%, 440px); max-height: 360px; background: #111; margin-bottom: 12px; }
+.detail-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid #dce7f0; border-radius: 4px; }
+.detail-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.7; }
+.detail-table th { text-align: left; background: #f3f6f9; color: #35536a; font-weight: 600; }
+.detail-table th, .detail-table td { padding: 12px 16px; min-width: 105px; max-width: 260px; overflow-wrap: anywhere; vertical-align: middle; border-bottom: 1px solid #e5edf3; }
+.detail-table tbody tr:last-child td { border-bottom: 0; }
+.detail-table td .detail-images a { width: 72px; }
+.detail-missing { color: #536b7f; }
+/* 错误原因是商品资格的主信息，长文本换行且不侵占货号或操作列。 */
+/* 状态单元格独立于商品行；局部替换不能改变其他列的网格归属。 */
+.product-row > [data-product-status] { min-width: 0; align-self: center; }
+.product-row [data-product-status] .ticket-status { grid-column: auto; grid-row: auto; white-space: normal; overflow-wrap: anywhere; }
+[data-product-status] > .product-error-status { grid-column: auto; grid-row: auto; }
+.product-error-status { display: grid; gap: 7px; min-width: 0; align-self: center; }
+.product-error-status .ticket-status { white-space: normal; overflow-wrap: anywhere; }
+.product-error-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; margin: 0; color: #8b292d; font-size: 12px; line-height: 1.5; }
+.product-error-details { width: fit-content; max-width: 100%; border: 0; padding: 3px 0; color: #8b292d; background: transparent; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.product-error-dialog { width: min(620px, calc(100% - 32px)); max-height: calc(100dvh - 32px); box-sizing: border-box; overflow: auto; border: 1px solid #cbdce9; border-radius: 8px; padding: 20px; color: #193b53; background: #fff; }
+.product-error-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.product-error-dialog header, .product-error-dialog footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.product-error-dialog h2 { margin: 0; font-size: 18px; }
+.product-error-message { color: #793035; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.product-error-fields { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 10px 16px; margin: 18px 0; font-size: 13px; line-height: 1.7; }
+.product-error-fields dt { color: #466276; }
+.product-error-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .product-error-status { grid-column: 3 / -1; grid-row: 4; } }
+@media (max-width: 620px) {
+    .product-error-status { grid-column: 2 / -1; grid-row: 4; }
+    .product-error-fields { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .product-error-fields dd { margin-bottom: 10px; }
+}
+@media (max-width: 1000px) {
+    .product-row > [data-product-status] { grid-column: 4; grid-row: 1; }
+    .product-row-blocked > [data-product-status] { grid-column: 3 / -1; grid-row: 4; }
+}
+@media (max-width: 620px) {
+    .product-row > [data-product-status] { grid-column: 2 / -1; grid-row: 4; }
+}
+.detail-file-link { display: block; width: fit-content; max-width: 100%; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 620px) {
+    .product-detail { padding: 0 16px; }
+    .detail-section { padding: 20px 0; }
+    .detail-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .detail-value .detail-field { grid-template-columns: minmax(0, 1fr); }
+    .detail-images a { width: 80px; }
+    .detail-images-body a { width: 100%; }
+    .detail-table th, .detail-table td { padding: 10px 12px; }
+}

@@ -1,43 +1,33 @@
 /**
- * 店铺中转仓 API：入库、分发和反馈独立限额；MySQL 保存业务索引与任务，原始采集资料保留文件。
- * 商品快照只定向交给已核验的目标插件；平台创建与回查在店铺插件执行，服务器记录真实回执。
+ * 店铺中转仓 API：只收存来源商品并定向发送，MySQL 保存商品与身份目录。
+ * 平台创建、暂停和错误分类由插件独立完成；服务端仅接收受限商品异常通知并过滤禁传，不保存上架运行状态。
  * 未配置 MySQL 的离线调试仍兼容文件存储，不在运行失败时自动切换数据源。
  */
 import http from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID as cryptoRandomId } from "node:crypto";
 import { createLiveEvents } from "./lib/live-events.mjs";
 import { createIngestAdmission } from "./lib/ingest-admission.mjs";
 import { createSchedulingController, schedulingError } from './lib/scheduling.mjs';
-import { createRuntimeResourceBudget, readCgroupSample, readDiskSample, assertBudgetReadyForService } from './lib/runtime-resource-budget.mjs';
+import { createRuntimeResourceBudget, readCgroupSample, readDiskSample } from './lib/runtime-resource-budget.mjs';
+import { relayResourceCapacity } from './lib/relay-resource-capacity.mjs';
 import { createIngestProtocol } from './lib/ingest-protocol.mjs';
 import { createAccountResolver } from './lib/account-resolver.mjs';
 import { createCloudAuth } from "./cloud-auth.mjs";
 import { createReadStream } from "node:fs";
 import { stat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from "node:url";
 import { createStore } from "./lib/store.mjs";
 import { parseImportedFiles, redactSensitive } from "./lib/parse-capture.mjs";
 import { TRANSFER_HASH_ALGORITHM, transferHash, verifyTransferManifest } from "./lib/transfer-integrity.mjs";
 import { openMysqlDatabase } from "./lib/mysql-database.mjs";
-import { assertMysqlReady, assertAccountProcessMode, normalizeAccountProcessMode } from "./lib/mysql-schema.mjs";
-import { createInboxWatcher } from "./lib/inbox-watcher.mjs";
-import { createDownloadDirectoryDiscovery } from "./lib/ziniao-downloads.mjs";
+import { assertMysqlReady } from "./lib/mysql-schema.mjs";
 import { createTransferManager } from "./lib/transfer-manager.mjs";
-import { createJobQueue } from "./lib/job-queue.mjs";
-import { createBulkDispatch } from "./lib/bulk-dispatch.mjs";
-import { createAccountWorkRepository, DIRECTIONS } from "./lib/account-work-repository.mjs";
-import { createAccountDispatcher } from "./lib/account-dispatcher.mjs";
-import { createAccountRuntime } from "./lib/account-runtime.mjs";
-import { createElasticAllocation, readElasticAllocationConfig } from './lib/elastic-allocation.mjs';
-import { assertElasticWorkSlotsReady, assertElasticDisabledSafe } from './lib/elastic-work-slots.mjs';
-import { createIngestStaging } from "./lib/ingest-staging.mjs";
-import { createAccountPublishBridge } from "./lib/account-publish-bridge.mjs";
-import { receiveAccountCapture } from './lib/stream-ingest.mjs';
-import { createStagingBudget } from './lib/staging-budget.mjs';
-import { createAccountIngest } from "./lib/account-ingest.mjs";
+import { createJobQueue, canonicalProductSnapshot } from "./lib/job-queue.mjs";
+import { createOneShotRelay } from "./lib/one-shot-relay.mjs";
+import { createProductNoticeTokens, parseProductErrorNotice } from './lib/product-notice-token.mjs';
+import { transferManifest } from "./lib/transfer-integrity.mjs";
 import { createStoreOwnership } from "./lib/store-ownership.mjs";
 import { createDeletedStores } from "./lib/deleted-stores.mjs";
 import { isLocalMachineRequest, isValidIngestToken, loadIngestAuth, readBearerToken, resolveBasePath, resolveRequestBasePath, stripRequestBasePath } from "./lib/ingest-auth.mjs";
@@ -51,6 +41,7 @@ const database = await openMysqlDatabase();
 if (database) await assertMysqlReady(database, dataRoot);
 const store = createStore(dataRoot, { database });
 const auth = await loadIngestAuth(dataRoot);
+const noticeTokens = await createProductNoticeTokens(dataRoot);
 const cloudAuthEnabled = Boolean(String(process.env.TEMU_CREDENTIALS || "").trim());
 // 云端认证含用户表与插件令牌：插件令牌只放行插件侧接口，用户数据接口必须带用户会话。
 const cloudAuth = createCloudAuth({ dataRoot, credentialPath: String(process.env.TEMU_CREDENTIALS || "").trim(), basePath: String(process.env.TEMU_BASE_PATH || "").trim() });
@@ -62,9 +53,12 @@ const PORT = auth.port;
 const MAX_BODY = 256 * 1024 * 1024;
 // 入库最多接收两份在途请求，总正文预算 64 MiB；数据库模式按来源店加锁，文件模式仍串行写索引。
 const MAX_INGEST_BODY = 64 * 1024 * 1024;
-// 回调在请求阶段读取预算；字节与大包解析上限仍独立保留，不随人数放宽。
-const ingestAdmission = createIngestAdmission(String(process.env.ZINIAO_ELASTIC_MODE || '').trim() === 'on'
-    ? { limit: 64, capacity: () => elastic.snapshot().businessLimit } : {});
+// 上传与发送共用有界账户公平准入；只限制当前网络工作，不持有插件执行名额。
+const transportMax = Number(process.env.ZINIAO_ELASTIC_BUSINESS_MAX || 2);
+if (!Number.isInteger(transportMax) || transportMax < 1 || transportMax > 64) throw Error('transport_capacity_invalid');
+const ingestAdmission = createIngestAdmission({ limit: transportMax,
+    capacity: () => relayResourceCapacity({ budget: latestBudget, sampledAt: budgetSampledAt,
+        sample: rawResourceSample, active: ingestAdmission.snapshotActive(), max: transportMax, database: Boolean(database) }) });
 
 /** 排队请求断开立即撤销；许可覆盖读取、解析和持久化，不能读完整包后才限流。 */
 async function acquireIngest(req, res) {
@@ -75,22 +69,19 @@ async function acquireIngest(req, res) {
     const cleanup = () => { req.off("aborted", cancel); res.off("close", cancel); };
     try {
         const length = req.headers["content-length"] === undefined ? MAX_INGEST_BODY : Number(req.headers["content-length"]);
-        const release = await ingestAdmission.acquire(length, abort.signal);
+        let owner = req.temuUser?.id || req.temuPluginInstanceId || 'local';
+        // 旧式插件直传也按已登记店铺的认领账号分享额度，不能多开实例抢占账户份额。
+        if (!req.temuUser && req.temuPluginInstanceId) {
+            const agents = (await jobQueue.listAgents()).agents.filter(agent => agent.pluginInstanceId === req.temuPluginInstanceId && agent.identityMatched);
+            const accounts = new Set(await Promise.all(agents.map(agent => accountResolver.resolve(agent.storeId))));
+            if (accounts.size === 1 && [...accounts][0]) owner = [...accounts][0];
+        }
+        const release = await ingestAdmission.acquire(length, abort.signal, owner);
         return () => { cleanup(); release(); };
     } catch (error) { cleanup(); throw error; }
 }
 // 仅集成测试使用：调用方用这个一次性身份确认连到的是刚拉起的进程，而不是占用同端口的其他入库台。
 const instanceId = String(process.env.ZINIAO_INSTANCE_ID || "").trim();
-// 默认目录之外，服务通过只读 CLI 自动接入紫鸟店铺的实际下载子目录；显式配置目录时不额外发现。
-const defaultWatchDirectories = [
-    path.join(os.homedir(), "Downloads", "temu-local-dataset"),
-    path.join(dataRoot, "data", "inbox")
-];
-const watchDirectories = String(process.env.ZINIAO_WATCH_DIR || defaultWatchDirectories.join(";"))
-    .split(/[;\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
 const MIME = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -206,7 +197,7 @@ function isPluginScopedRequest(req) {
     return req.temuPluginToken === true;
 }
 
-/** 插件注册、领取和回传共用令牌绑定，阻止一个实例冒充另一个实例处理任务。 */
+/** 插件注册、上传和接收共用令牌绑定，阻止一个实例冒充另一个实例。 */
 function requirePluginInstance(req, res, body) {
     if (!isPluginScopedRequest(req)) return true;
     if (req.temuPluginInstanceId && String(body?.pluginInstanceId || "").trim() === req.temuPluginInstanceId) return true;
@@ -262,37 +253,20 @@ function stampFileName(prefix) {
     return `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
 }
 
-const inboxWatcher = createInboxWatcher({
-    directories: watchDirectories,
-    checkpointPath: path.join(dataRoot, "data", "inbox-checkpoint.json"),
-    discoverDirectories: process.env.ZINIAO_WATCH_DIR ? null : createDownloadDirectoryDiscovery(),
-    importFiles: (uploads, options) => {
-        // 本地目录没有插件轮次和可信提交人，新模式下不能绕过账户队列直接写库存。
-        if (ACCOUNT_PROCESS_MODE === 'on') throw Object.assign(Error('account_mode_requires_plugin_ingest'), { status: 409 });
-        return store.importFiles(uploads, options);
-    }
-});
 const transferManager = createTransferManager(dataRoot, store);
-// 店铺归属表：商品、批次、任务、日志都按来源店记录，因此过滤只需对照这张表。
+// 店铺归属表继续用于商品、批次和目录权限，不因删除上架状态而改变认领关系。
 const ownership = createStoreOwnership(dataRoot, { database });
 // 店铺删除名单：被管理员删除的店铺不再被插件心跳重新登记，避免"删了又回来"。
 const deletedStores = createDeletedStores(dataRoot, { database });
-// 归属表与删除名单要注入任务队列：心跳需要按名单拦截，恢复店铺需要写回归属。
-//
+// 身份目录沿用原有心跳、删除名单和恢复归属规则。
 // 降载分母必须用**本服务限额**（cgroup memory.max），不能用整机内存——
 // 整机内存会让"本服务已接近自己的上限"被算成很小的比例，等于永不降载（方案 D4）。
 // 这里缓存最近一次采样：采样是异步的，而 scheduling 的压力回调是同步的。
 let serviceMemoryRatio = null, latestBudget = null, budgetSampledAt = 0;
-// 弹性模式显式启用；业务槽迁移必须先离线完成，不能在服务启动时猜测旧任务归属。
-const elasticMode = String(process.env.ZINIAO_ELASTIC_MODE || 'off').trim();
-if (!['off', 'on'].includes(elasticMode)) throw Error('elastic_mode_invalid');
-if (elasticMode === 'on' && (!database || String(process.env.ZINIAO_ACCOUNT_PROCESS_MODE).trim() !== 'on')) throw Error('elastic_requires_account_mode_on');
-const elastic = elasticMode === 'on' ? createElasticAllocation({ config: readElasticAllocationConfig() }) : null;
-if (!elastic && database) await assertElasticDisabledSafe(database);
-let elasticSchemaReady = false, rawResourceSample = {}, samplingBudget = null, lastElasticState = '';
+let rawResourceSample = {}, samplingBudget = null;
 const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
-const resourceBudget = createRuntimeResourceBudget({ config: elastic ? { processLimit: elastic.config.processMax, publishLimit: elastic.config.publishMax } : {}, probe: async () => {
+const resourceBudget = createRuntimeResourceBudget({ probe: async () => {
     let sample = await readCgroupSample({ dataPath: dataRoot });
     const declared = Number(process.env.ZINIAO_SERVICE_MEMORY_BYTES || 0);
     // 本地只接受显式限额并标明来源，不能以本地进程采样冒充生产cgroup容量证明。
@@ -310,20 +284,9 @@ const refreshResourceBudget = async () => {
     if (samplingBudget) return samplingBudget;
     samplingBudget = (async () => {
     const result = await resourceBudget.sample();
-    if (elastic && elasticSchemaReady) {
-        const [[usage]] = await database.query('control', `SELECT
-            (SELECT COUNT(*) FROM hub_elastic_work_slots) AS business,
-            (SELECT COUNT(*) FROM hub_process_leases WHERE state IN ('reserved','live')) AS processes`);
-        const allocation = elastic.update({ ...rawResourceSample, ...result,
-            ok: rawResourceSample.ok === true && Date.now() - rawResourceSample.measuredAt < 15000,
-            activeBusiness: Number(usage.business), activeProcesses: Number(usage.processes) });
-        const state = JSON.stringify({ business: allocation.businessLimit, account: allocation.perAccountLimit,
-            process: allocation.processLimit, publish: allocation.publishLimit, reason: allocation.reason });
-        if (state !== lastElasticState) { console.log(`[elastic-allocation] ${state}`); lastElasticState = state; }
-        ingestAdmission.refreshCapacity();
-    }
     latestBudget = result; budgetSampledAt = Date.now();
     serviceMemoryRatio = Number.isFinite(result.memoryRatio) ? result.memoryRatio : null;
+    ingestAdmission.refreshCapacity();
     if (!result.canStartNewWork && result.reasonCode) {
         // 只记录原因，不改写任何已提交任务：预算只做准入。
         console.warn(`[resource-budget] ${result.mode} ${result.reasonCode} limit=${result.processLimit}`);
@@ -331,7 +294,7 @@ const refreshResourceBudget = async () => {
     return result;
     })();
     try { return await samplingBudget; }
-    catch (error) { elastic?.update({ ok: false }); throw error; }
+    catch (error) { throw error; }
     finally { samplingBudget = null; }
 };
 refreshResourceBudget().catch(() => {});
@@ -343,233 +306,33 @@ const scheduler = createSchedulingController({
     // 而不是在这里退回整机内存假装健康。
     memoryRatioProvider: () => serviceMemoryRatio
 });
-// 账户解析：店铺 → 认领账号。上传准入、执行名额、分发调度都用它做账户维度判定，
-// 带 30 秒缓存避免每次调度都读认领文件；查不到账号时退回按店铺处理。
+// 账户解析只用于上传准入公平性；绑定和认领仍从原归属表读取。
 const accountResolver = createAccountResolver({ listAssignments: () => ownership.listAssignments() });
-const ingestProtocol = createIngestProtocol({ database, admission: ingestAdmission, elastic,
-    // 调度身份取认领该店铺的网站账号：插件本身不带会话，店铺归属就是账号的可信来源。
-    resolveAccount: async storeId => accountResolver.resolve(storeId),
-    // 配额归当前可信认领账户；查询失败或未认领都不能退回插件实例获取另一份额度。
-    reserveStorage: async (storeId, bytes) => {
-        if (ACCOUNT_PROCESS_MODE !== 'on') return '';
-        const [[row]] = await database.query('control', "SELECT body FROM hub_map_entries WHERE domain='ownership' AND entry_key=?", [storeId]);
-        const assignment = typeof row?.body === 'string' ? JSON.parse(row.body) : row?.body;
-        if (!assignment?.ownerId || !assignment.claimedAt) throw Object.assign(Error('source_store_ownership_unconfirmed'), { status: 403 });
-        return { storageId: await stagingBudget.reserve(assignment.ownerId, bytes),
-            accountContext: { accountId: assignment.ownerId, ownershipGeneration: assignment.claimedAt } };
-    }, releaseStorage: id => stagingBudget.release(id) });
-
-/**
- * 账户执行链接入。
- *
- * 三条边界（对应方案步骤2/4）：
- * - 只有 **on** 模式才启用；off 时全部为空，任何调用方都必须先判空，不能假设一定存在；
- * - 启动前用 `assertAccountProcessMode` 校验表与列齐全，缺表就拒绝启用而不是运行中报错；
- * - 预算读不到服务限额时拒绝启用（`budget_unknown`），不按整机内存放开。
- */
-const ACCOUNT_MODE_RAW = String(process.env.ZINIAO_ACCOUNT_PROCESS_MODE || 'off').trim();
-const ACCOUNT_MODE = normalizeAccountProcessMode(ACCOUNT_MODE_RAW);
-// 模式失真保护：非法取值直接拒绝启动，不猜运维意图。
-if (ACCOUNT_MODE.invalid) {
-    throw new Error(`账户进程模式取值非法：${ACCOUNT_MODE.raw}（只接受 off/shadow/on）`);
-}
-const ACCOUNT_PROCESS_MODE = ACCOUNT_MODE.mode;
-/** 账户运行时就绪状态：新业务门控读它，而不是各自判断对象是否为空。 */
-const accountRuntime = { mode: ACCOUNT_PROCESS_MODE, ready: false, reason: '' };
-let accountWorkRepo = null;
-let accountDispatcher = null;
-let accountRuntimeHandle = null;
-// 暂存：接收段与业务入库段分开；off 模式不使用它。
-const ingestStaging = createIngestStaging({ dataRoot, maxBytes: MAX_INGEST_BODY });
-const stagingBudget = database && ACCOUNT_PROCESS_MODE === 'on' ? createStagingBudget({ database, stagingDir: ingestStaging.stagingDir }) : null;
-const accountIngest = database ? createAccountIngest({ database, staging: ingestStaging, store, stagingBudget }) : null;
-// 上传和上架共享预算；弹性模式逐店工作保留占用，准备进程完成后可交给下一店。
-const accountPublish = database && ACCOUNT_PROCESS_MODE === 'on'
-    ? createAccountPublishBridge({ database, staging: ingestStaging, stagingBudget, elastic, maxUnsettledPublishes: elastic?.config.publishMax || 2,
-        canStart: () => Date.now() - budgetSampledAt < 15000 && latestBudget?.canAuthorizeBusiness === true }) : null;
-const jobQueue = createJobQueue(dataRoot, store, { ownership, deletedStores, database, scheduler, accountResolver,
-    accountExecution: accountPublish });
-/**
- * 唤醒运行器：入队后立即推进，不让新任务白等一个扫描周期。
- * 定义在模块作用域，避免在声明之前被调用（TDZ）。
- * 唤醒失败不影响受理结果——扫描循环下一轮仍会取到它。
- */
-function wakeRuntime() { void accountRuntimeHandle?.wake().catch(() => {}); }
-if (database && ACCOUNT_PROCESS_MODE !== 'off') {
-    try {
-        const modeCheck = await assertAccountProcessMode(database, ACCOUNT_PROCESS_MODE);
-        if (elastic) { await assertElasticWorkSlotsReady(database); elasticSchemaReady = true; }
-        // 预算就绪：Linux 上读 cgroup；读不到时**不按整机内存放开**，
-        // 只接受运维显式声明的服务预算（ZINIAO_SERVICE_MEMORY_BYTES）。
-        // 显式声明是必要条件——否则本地/容器外环境会安静地用一个假的分母。
-        const declaredMemory = Number(process.env.ZINIAO_SERVICE_MEMORY_BYTES || 0);
-        const budgetCheck = assertBudgetReadyForService({
-            mode: ACCOUNT_PROCESS_MODE,
-            sample: await readCgroupSample(),
-            explicitBudget: declaredMemory > 0 ? { memoryMaxBytes: declaredMemory } : null
-        });
-        accountWorkRepo = createAccountWorkRepository(database, { elastic });
-        // dispatcher 在两种模式都要有：shadow 用它只做候选计算与观测，不写可执行队列。
-        accountDispatcher = createAccountDispatcher({ database, elastic });
-        /**
-         * 只在 on 创建运行器：shadow 不 fork、不签发许可。
-         *
-         * 运行器是**唯一**的账户执行入口——它负责发现候选、精确领取、启动进程与结算回执。
-         * 之前只创建了仓库/分发器/监督器三个对象却没有执行循环，
-         * 任务因此永远停在 queued（部署审核的 P1）。
-         */
-        accountRuntimeHandle = ACCOUNT_PROCESS_MODE === 'on'
-            ? createAccountRuntime({
-                database, mode: ACCOUNT_PROCESS_MODE, elastic,
-                // 0.6核灰度先只开一个准备进程；两个插件可在外部平台并行，计算进程不必跟着常驻。
-                maxAccountProcesses: elastic?.config.processMax || 1,
-                workerPath: path.join(rootDir, 'workers', 'account-worker.mjs'),
-                // 源根显式传入：worker 只接受相对引用，绝对路径由它独立拦截。
-                sourceRoot: String(process.env.ZINIAO_WORKER_SOURCE_ROOT || dataRoot),
-                canStart: () => Date.now() - budgetSampledAt < 15000 && latestBudget?.canStartNewWork === true,
-                onTrace: (type, fields) => {
-                    // 只在排障关心的阶段打日志，不刷屏。
-                    // 带上被拒绝的回执：否则"任务停在 running/failed"无法定位原因。
-                    if (/settle|start|claim-miss|stop|reply-rejected|spawn-miss/.test(type)) {
-                        console.log(`[account-runtime] ${type} ${JSON.stringify(fields)}`);
-                    }
-                },
-                /**
-                 * 执行成功后提交业务结果。
-                 *
-                 * 业务行**只在**这里写入：暂存阶段不产生任何商品记录，
-                 * 因此"工作没执行完"与"商品已入库"不会同时成立。
-                 */
-                validateWork: (connection, work) => work.direction === 'publish'
-                    ? accountPublish.validateWork(connection, work) : accountIngest.validateWork(connection, work),
-                onFailure: args => args.work.direction === 'publish' ? accountPublish.onFailure(args) : accountIngest.failed(args),
-                onCommit: args => accountIngest.commit(args),
-                onPrepared: args => accountPublish.onPrepared(args)
-            })
-            : null;
-        accountRuntime.ready = true;
-        console.log(`账户执行链已启用 mode=${ACCOUNT_PROCESS_MODE} tables=${modeCheck.checked ? 'ok' : 'off'} budget=${budgetCheck.source || 'n/a'}`);
-    } catch (error) {
-        // 初始化失败：**不**清空对象继续走旧路径收单。
-        // 保留失败原因，由门控对新业务返回 503；历史回执/停止入口不受影响。
-        accountRuntime.ready = false;
-        accountRuntime.reason = String(error.code || error.message || error);
-        accountWorkRepo = null; accountDispatcher = null; accountRuntimeHandle = null;
-        console.error(`账户执行链启用失败：${accountRuntime.reason}`);
-    }
-}
-
-/**
- * 新业务准入门控：受理上传、创建任务、签发平台许可前都必须先过这里。
- *
- * 为什么不能"失败就继续":on 已配置却初始化失败时，旧路径仍在监听，
- * 会让新工作悄悄绕过账户门控执行。宁可明确 503 让客户端按 Retry-After 等待。
- * 历史回执与停止入口**不**走这里——它们的鉴权独立，且不该被新业务的门控拖住。
- */
-function assertNewBusinessAllowed() {
-    if (ACCOUNT_PROCESS_MODE === 'off') return;
-    if (accountRuntime.ready) return;
-    throw Object.assign(new Error('account_runtime_unavailable'), {
-        status: 503, retryAfter: 5, code: 'account_runtime_unavailable',
-        detail: accountRuntime.reason
-    });
-}
-/** shadow 模式只观测：不写可执行工作、不 fork、不签新许可。 */
-const accountShadowOnly = () => ACCOUNT_PROCESS_MODE === 'shadow';
-
-/**
- * 取某店铺的**所有权代次**（用认领时间表示）。
- *
- * 为什么需要代次：认领关系变化（换人、解除后重认领）必须让旧授权失效。
- * 只比较 storeId 无法发现"店铺还是那家、主人换了"。
- * 取不到时返回空字符串——留空表示"无代次证据"，不编造值。
- */
-async function ownershipGenerationOf(storeId) {
-    const store = String(storeId || '').trim();
-    if (!store) return '';
-    try {
-        const assignments = await ownership.listAssignments();
-        return String(assignments?.[store]?.claimedAt || '');
-    } catch {
-        // 查不到不是致命错误：代次留空会被后续授权复核视为"缺证据"。
-        return '';
-    }
-}
-
-/**
- * 把一次成功入库的商品登记到账户工作账本。
- *
- * 只有**已认领**的店铺才登记：归属不明的来源店在账本里没有可信账户，
- * 硬塞一个猜测值会让公平份额算到错误的账户上。返回统计供调用方如实上报。
- */
-async function enqueueAccountWorkForIngest({ sourceStoreId, products, requestId, batchId,
-    actorId = '', ownershipGeneration = '', sourceRef = '', sourceHash = '', sourceHashAlgorithm = 'sha256', expectedBytes = 0 }) {
-    if (!accountWorkRepo) return { enabled: false, enqueued: 0 };
-    // shadow 只观测：可以算出"本来会登记什么"，但不写可执行队列，
-    // 否则影子数据会被未来的运行器当成真任务执行。
-    if (accountShadowOnly()) {
-        return { enabled: true, enqueued: 0, shadow: true, reason: 'shadow_mode_observes_only' };
-    }
-    // 用严格解析区分两种情况：未认领（进待确认）与查询故障（503 让客户端重试）。
-    // 用宽松的 resolve() 会把数据库抖动当成"这店没人认领"，商品静默丢进待确认。
-    const ownership = await accountResolver.classify(sourceStoreId);
-    if (ownership.status === 'unavailable') {
-        throw Object.assign(new Error('ownership_lookup_failed'), {
-            status: 503, retryAfter: 5, code: 'ownership_lookup_failed', detail: ownership.reason
-        });
-    }
-    if (ownership.status !== 'owned') return { enabled: true, enqueued: 0, reason: 'source_store_unclaimed' };
-    const accountId = ownership.accountId;
-    if (!products.length) return { enabled: true, enqueued: 0, reason: 'no_products' };
-    /**
-     * 缺来源证据的工作**不得登记为可执行**。
-     *
-     * 没有 sourceRef/sourceHash 就无法证明 worker 该读哪份文件、读到的内容对不对。
-     * 把它登记成 queued，等于制造一条"缺证据却可执行"的工作——
-     * 第三次复核明确指出这是不允许的（升级前批次曾可能落到这里）。
-     * 不登记并给出原因，由调用方/运维处理，而不是让它看起来可跑。
-     */
-    if (!sourceRef || !sourceHash) {
-        return { enabled: true, enqueued: 0, reason: 'missing_source_evidence',
-            detail: '缺少源文件引用或摘要，拒绝登记为可执行工作' };
-    }
-    let enqueued = 0, skipped = 0, lastError = '', firstWorkId = '';
-    for (const product of products || []) {
-        const spuId = String(product?.spuId || '').trim();
-        if (!spuId) { skipped += 1; continue; }
-        try {
-            const row = await accountWorkRepo.enqueue({
-                accountId, storeId: sourceStoreId, direction: DIRECTIONS.ingest,
-                jobId: batchId || '', spuId,
-                // 幂等键按"请求 + 批次 + 商品"绑定：同一批重传不会产生第二件工作。
-                requestId: `${requestId || ''}:${batchId || ''}`,
-                // 持久上下文必须在这里填全：撤销、授权复核与"来源版本"都要靠它，
-                // 留空会让后续无法判断这件工作属于哪个轮次/哪次认领。
-                runId: '', actorId, ownershipGeneration,
-                sourceRef, sourceHash, sourceHashAlgorithm, expectedBytes
-            });
-            if (!firstWorkId && row?.work_id) firstWorkId = row.work_id;
-            enqueued += 1;
-        } catch (error) {
-            // 单件冲突/失败不阻断其他商品；数量如实返回，不谎报全部成功。
-            // 保留最后一条错误原因：只报 skipped 数量会让排障无从下手。
-            skipped += 1; lastError = `${error.code || ''} ${error.message || error}`.trim();
-        }
-    }
-    // workId 必须随回执返回：客户端与验收都要用它把"受理"与"执行"绑成同一条因果链。
-    return { enabled: true, enqueued, skipped, accountId,
-        ...(firstWorkId ? { workId: firstWorkId } : {}), ...(lastError ? { lastError } : {}) };
-}
-/** 后台续跑不沿用过期会话的权限；每个分片重新校验账户启用状态和店铺归属。 */
-const bulkDispatch = createBulkDispatch({ database, store, queue: jobQueue, authorize: async (owner, ids) => {
-    if (!owner) return null;
-    const user = await cloudAuth.users.findById(owner);
-    if (!user || user.disabled) throw Object.assign(Error("批量任务账户不存在或已停用"), { status: 403 });
-    if (user.role === 'admin') return null;
-    const scope = await ownership.ownedStoreIds(owner);
-    if (ids.some(id => !scope.has(id))) throw Object.assign(Error("批量任务来源店或目标店已不属于当前账户"), { status: 403 });
-    return { userId: owner };
+// 资源只覆盖当前上传或发送；不再建立逐商品执行工作、进程或平台许可。
+const ingestProtocol = createIngestProtocol({ database, admission: ingestAdmission,
+    resolveAccount: async storeId => accountResolver.resolve(storeId) });
+const jobQueue = createJobQueue(dataRoot, store, { ownership, deletedStores, database, scheduler, accountResolver });
+// 归属锁与来源锁只覆盖实际交接，不在等候目标插件连接期间占用数据库连接。
+const relay = createOneShotRelay({ handoff: (claimed, deliver) => {
+    const expected = claimed[0]?.deliveryOwners;
+    const check = connection => store.withNoticeDelivery(claimed, result => deliver({ ...result,
+        claimed: result.claimed.map(({ deliveryOwners, ...item }) => item) }), connection);
+    return expected ? ownership.withStableOwners(expected, check) : check(null);
 } });
+const relayAdmission = ingestAdmission;
+// 通知正文很小，但仍限全局在途和每实例速率，避免错误风暴抢光收发资源或扩大内存。
+const noticeRates = new Map();
+let noticesActive = 0;
+function acquireNotice(instance) {
+    const now = Date.now();
+    for (const [key, entry] of noticeRates) if (now - entry.start >= 60000) noticeRates.delete(key);
+    const entry = noticeRates.get(instance) || { start: now, count: 0 };
+    if (noticesActive >= 8 || entry.count >= 60 || (!noticeRates.has(instance) && noticeRates.size >= 1024)) {
+        throw Object.assign(Error('error_notice_rate_limited'), { status: 429, retryAfter: 2 });
+    }
+    entry.count++; noticeRates.set(instance, entry); noticesActive++;
+    return () => { noticesActive--; };
+}
 
 /** 通知只携带不可逆版本，不把商品、任务或日志标识泄露到长连接。 */
 const liveDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -630,16 +393,15 @@ async function liveSnapshot(req) {
     const inventory = inventoryCache.get(scopeKey);
     const assignments = await ownership.listAssignments();
     const owned = Object.entries(assignments).filter(([id]) => !scope || scope.has(id)).sort(([a], [b]) => a.localeCompare(b));
-    const live = await jobQueue.liveSignature(scope);
+    const visibleAgents = (await jobQueue.listAgents({ scope })).agents;
+    const allAgents = (await jobQueue.listAgents()).agents;
+    const agentVersion = agents => agents.map(a => [a.storeId, a.pluginInstanceId, a.online, a.identityMatched, a.canReceiveUploads, a.storeName, a.pluginVersion]);
     return {
         inventory,
         claims: liveDigest(owned),
-        agents: liveDigest(live.agents),
-        jobs: liveDigest(live.jobs),
-        bulk: bulkDispatch ? await bulkDispatch.version(req.temuUser?.id || '') : '',
-        logs: liveDigest(live.logs),
+        agents: liveDigest(agentVersion(visibleAgents)),
         // 店铺认领页本就允许查看全部店铺目录；其变更独立通知，不触发个人商品列表更新。
-        directory: liveDigest([live.directory, Object.entries(assignments).sort(([a], [b]) => a.localeCompare(b))])
+        directory: liveDigest([agentVersion(allAgents), Object.entries(assignments).sort(([a], [b]) => a.localeCompare(b))])
     };
 }
 
@@ -851,7 +613,7 @@ async function serveStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
     try {
         // 预检不读写资料，仅为指定机器接口声明跨域许可；真正请求仍必须通过独立认证。
-        if(req.method==="OPTIONS" && /^\/api\/(ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|agents\/register|jobs\/(claim|report|target-task-states|direct-progress|execution-run))$/.test(stripRequestBasePath(req, String(req.url).split('?')[0]))) {
+        if(req.method==="OPTIONS" && /^\/api\/(ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|agents\/register|jobs\/claim)$/.test(stripRequestBasePath(req, String(req.url).split('?')[0]))) {
             writeIngestCors(req,res);res.writeHead(204);res.end();return;
         }
         if (cloudAuthEnabled) {
@@ -894,7 +656,7 @@ const server = http.createServer(async (req, res) => {
             res.end();
             return;
         }
-        if (req.method === "OPTIONS" && (url.pathname === "/api/agents/register" || url.pathname === "/api/jobs/claim" || url.pathname === "/api/jobs/report" || url.pathname === "/api/jobs/target-task-states" || url.pathname === "/api/jobs/direct-progress" || url.pathname === "/api/jobs/execution-run")) {
+        if (req.method === "OPTIONS" && (url.pathname === "/api/agents/register" || url.pathname === "/api/jobs/claim")) {
             writeIngestCors(req, res);
             res.writeHead(204);
             res.end();
@@ -914,7 +676,7 @@ const server = http.createServer(async (req, res) => {
                 authorized: isValidIngestToken(readBearerToken(req), auth.token),
                 // 插件测试连接必须拿标准直推路径去核对用户填写的 endpoint，不能只证明 /api/ingest-info 能通。
                 ingestPath: "/api/ingest",
-                accountExecutionProtocol: ACCOUNT_PROCESS_MODE === 'on' ? 1 : 0
+                accountExecutionProtocol: 0, relayProtocol: 1
             });
             return;
         }
@@ -1283,16 +1045,6 @@ const server = http.createServer(async (req, res) => {
             send(res, 200, { stores: await jobQueue.listDeletedStores() });
             return;
         }
-        if (req.method === "GET" && url.pathname === "/api/inbox/status") {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 200, inboxWatcher.snapshot());
-            return;
-        }
-        if (req.method === "POST" && url.pathname === "/api/inbox/scan") {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 200, await inboxWatcher.scan());
-            return;
-        }
         if (req.method === "GET" && url.pathname === "/api/ziniao/stores") {
             if (!requireUserAccess(req, res)) return;
             const scope = await visibleStoreScope(req);
@@ -1373,36 +1125,7 @@ const server = http.createServer(async (req, res) => {
             send(res, 200, {stores:agents.filter(a=>a.storeId&&a.online&&a.identityMatched).map(a=>({storeId:a.storeId,name:a.storeName||a.pageStoreName}))});
             return;
         }
-        if (req.method === "GET" && url.pathname === "/api/transfer-jobs") {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 200, { jobs: [], disabled: true, note: "旧探测链路已停用，请使用任务台 /api/jobs。" });
-            return;
-        }
-        if (req.method === "GET" && url.pathname === "/api/jobs") {
-            if (!requireUserAccess(req, res)) return;
-            const scope = await visibleStoreScope(req);
-            // 带分页参数时只返回当前页；旧调用不带参数时保留完整列表兼容现有客户端。
-            if (url.searchParams.has("limit") || url.searchParams.has("offset")) {
-                send(res, 200, await jobQueue.listJobsPage({
-                    scope,
-                    limit: Number(url.searchParams.get("limit")) || 50,
-                    offset: Number(url.searchParams.get("offset")) || 0,
-                    includeAgents: url.searchParams.get("includeAgents") !== "0"
-                }));
-                return;
-            }
-            const jobs = await jobQueue.listJobs();
-            if (!scope) { send(res, 200, jobs); return; }
-            // 普通用户只看与自己店铺相关的任务；agents 里也只保留自己店铺的心跳。
-            const related = (job) => scope.has(String(job.sourceStoreId || "")) || scope.has(String(job.targetStoreId || ""));
-            send(res, 200, {
-                ...jobs,
-                jobs: (jobs.jobs || []).filter(related),
-                agents: (jobs.agents || []).filter((agent) => scope.has(String(agent.storeId || "")))
-            });
-            return;
-        }
-        // 轻量插件目录：商品库和工作日志只需要它，不再为了在线状态下载完整任务记录。
+        // 商品库与店铺认领共用原有插件目录；在线与绑定状态保持独立自动更新。
         if (req.method === "GET" && url.pathname === "/api/agents") {
             if (!requireUserAccess(req, res)) return;
             send(res, 200, await jobQueue.listAgents({
@@ -1413,12 +1136,6 @@ const server = http.createServer(async (req, res) => {
                 limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : null,
                 offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : null
             }));
-            return;
-        }
-        // 首页经营汇总在服务端计算，浏览器只接收聚合数字和排行，不再下载全部任务明细。
-        if (req.method === "GET" && url.pathname === "/api/jobs/dashboard") {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 200, await jobQueue.listDashboard({ scope: await visibleStoreScope(req) }));
             return;
         }
         // SSE 与断线兜底共用同一权限和版本语义，插件令牌不能订阅用户事件。
@@ -1432,155 +1149,155 @@ const server = http.createServer(async (req, res) => {
             send(res, 200, await liveSnapshot(req));
             return;
         }
-        // 工作日志只回放任务状态变更，不返回商品快照，供运营确认是否真正送达目标插件。
-        if (req.method === "GET" && url.pathname === "/api/work-log") {
-            if (!requireUserAccess(req, res)) return;
-            const scope = await visibleStoreScope(req);
-            // SQL 必须先按账号范围过滤再分页；默认值和分页上限由仓库统一处理。
-            const activity = await jobQueue.listActivity({
-                scope,
-                limit: url.searchParams.get("limit"),
-                offset: url.searchParams.get("offset")
-            });
-            if (!scope) { send(res, 200, activity); return; }
-            // 普通用户只看自己店铺的日志：来源店或目标店命中即可见。
-            const entries = (activity.entries || []).filter((entry) => scope.has(String(entry.sourceStoreId || "")) || scope.has(String(entry.storeId || "")));
-            const stores = (activity.stores || []).filter((store) => scope.has(String(store.storeId || "")));
-            send(res, 200, { ...activity, entries, stores });
-            return;
-        }
-        if (req.method === "DELETE" && url.pathname === "/api/work-log") {
-            if (!requireUserAccess(req, res)) return;
-            const buffer = await readBody(req, 64 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "删除工作日志请求不是合法 JSON" }); }
-            send(res, 200, { ok: true, ...(await jobQueue.clearStoreActivity((body || {}).storeId, taskAccess(req))) });
-            return;
-        }
-        if (req.method === "GET" && url.pathname === "/api/jobs/open-requests") {
-            if (!requireUserAccess(req, res)) return;
-            const scope = await visibleStoreScope(req);
-            const result = await jobQueue.listOpenRequests();
-            if (!scope) { send(res, 200, result); return; }
-            // 待打开列表按目标店过滤：否则本机工人会去打开别人店铺的页面。
-            send(res, 200, {
-                ...result,
-                requests: (result.requests || []).filter((request) => scope.has(String(request.targetStoreId || "")) || scope.has(String(request.sourceStoreId || "")))
-            });
-            return;
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs/open-result") {
-            if (!requireUserAccess(req, res)) return;
-            const buffer = await readBody(req, 64 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "打开回传不是合法 JSON" }); }
-            send(res, 200, { ok: true, job: await jobQueue.reportOpenResult(body || {}, taskAccess(req)) });
-            return;
-        }
+        // 网页可核对传输协议版本；不宣称插件已接收或平台已创建。
         if (req.method === "GET" && url.pathname === "/api/direct-create-capability") {
             if (!requireUserAccess(req, res)) return;
-            return send(res, 200, {directCreate:true, minimumPluginVersion:"10.10.56", complianceVersion:"V2.0", bulkDispatch: Boolean(bulkDispatch), executionConcurrency: scheduler.snapshot().limit, scheduling: scheduler.snapshot()});
+            return send(res, 200, { directCreate: true, relayProtocol: 1, minimumPluginVersion: "10.10.69",
+                errorNoticeProtocol: 2, errorNoticeMinimumPluginVersion: '10.10.72' });
         }
-        if (url.pathname === '/api/bulk-dispatch' || /^\/api\/bulk-dispatch\/[a-f0-9]{64}(?:\/(?:resume|cancel|failures))?$/.test(url.pathname)) {
+        // 仅过滤来源商品禁传并处理当前发送；异常凭证不建立执行任务或成功回执。
+        if (req.method === "POST" && url.pathname === "/api/relay/send") {
             if (!requireUserAccess(req, res)) return;
-            if (!bulkDispatch) return send(res, 503, { error: '批量分发需要 MySQL 存储' });
-            const owner = req.temuUser?.id || '';
-            const [, , , id, action] = url.pathname.split('/');
-            // 明细分页只读，并在仓储层再次检查批次归属，不能跨账号查看商品错误。
-            if (req.method === 'GET' && action === 'failures') return send(res, 200, await bulkDispatch.failures(id, owner, url.searchParams.get('offset')));
-            if (req.method === 'GET') return send(res, 200, id ? { batch: await bulkDispatch.get(id, owner) } : await bulkDispatch.list(owner, url.searchParams.get('offset')));
-            if (req.method === 'POST' && id && action) {
-                // resume 会让批次重新进入可分发状态，属于新业务；cancel 是收尾动作，
-                // 必须在新模式未就绪时**仍然可用**（否则积压批次无法停止）。
-                if (action === 'resume') assertNewBusinessAllowed();
-                return send(res, 200, { batch: await bulkDispatch.control(id, action, owner) });
-            }
-            if (req.method === 'POST' && !id) {
-                // 创建批量任务属于新业务：门控必须在读取大正文之前。
-                assertNewBusinessAllowed();
-                const input = JSON.parse(stripBom((await readBody(req, 2 * 1024 * 1024)).toString('utf8')));
-                return send(res, 202, { batch: await bulkDispatch.submit(input, owner) });
-            }
-            return send(res, 405, { error: '不支持的批量操作' });
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs/direct-progress") {
-            // 允许目标插件申请创建许可与回传；队列继续校验目标店、领取凭证及创建尝试，不代理平台请求。
-            writeIngestCors(req, res);
-            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            const body = JSON.parse(stripBom((await readBody(req, 64 * 1024)).toString("utf8")));
-            if (!requirePluginInstance(req, res, body)) return;
-            if (!await requirePluginStoreAccess(req, res, body)) return;
-            /**
-             * 只对 `phase=begin`（申请新的平台创建许可）过门控。
-             *
-             * 这个接口同时承担"开始授权"与"结果回传"两种职责：
-             * 一律封锁会让**已在平台提交的结果无法回传**，那是更严重的数据损失。
-             * 因此按阶段区分：新的执行授权要过门控，既有事实的回执不受影响。
-             */
-            /**
-             * 阶段必须**先归一化**再判定，且只归一化一次、供门控与业务共用。
-             *
-             * 复核实测：门控只认严格等于 'begin'，而业务层用 `asText(input.phase)`
-             * （会 trim），于是 `" begin "` 能跳过门控、径直进入后续身份校验（返回 409 而非 503）。
-             * 带空格的值会被业务层当成 begin 处理，门控却放行了它——两边规则必须一致。
-             * 这里用与业务层相同的 trim 语义判定，并在归一化后写回 body，
-             * 避免下游再各自解释一遍。
-             */
-            const normalizedPhase = String(body?.phase ?? '').trim();
-            if (body && typeof body === 'object') body.phase = normalizedPhase;
-            if (normalizedPhase === 'begin') assertNewBusinessAllowed();
-            return send(res, 200, {ok:true, ...await jobQueue.directProgress(body)});
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs/direct-retry") {
-            // 仅网页人工确认入口可重置结果未知项；插件不能自行把 unknown 解锁成新尝试。
-            if (!requireUserAccess(req, res)) return;
-            const body = JSON.parse(stripBom((await readBody(req, 64 * 1024)).toString("utf8")));
-            return send(res, 200, { ok: true, ...await jobQueue.directRetry(body || {}, taskAccess(req)) });
-        }
-        /**
-         * 插件面板的"取消任务"：只取消本店未提交的待传项，已提交的保留结果证据。
-         * 与"停止并清理"的区别：停止终止轮次，取消是主动丢弃还没提交的任务。
-         */
-        if (req.method === "POST" && url.pathname === "/api/jobs/cancel-store-tasks") {
-            writeIngestCors(req, res);
-            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            const body = JSON.parse(stripBom((await readBody(req, 64 * 1024)).toString("utf8")));
-            if (!requirePluginInstance(req, res, body)) return;
-            if (!await requirePluginStoreAccess(req, res, body)) return;
-            return send(res, 200, { ok: true, ...await jobQueue.cancelStoreTasks(body || {}) });
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs") {
-            if (!requireUserAccess(req, res)) return;
-            // 创建任务属于新业务：先过门控，再读正文与创建任何持久行。
-            assertNewBusinessAllowed();
-            const buffer = await readBody(req, 512 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "创建任务请求不是合法 JSON" }); }
-            /**
-             * 业务硬约束：只能在自己名下的店铺之间中转。
-             * 来源店与目标店都必须已被当前用户认领，否则拒绝——这既防止把别人的商品传出去，
-             * 也防止把商品传进别人的店铺。管理员与设备令牌不受此限，便于运维排障。
-             */
+            let input;
+            try { input = JSON.parse(stripBom((await readBody(req, 256 * 1024)).toString("utf8"))); }
+            catch (error) { if (error.status) throw error; return send(res, 400, { error: "发送请求不是合法 JSON" }); }
+            if (!input || typeof input !== 'object' || Array.isArray(input)) return send(res, 400, { error: "发送请求需要对象" });
+            if (input.manualSendId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.manualSendId)) return send(res, 400, { error: "发送标识无效" });
             const scope = await visibleStoreScope(req);
-            if (scope) {
-                const sourceStoreId = String(body?.sourceStoreId || "").trim();
-                const targetStoreId = String(body?.targetStoreId || "").trim();
-                const outside = [sourceStoreId, targetStoreId].filter((storeId) => storeId && !scope.has(storeId));
-                if (outside.length) {
-                    return send(res, 403, {
-                        error: "store_not_claimed",
-                        message: `只能在自己认领的店铺之间上传；以下店铺不属于当前账号：${outside.join("、")}。请先在“我的店铺”认领。`
-                    });
+            const sourceStoreId = String(input.sourceStoreId || ""), targetStoreId = String(input.targetStoreId || "");
+            if (scope && (!scope.has(sourceStoreId) || !scope.has(targetStoreId))) return send(res, 403, { error: "store_not_claimed" });
+            const abort = new AbortController();
+            const cancel = () => abort.abort();
+            req.once("aborted", cancel); res.once("close", cancel);
+            let release;
+            try {
+                if (await deletedStores.isDeleted(sourceStoreId) || await deletedStores.isDeleted(targetStoreId)) throw Object.assign(Error("店铺已删除"), { status: 409 });
+                const batch = await store.getBatch(String(input.sourceBatchId || ""));
+                if (!batch || batch.sourceStoreId !== sourceStoreId) throw Object.assign(Error("来源店与商品批次不符"), { status: 400 });
+                const ids = [...new Set(Array.isArray(input.spuIds) ? input.spuIds.map(String) : [])];
+                if (!ids.length || ids.length > 10) throw Object.assign(Error("每次传输1至10件商品"), { status: 400 });
+                if (sourceStoreId === targetStoreId && input.sameStoreConfirmed !== true) throw Object.assign(Error("请确认发送到来源店铺"), { status: 409 });
+                const products = (batch.products || []).filter(p => ids.includes(String(p.spuId)));
+                if (products.length !== ids.length) throw Object.assign(Error("来源商品不存在"), { status: 404 });
+                const references = await store.noticeRefs(sourceStoreId, ids);
+                const refs = new Map(references.map(ref => [String(ref.spuId), ref]));
+                const skippedBlocked = [], eligible = [];
+                for (const product of products) {
+                    const ref = refs.get(String(product.spuId));
+                    if (!ref || ref.sourceVersion !== transferHash(canonicalProductSnapshot(product))) {
+                        throw Object.assign(Error('来源商品版本已变化，请刷新后重新选择'), { status: 409 });
+                    }
+                    if (ref.sendBlocked) skippedBlocked.push({ spuId: String(product.spuId), productCodes: ref.productCodes || [] });
+                    else eligible.push(product);
                 }
+                if (!eligible.length) return send(res, 200, { sent: 0, skippedBlocked, deliveryConfirmed: false });
+                release = await relayAdmission.acquire(4 * 1024 * 1024, abort.signal, req.temuUser?.id || "local");
+                const target = (await jobQueue.listAgents()).agents.find(a => a.storeId === targetStoreId);
+                if (!target?.online || !target.identityMatched || target.relayProtocol !== 1 || !target.relaySessionId) throw Object.assign(Error("目标店未连接新版插件"), { status: 409 });
+                const verified = await store.verifyBatchTransfer(batch, eligible);
+                const deliveryOwners = {};
+                for (const id of new Set([sourceStoreId, targetStoreId])) {
+                    const owner = await ownership.findOwner(id);
+                    deliveryOwners[id] = { ownerId: owner?.ownerId || '', claimId: owner?.claimId || '' };
+                }
+                // 标识仅随当前传输转发，由插件合并同一次点击的分段；服务端不记忆或判重。
+                const jobId = input.manualSendId || cryptoRandomId();
+                const claimed = verified.map(product => {
+                    const snapshot = canonicalProductSnapshot(product);
+                    const sourceNoticeRef = refs.get(String(product.spuId));
+                    return { jobId, spuId: String(product.spuId), title: product.title, snapshot,
+                        transferIntegrity: transferManifest(snapshot), sourceStoreId, targetStoreId,
+                        sourceBatchId: batch.id, mode: "manual-plugin-upload", directCreate: true,
+                        transportOnly: true, executionRunId: target.relaySessionId, sourceNoticeRef, deliveryOwners,
+                        // 货号集合不是授权依据；不把可能很大的 SKU 集合塞入签名，避免正常投递被凭证长度阻塞。
+                        noticeToken: noticeTokens.issue({ sourceStoreId, spuId: String(product.spuId),
+                            sourceInstanceId: sourceNoticeRef.sourceInstanceId, sourceVersion: sourceNoticeRef.sourceVersion,
+                            noticeEpoch: sourceNoticeRef.noticeEpoch, targetStoreId,
+                            pluginInstanceId: target.pluginInstanceId, relaySessionId: target.relaySessionId,
+                            owners: deliveryOwners }) };
+                });
+                if (Buffer.byteLength(JSON.stringify(claimed)) > 4 * 1024 * 1024) throw Object.assign(Error("单批传输超过4MiB，请减少选择"), { status: 413 });
+                const result = await relay.send({ storeId: targetStoreId, pluginInstanceId: target.pluginInstanceId, relaySessionId: target.relaySessionId }, claimed, req.temuUser?.id || "local", abort.signal);
+                return send(res, 200, { ...result, skippedBlocked: [...skippedBlocked, ...(result.skippedBlocked || []).map(item => ({
+                    spuId: String(item.spuId), productCodes: item.productCodes || item.sourceNoticeRef?.productCodes || []
+                }))], deliveryConfirmed: false });
+            } finally { release?.(); req.off("aborted", cancel); res.off("close", cancel); }
+        }
+        // 只接收商品错误通知；服务器校验授权与协议码，不查询平台或建立执行状态。
+        if (req.method === 'POST' && url.pathname === '/api/products/error-notice') {
+            writeIngestCors(req, res);
+            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: 'ingest_unauthorized' });
+            const instance = req.temuPluginInstanceId || String(req.headers['x-plugin-instance'] || 'device');
+            const releaseNotice = acquireNotice(instance);
+            try {
+                let body;
+                try { body = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8')); }
+                catch (error) { if (error.status) throw error; return send(res, 400, { error: 'error_notice_body_invalid' }); }
+                if (!requirePluginInstance(req, res, body)) return;
+                const error = parseProductErrorNotice(body), grant = noticeTokens.verify(body.noticeToken);
+                if (grant.pluginInstanceId !== body.pluginInstanceId) return send(res, 403, { error: 'plugin_instance_mismatch' });
+                const agent = (await jobQueue.listAgents()).agents.find(item => item.storeId === grant.targetStoreId);
+                if (!agent?.identityMatched || agent.pluginInstanceId !== grant.pluginInstanceId
+                    || agent.relaySessionId !== grant.relaySessionId) return send(res, 403, { error: 'error_notice_session_changed' });
+                const currentScope = await visibleStoreScope(req);
+                if (currentScope && (!currentScope.has(grant.sourceStoreId) || !currentScope.has(grant.targetStoreId))) {
+                    return send(res, 403, { error: 'store_not_claimed' });
+                }
+                const result = await ownership.withStableOwners(grant.owners, connection => error.mark
+                    ? store.recordErrorNotice(grant, { ...error, targetStoreId: grant.targetStoreId,
+                        targetStoreName: String(agent.storeName || '').slice(0, 255) }, connection)
+                    : { status: 'not_product_error' });
+                if (result.status === 'marked') liveEvents.notify();
+                return send(res, 200, { ok: true, status: result.status });
+            } finally { releaseNotice(); }
+        }
+        // 局部状态同步不写任务、不回传执行确认；范围与商品库相同，旧实例不能读取新商品的状态。
+        if (req.method === 'POST' && url.pathname === '/api/products/status-read') {
+            if (!requireUserAccess(req, res)) return;
+            let body;
+            try { body = JSON.parse((await readBody(req, 32 * 1024)).toString('utf8')); }
+            catch (error) { if (error.status) throw error; return send(res, 400, { error: 'product_status_invalid' }); }
+            const refs = body?.products;
+            if (!body || Object.keys(body).some(key => key !== 'products') || !Array.isArray(refs) || !refs.length || refs.length > 100
+                || refs.some(ref => !ref || Object.keys(ref).some(key => !['spuId', 'sourceIdentity', 'productKey'].includes(key))
+                    || typeof ref.spuId !== 'string' || !ref.spuId.trim() || ref.spuId.length > 255
+                    || typeof ref.sourceIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(ref.sourceIdentity)
+                    || typeof ref.productKey !== 'string' || !/^[a-f0-9]{64}$/.test(ref.productKey))
+                || new Set(refs.map(ref => ref.spuId)).size !== refs.length) {
+                return send(res, 400, { error: 'product_status_invalid' });
             }
-            if (ACCOUNT_PROCESS_MODE === 'on' && body?.directCreate !== true) return send(res, 409, {
-                error: 'account_mode_requires_direct_job', message: '账户执行模式只接受明确确认的一键上架任务。'
-            });
-            // 管理员代操作保持其真实身份，但执行配额始终归目标店所属账户，不接受正文指定身份。
-            const access = taskAccess(req) || { actorId: req.temuUser?.id || (req.temuDeviceBearer ? 'authenticated-device' : 'local-service'), privileged: true };
-            const job = await jobQueue.createJob(body || {}, access);
-            send(res, 201, { ok: true, job });
-            return;
+            return send(res, 200, await store.readProductStatuses(refs, await visibleStoreScope(req)));
+        }
+        // 详情沿用商品权限，实例编号只是定位而不是可绕过账户隔离的读取凭证。
+        if (req.method === 'GET' && url.pathname === '/api/products/error-details') {
+            if (!requireUserAccess(req, res)) return;
+            const sourceStoreId = String(url.searchParams.get('sourceStoreId') || '');
+            const scope = await visibleStoreScope(req);
+            if (!sourceStoreId || (scope && !scope.has(sourceStoreId))) return send(res, 403, { error: 'store_not_claimed' });
+            const result = await store.errorDetails({ sourceStoreId, spuId: String(url.searchParams.get('spuId') || ''),
+                sourceInstanceId: String(url.searchParams.get('sourceInstanceId') || '') });
+            return result ? send(res, 200, result) : send(res, 404, { error: 'error_notice_not_found' });
+        }
+        // 新禁传解除必须提交有效实例；旧解除接口只能清除历史展示标记。
+        if (req.method === 'POST' && url.pathname === '/api/products/error-unblock') {
+            if (!requireUserAccess(req, res)) return;
+            if (!isTrustedImportOrigin(req)) return send(res, 403, { error: 'unblock_origin_denied' });
+            let body;
+            try { body = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8')); }
+            catch (error) { if (error.status) throw error; return send(res, 400, { error: 'error_unblock_invalid' }); }
+            const scope = await visibleStoreScope(req);
+            if (!body?.sourceStoreId || (scope && !scope.has(body.sourceStoreId))) return send(res, 403, { error: 'store_not_claimed' });
+            const owner = await ownership.findOwner(body.sourceStoreId);
+            const result = await ownership.withStableOwners({ [body.sourceStoreId]: { ownerId: owner?.ownerId || '', claimId: owner?.claimId || '' } },
+                connection => store.unblockErrorProducts(body, connection));
+            liveEvents.notify();
+            return send(res, 200, { ok: true, ...result });
+        }
+        // 认证仍由原入口隔离；旧插件请求只收到停用状态，不解析正文、不占写入许可，也不改历史红标或通知版本。
+        if (req.method === "POST" && url.pathname === "/api/products/failure") {
+            writeIngestCors(req, res);
+            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
+            return send(res, 410, { error: "product_failure_retired", message: "商品失败回执已停用" });
         }
         if (req.method === "POST" && url.pathname === "/api/agents/register") {
             writeIngestCors(req, res);
@@ -1595,110 +1312,23 @@ const server = http.createServer(async (req, res) => {
             send(res, 200, { ok: true, agent: await jobQueue.registerAgent(body || {}) });
             return;
         }
-        // 页面轮次只允许当前插件实例管理；沿用店铺授权边界，不暴露任意任务取消接口。
-        if (req.method === "POST" && url.pathname === "/api/jobs/execution-run") {
-            writeIngestCors(req, res);
-            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            const buffer = await readBody(req, 64 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "轮次请求不是合法 JSON" }); }
-            if (!requirePluginInstance(req, res, body)) return;
-            if (!await requirePluginStoreAccess(req, res, body)) return;
-            return send(res, 200, { ok: true, ...(await jobQueue.controlExecutionRun(body)) });
-        }
         if (req.method === "POST" && url.pathname === "/api/jobs/claim") {
             writeIngestCors(req, res);
             // 插件侧接口：允许插件令牌、设备令牌与用户会话；插件令牌的权限仅限这些接口。
             if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            // 领取意味着签发新的执行许可：属于新业务，先过门控。
-            // 注意：**停止与历史回执不走这里**，它们必须在新模式未就绪时仍可用。
-            assertNewBusinessAllowed();
             const buffer = await readBody(req, 64 * 1024);
             let body;
             try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "领取请求不是合法 JSON" }); }
             if (!requirePluginInstance(req, res, body)) return;
             if (!await requirePluginStoreAccess(req, res, body)) return;
-            send(res, 200, { ok: true, ...(await jobQueue.claimJobs(body || {})) });
-            return;
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs/report") {
-            writeIngestCors(req, res);
-            // 插件侧接口：允许插件令牌、设备令牌与用户会话；插件令牌的权限仅限这些接口。
-            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            const buffer = await readBody(req, 64 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "回传请求不是合法 JSON" }); }
-            if (!requirePluginInstance(req, res, body)) return;
-            if (!await requirePluginStoreAccess(req, res, body)) return;
-            send(res, 200, { ok: true, job: await jobQueue.reportProgress(body || {}) });
-            return;
-        }
-        if (req.method === "POST" && url.pathname === "/api/jobs/target-task-states") {
-            writeIngestCors(req, res);
-            // 插件侧接口：允许插件令牌、设备令牌与用户会话；插件令牌的权限仅限这些接口。
-            if (!canAccessWarehouseApi(req) && !isPluginScopedRequest(req)) return send(res, 401, { error: "ingest_unauthorized" });
-            const buffer = await readBody(req, 64 * 1024);
-            let body;
-            try { body = JSON.parse(stripBom(buffer.toString("utf8"))); } catch { return send(res, 400, { error: "任务状态查询不是合法 JSON" }); }
-            if (!requirePluginInstance(req, res, body)) return;
-            if (!await requirePluginStoreAccess(req, res, body)) return;
-            send(res, 200, { ok: true, ...(await jobQueue.listTargetTaskStates(body || {})) });
-            return;
-        }
-        if (req.method === "POST" && url.pathname.match(/^\/api\/jobs\/[^/]+\/cancel$/)) {
-            if (!requireUserAccess(req, res)) return;
-            const id = url.pathname.split("/")[3];
-            send(res, 200, { ok: true, job: await jobQueue.cancelJob(id, taskAccess(req)) });
-            return;
-        }
-        if (req.method === "GET" && url.pathname.match(/^\/api\/jobs\/[^/]+$/)) {
-            if (!requireUserAccess(req, res)) return;
-            const job = await jobQueue.getJob(url.pathname.split("/").pop());
-            if (!job) return notFound(res);
-            if (!await resourceVisible(req, [job.sourceStoreId, job.targetStoreId])) return send(res, 403, { error: "store_not_claimed" });
-            send(res, 200, job);
-            return;
-        }
-        if (req.method === "POST" && url.pathname === "/api/transfer-jobs") {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 409, { error: "旧探测链路已停用，请使用任务台创建指定店铺任务。" });
-            return;
-        }
-        if (req.method === "POST" && url.pathname.match(/^\/api\/transfer-jobs\/[^/]+\/cancel$/)) {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 409, { error: "旧探测链路已停用" });
-            return;
-        }
-        if (req.method === "POST" && url.pathname.match(/^\/api\/transfer-jobs\/[^/]+\/confirm$/)) {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 409, { error: "旧探测链路已停用" });
-            return;
-        }
-        if (req.method === "POST" && url.pathname.match(/^\/api\/transfer-jobs\/[^/]+\/retry$/)) {
-            if (!requireUserAccess(req, res)) return;
-            send(res, 409, { error: "旧探测链路已停用" });
-            return;
-        }
-        if (req.method === "GET" && url.pathname.match(/^\/api\/transfer-jobs\/[^/]+\/artifacts\/[^/]+$/)) {
-            if (!requireUserAccess(req, res)) return;
-            const parts = url.pathname.split("/");
-            const filePath = transferManager.artifactPath(parts[3], parts[5]);
-            if (!filePath) return notFound(res);
-            try {
-                const info = await stat(filePath);
-                if (!info.isFile()) return notFound(res);
-                res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
-                createReadStream(filePath).pipe(res);
-            } catch {
-                notFound(res);
-            }
-            return;
-        }
-        if (req.method === "GET" && url.pathname.match(/^\/api\/transfer-jobs\/[^/]+$/)) {
-            if (!requireUserAccess(req, res)) return;
-            const job = await transferManager.getJob(url.pathname.split("/").pop());
-            if (!job) return notFound(res);
-            send(res, 200, job);
+            if (body.relayProtocol !== 1) return send(res, 426, { error: "请安装10.10.69或更新插件" });
+            const target = (await jobQueue.listAgents()).agents.find(a => a.storeId === body.storeId);
+            if (!target?.online || !target.identityMatched || target.pluginInstanceId !== body.pluginInstanceId
+                || target.relaySessionId !== body.relaySessionId) return send(res, 409, { error: "接收页面已变化" });
+            const abort = new AbortController(), cancel = () => abort.abort();
+            req.once("aborted", cancel); res.once("close", cancel);
+            try { send(res, 200, { ok: true, ...await relay.receive(body, abort.signal) }); }
+            finally { req.off("aborted", cancel); res.off("close", cancel); }
             return;
         }
         if (req.method === "GET" && url.pathname.startsWith("/api/batches/")) {
@@ -1735,12 +1365,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === "POST" && url.pathname === "/api/import") {
             if (!requireUserAccess(req, res)) return;
             if (!isTrustedImportOrigin(req)) return send(res, 403, { error: "import_origin_denied" });
-            // 文件表单尚无持久提交轮次，显式拒绝而非暗中绕开新账户串行约束。
-            if (ACCOUNT_PROCESS_MODE === 'on') return send(res, 409, {
-                error: 'account_mode_requires_plugin_ingest', message: '账户执行模式请通过来源店铺插件上传，文件导入暂不支持此模式。'
-            });
-            // 门控先于申请接收额度：on 未就绪时不该先占用接收槽。
-            assertNewBusinessAllowed();
+            // 手动导入与插件上传共用接收额度，不建立上架执行任务。
             const release = await acquireIngest(req, res);
             try {
             const buffer = await readBody(req, MAX_INGEST_BODY);
@@ -1848,12 +1473,6 @@ const server = http.createServer(async (req, res) => {
             if (!requirePluginInstance(req, res, body)) return;
             if (!await requirePluginStoreAccess(req, res, body)) return;
             if (scheduler.snapshot().paused) throw Object.assign(Error('ingest_capacity_wait'), { status: 429, retryAfter: 30 });
-            // 上传准备许可属于新业务：申请它之前先过门控。
-            assertNewBusinessAllowed();
-            if (ACCOUNT_PROCESS_MODE === 'on' && body.accountExecutionProtocol !== 1) return send(res, 428, { error: 'account_plugin_upgrade_required' });
-            if (ACCOUNT_PROCESS_MODE === 'on' && (Date.now() - budgetSampledAt >= 15000 || latestBudget?.canAcceptNewStaging !== true)) {
-                throw Object.assign(Error('ingest_resource_budget_wait'), { status: 429, retryAfter: 15 });
-            }
             const source = await jobQueue.resolveIngestSource(body);
             if (!source || source.sourceStoreId !== body.storeId) throw Object.assign(Error('ingest_source_mismatch'), { status: 403 });
             return send(res, 200, await ingestProtocol.prepare(req.temuPluginInstanceId || body.pluginInstanceId, body));
@@ -1867,25 +1486,12 @@ const server = http.createServer(async (req, res) => {
                 send(res, 401, { error: "ingest_unauthorized" });
                 return;
             }
-            // 门控必须在**消费许可、申请接收额度、读取正文之前**。
-            // 之前它放在 JSON.parse 之后，即使最后返回 503，也已经消耗了接收槽、
-            // 内存与解析 CPU——"先付费后拒单"与注释里写的顺序正好相反。
-            assertNewBusinessAllowed();
+            // 上传额度只覆盖当前收包与入库，完成后释放，不等待任何目标店执行。
             const permitOwner = req.temuPluginInstanceId || String(req.headers['x-plugin-instance'] || '');
-            if (ACCOUNT_PROCESS_MODE === 'on' && !req.headers['x-ingest-permit']) return send(res, 428, { error: 'account_ingest_permit_required' });
             const lease = req.headers['x-ingest-permit'] ? await ingestProtocol.consume(permitOwner, req.headers['x-ingest-permit'], Number(req.headers['content-length'])) : null;
             const release = lease ? lease.finish : await acquireIngest(req, res);
             try {
             req.setTimeout(120000, () => req.destroy());
-            if (ACCOUNT_PROCESS_MODE === 'on') {
-                // 接收与规范化仅落盘；单商品解析及库存写入必须等账户运行器取得业务槽。
-                await ingestProtocol.begin(lease, lease.sha256);
-                const received = await receiveAccountCapture({ request: req, lease, stagingDir: ingestStaging.stagingDir,
-                    linkReservation: stagingBudget.link, maxBytes: MAX_INGEST_BODY });
-                const accepted = await accountIngest.accept({ lease, received, verified: true });
-                wakeRuntime();
-                return send(res, 202, accepted);
-            }
             const buffer = await readBody(req, MAX_INGEST_BODY);
             let body;
             try {
@@ -1895,6 +1501,9 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             const upload = extractIngestUpload(body, req);
+            // 外层元数据不能覆盖原包的来源；这里只守住绑定归属，不限定商品业务字段。
+            if (upload.payload.source?.sourceStoreId && upload.sourceStoreId !== String(upload.payload.source.sourceStoreId).trim()) throw Object.assign(Error('ingest_source_mismatch'), { status: 403 });
+            if (req.temuPluginInstanceId && upload.pluginInstanceId !== req.temuPluginInstanceId) throw Object.assign(Error('plugin_instance_mismatch'), { status: 403 });
             if (Array.isArray(upload.payload.products) && upload.payload.products.length > 1000) throw Object.assign(Error('单个采集包最多1000件商品，请拆分上传'), { status: 413 });
             // 新插件在发送前计算整包摘要；旧包保留导入兼容，但不能冒充已由来源端验证。
             const incomingVerified = verifyTransferManifest(upload.payload, body.kind ? null : body.transferIntegrity);
@@ -1904,6 +1513,8 @@ const server = http.createServer(async (req, res) => {
                 storeName: upload.sourceStoreName || upload.shopName,
                 storeId: upload.sourceStoreId
             });
+            // 插件令牌只代表已绑定实例，不能凭任意采集包写入另一个店铺的商品。
+            if (req.temuPluginInstanceId && (!mapped || (upload.sourceStoreId && upload.sourceStoreId !== mapped.sourceStoreId))) throw Object.assign(Error('ingest_source_mismatch'), { status: 403 });
             // 许可绑定认证来源店，不能申请A店许可却写入B店商品。
             if (lease) {
                 if ((upload.sourceStoreId || mapped?.sourceStoreId) !== lease.storeId || upload.pluginInstanceId !== lease.owner) throw Object.assign(Error('ingest_source_mismatch'), { status: 403 });
@@ -1937,51 +1548,10 @@ const server = http.createServer(async (req, res) => {
                 if (saved.length) await store.verifyBatchTransfer(result.batch, saved);
                 else if (transferHash({ ...storedPacket, exportedAt: null }) !== transferHash({ ...redactSensitive(upload.payload), exportedAt: null })) throw Object.assign(new Error("复用原包与本次采集内容不一致"), { status: 422 });
             }
-            // 入库成功后登记账户工作账本：这是"上传进入账户执行链"的落点。
-            // 放在 receipt 之前，账本数量随回执一起返回，调用方能区分"入库成功"与"已进账户队列"。
-            const storedForWork = result.batch?.files?.[0];
-            const accountWork = await enqueueAccountWorkForIngest({
-                sourceStoreId: upload.sourceStoreId || (mapped && mapped.sourceStoreId) || '',
-                products: result.batch?.products || [],
-                requestId: lease?.id || '',
-                batchId: result.batch?.id || '',
-                // 上下文取服务端可信值：actor 取当前操作者，归属代次取认领记录，
-                // 源引用与摘要取已落盘的不可变文件——不接受客户端自报。
-                actorId: req.temuUser?.id || upload.pluginInstanceId || '',
-                // 所有权代次用认领时间：认领变化会产生新时间戳，旧授权据此失效。
-                // 取不到就留空——不编造一个假的代次。
-                ownershipGeneration: await ownershipGenerationOf(upload.sourceStoreId || (mapped && mapped.sourceStoreId) || ''),
-                // 三项都取**实际落盘事实**，不用写入前的估算：
-                // - sourceRef 必须含目录（worker 以受控源根解析，只有 basename 会 ENOENT）；
-                // - sourceHash 是文件字节 SHA-256，与 canonical JSON 摘要是不同语义；
-                // - expectedBytes 是磁盘字节数（两空格缩进后的长度）。
-                sourceRef: storedForWork?.sourceRef || '',
-                sourceHash: storedForWork?.fileSha256 || '',
-                sourceHashAlgorithm: storedForWork?.fileSha256Algorithm || 'sha256',
-                expectedBytes: Number(storedForWork?.fileBytes || 0)
-            }).catch(error => {
-                // 归属查询故障必须让客户端知道并重试，不能吞成 enqueued:0 假装正常。
-                if (error?.code === 'ownership_lookup_failed') {
-                    throw Object.assign(new Error('ownership_lookup_failed'), { status: 503, retryAfter: 5, code: 'ownership_lookup_failed' });
-                }
-                return { enabled: true, enqueued: 0, error: String(error?.message || error) };
-            });
-            // 真正登记成功才唤醒：不把"没入队"也当成有活可干。
-            if (accountWork?.enqueued > 0) wakeRuntime();
             const receipt = {
                 ok: true,
                 transferIntegrity: { algorithm: TRANSFER_HASH_ALGORITHM, receivedSha256: transferHash(upload.payload), storedSha256: storedPacket ? transferHash(storedPacket) : null, verified: incomingVerified && Boolean(storedPacket) },
                 reused: result.reused,
-                // 账本登记结果如实随回执返回：0 与"未启用"是两种不同的情况，不能混为一谈。
-                accountWork: { enabled: accountWork.enabled, enqueued: accountWork.enqueued || 0,
-                    // workId 必须透传：客户端与验收靠它把"受理"与"执行"绑成同一条因果链。
-                    // 只报 enqueued 数量会让调用方无法定位具体是哪件工作。
-                    ...(accountWork.workId ? { workId: accountWork.workId } : {}),
-                    ...(accountWork.skipped ? { skipped: accountWork.skipped } : {}),
-                    ...(accountWork.shadow ? { shadow: true } : {}),
-                    ...(accountWork.reason ? { reason: accountWork.reason } : {}),
-                    ...(accountWork.lastError ? { lastError: accountWork.lastError } : {}),
-                    ...(accountWork.error ? { error: accountWork.error } : {}) },
                 batchId: result.batch && result.batch.id,
                 batch: {
                     id: result.batch && result.batch.id,
@@ -2017,51 +1587,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 await store.ensure();
-/**
- * 后台批量分发的启动条件。
- *
- * 隔离读取服务不执行后台分发；正式进程仅续跑已被用户持久化确认的清单。
- * 另外：新模式开启（shadow/on）时**不启动旧分发器**——否则旧路径会独立签发
- * 平台执行许可，绕开新账户门控，"新模式"名存实亡。
- * 这里不是"停止功能"，而是要求新模式自己接管后由账户运行器负责推进。
- */
-if (process.env.ZINIAO_TEST_EPHEMERAL !== "1") {
-    if (ACCOUNT_PROCESS_MODE === 'off') {
-        bulkDispatch?.start();
-    } else if (accountRuntimeHandle) {
-        // on：由账户运行器接管推进；旧分发器不得同时运行，
-        // 否则两条链会各自签发平台许可，同一件商品可能被处理两次。
-        accountRuntimeHandle.start();
-        console.log(`账户运行器已启动（mode=${ACCOUNT_PROCESS_MODE}）`);
-    } else {
-        // 明确记录：新模式未就绪时不启动旧分发器，避免"半切换"。
-        console.log(`账户运行器未就绪（mode=${ACCOUNT_PROCESS_MODE}）：新业务门控返回 503`);
-    }
-}
-// 独立回收失联许可，不依赖网页打开；隔离只读启动不运行任何任务维护。
-if (process.env.ZINIAO_TEST_EPHEMERAL !== '1') {
-    let expiring = false;
-    const expire = async () => {
-        if (expiring) return;
-        expiring = true;
-        try { await jobQueue.expireDirectPermits(); }
-        catch (error) { console.error('创建许可维护失败', error.code || error.name); }
-        finally { expiring = false; }
-    };
-    setInterval(expire, 30000).unref();
-    await expire();
-}
+// 上架没有后台恢复或结果维护；服务启动只接收新的人工发送。
 if (database) {
-    // 日志清理与请求分离，每轮有删除上限，不能因历史日志过多拖住回执。
+    // 只维护商品文件，不读取或恢复旧上架任务。
     let cleaning = false;
     const cleanup = async () => {
         if (cleaning) return;
         cleaning = true;
         try {
-            // 先终结未绑定页面轮次的历史直推任务：它们没有可撤销的授权，留着就是"刷新后仍自动上传"的来源。
-            await jobQueue.retireLegacyDirectJobs?.();
-            await jobQueue.cleanupLogs();
-            await jobQueue.cleanupPayloads?.();
             await store.cleanupInventory?.(128);
         } catch (error) { console.error("维护清理失败", error.code || error.name); }
         finally { cleaning = false; }
@@ -2078,7 +1611,7 @@ if (enableSeed) await seedIfEmpty();
 // 隔离测试由系统原子分配端口，经 IPC 回传，避免先探测空闲端口再绑定的抢占窗口。
 server.listen(instanceId && process.env.ZINIAO_TEST_EPHEMERAL === "1" ? 0 : PORT, HOST, () => {
     if (instanceId && process.send) process.send({ type: "listening", port: server.address().port, instanceId });
-    console.log(database ? "存储模式 MySQL：入库、分发、反馈连接额度已分离" : "存储模式 文件：保留兼容与离线调试");
+    console.log(database ? "存储模式 MySQL：商品入库与一次性传输" : "存储模式 文件：保留兼容与离线调试");
     console.log(`中转仓 ${auth.origins[0] || `http://${HOST}:${PORT}`}`);
     for (const origin of auth.origins) console.log(`直推地址 ${origin}/api/ingest`);
     console.log("云端认证已启用，凭证不会写入运行日志");

@@ -8,6 +8,8 @@ import { fileEvidence } from './file-evidence.mjs';
 import { readCaptureMetadata, streamCaptureValues } from './capture-stream.mjs';
 import { createMysqlInventory } from "./mysql-inventory.mjs";
 import { transferHash, assertCapturedSource } from "./transfer-integrity.mjs";
+import { noticeStateKey, noticeRawSources, refreshNoticeStates, noticeRef, noticeRefMatches, boundedErrorNotice,
+    applyNoticeViews, filterNoticeDelivery, deliverNoticeNow, noticeUnblockTargets, noticeDisplayProduct, productStatusResponse } from './product-notice-state.mjs';
 import path from "node:path";
 import {skuFingerprint} from "./sku-dedup.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -127,8 +129,8 @@ export function createStore(rootDir, options = {}) {
     }
 
     /**
-     * 历史红标按“来源店 + SPU”记录，仅用于查询旧失败原因，不再决定当前目标店的发送资格。
-     * 货号可能被重建新商品复用，按货号标记会误伤后来的正常商品；SPU 才是这一件商品的稳定标识。
+     * 历史红标按“来源店 + SPU”保存原原因，并参与当前商品的禁传。
+     * 新版通知仍独立核对 UUID 与内容版本；不能把历史原因伪造为新收到的通知。
      */
     function blockedProductKey(storeId, spuId) {
         return `${String(storeId || "").trim()}\u0000${String(spuId || "").trim()}`;
@@ -154,9 +156,9 @@ export function createStore(rootDir, options = {}) {
             await sql.cleanup().catch(() => {});
             return;
         }
+        let index;
         try {
-            JSON.parse(await readFile(indexPath, "utf8"));
-            return;
+            index = JSON.parse(await readFile(indexPath, "utf8"));
         } catch (error) {
             const missing = Boolean(error && error.code === "ENOENT");
             // 兼容旧版本替换窗口崩溃留下的临时文件或备份。
@@ -171,6 +173,11 @@ export function createStore(rootDir, options = {}) {
             abort.code = "index_corrupt";
             throw abort;
         }
+        // 文件模式升级只补原子实例；写入失败直接上抛，不把有效索引误判为损坏并恢复旧备份。
+        await hydratePublicationData(index);
+        refreshBatchReadiness(index);
+        index.noticeStates ||= {};
+        if (refreshNoticeStates(index.noticeStates, index.batches).length) await writeIndex(index);
     }
 
     /** 从 index.json.tmp / .bak 恢复已完整写入的索引；恢复失败时保留当前文件，不覆盖。 */
@@ -242,6 +249,10 @@ export function createStore(rootDir, options = {}) {
             rebuildProducts(index);
             return sql.write(index);
         }
+        // 所有文件写入沿同一原始来源选择规则更新实例，不能用商品合并投影生成版本。
+        index.noticeStates ||= {};
+        refreshNoticeStates(index.noticeStates, index.batches);
+        applyNoticeViews(index.products || [], index.noticeStates);
         // 复制备份而非移走主索引：读者始终看到完整旧版或新版，不再出现文件缺失窗口。
         const temp = `${indexPath}.tmp`;
         const backup = `${indexPath}.bak`;
@@ -264,6 +275,7 @@ export function createStore(rootDir, options = {}) {
         // 货号索引只用于找行，不参与是否有货号的判断，避免把无货号商品误并成一件。
         const rows = new Map();
         const codeIndex = new Map();
+        const currentSources = noticeRawSources(index.batches);
         for (const batch of index.batches) {
             // 来源店未映射的暂存批次只能在本批次内归并，否则两家待映射店铺会因同货号被错误合并。
             const storeKey = String(batch.sourceStoreId || "").trim() || `batch\u0000${batch.id}`;
@@ -271,7 +283,9 @@ export function createStore(rootDir, options = {}) {
         // 旧索引可能仍带 excludedSpuIds；首次导入会执行物理迁移，此后该兼容分支不再命中。
                 if (excluded.has(String(product.spuId || ""))) continue;
                 const spuId = String(product.spuId || "");
-                const codeKeys = productArticleCodes(product).map((code) => `${storeKey}\u0000${code}`);
+                // 同一 SPU 的历史货号只能作为旧采集证据，归并与展示货号必须取当前可发布原包。
+                const groupProduct = currentSources.get(noticeStateKey(batch.sourceStoreId, spuId))?.product || product;
+                const codeKeys = productArticleCodes(groupProduct).map((code) => `${storeKey}\u0000${code}`);
                 // 命中已有货号就并进那一行；没有货号时退回按 SPU 建行，宁可分行也不猜测同款。
                 // SQL 无货号商品也按来源分开，并保留 SPU 前缀，不能与恰好同值的货号键碰撞。
                 const rowKey = codeKeys.find((key) => codeIndex.has(key)) || codeKeys[0] || `spu\u0000${sql ? `${storeKey}\u0000` : ""}${spuId}`;
@@ -281,11 +295,11 @@ export function createStore(rootDir, options = {}) {
                 if (!row.spuIds.includes(spuId)) row.spuIds.push(spuId);
                 // 发布资料必须记住它来自哪个 SPU 和哪个批次，定稿时两者要一起选中，见 finalizeProductRow。
                 if (product.publicationData) row.publications.push({ spuId, batchId: batch.id, data: product.publicationData });
-                row.source.push({ product, batch });
+                row.source.push({ product, batch, groupProduct });
             }
         }
         index.products = [...rows.values()].map(finalizeProductRow);
-        // 历史红标只影响展示，在商品行重建后统一贴上，避免旧失败记录被重建覆盖。
+        // 重建后恢复当前历史红标，展示与禁传共同读取它，不能被投影重建覆盖。
         const blocked = readBlockedMap(index);
         const entries = Object.entries(blocked).filter(([, item]) => item && typeof item === "object");
         for (const product of index.products) {
@@ -299,6 +313,7 @@ export function createStore(rootDir, options = {}) {
             product.blockedReason = String(latest.reason || "上传失败，来源资料需要修正后重新采集").slice(0, 300);
             product.blockedAt = String(latest.at || "");
         }
+        applyNoticeViews(index.products, index.noticeStates || {});
     }
 
     /**
@@ -347,15 +362,15 @@ export function createStore(rootDir, options = {}) {
             ready: false,
             completeness: {}
         };
-        for (const { product, batch } of row.source) {
+        for (const { product, batch, groupProduct = product } of row.source) {
             current.goodsId = current.goodsId || product.goodsId || "";
             if (product.title && product.title.length >= current.title.length) current.title = product.title;
             current.category = current.category || product.category || "";
-            current.articleNo = current.articleNo || product.articleNo || "";
-            current.productExtCodes = [...new Set(current.productExtCodes.concat(product.productExtCodes || []))];
+            current.articleNo = current.articleNo || groupProduct.articleNo || "";
+            current.productExtCodes = [...new Set(current.productExtCodes.concat(groupProduct.productExtCodes || []))];
             current.skuExtCodes = [...new Set(current.skuExtCodes.concat(
-                product.skuExtCodes || [],
-                (product.skus || []).map((sku) => sku && sku.extCode)
+                groupProduct.skuExtCodes || [],
+                (groupProduct.skus || []).map((sku) => sku && sku.extCode)
             ))];
             if (product.captureEvidence?.primaryDetail === true) current.captureEvidence = { primaryDetail: true, source: "product-query", descriptionState: product.captureEvidence.descriptionState || "unknown" };
             // 同一件商品的详情可能来自多个编辑页接口，按键并集合并，避免后到的图文/合规字段覆盖先到内容。
@@ -432,6 +447,98 @@ export function createStore(rootDir, options = {}) {
             }
         }
         return changed;
+    }
+
+    /** 文件后端与 SQL 后端共用引用形状；同行任一 SPU 标记都会禁止整行传输。 */
+    function fileNoticeRefs(index, sourceStoreId, spuIds) {
+        const ids = [...new Set(spuIds.map(String))];
+        return ids.map(spuId => {
+            const ref = noticeRef(index.noticeStates?.[noticeStateKey(sourceStoreId, spuId)]);
+            if (!ref) return null;
+            const group = index.products.find(product => (product.sourceStoreIds || []).includes(sourceStoreId)
+                && (product.spuIds || [product.spuId]).includes(spuId));
+            ref.sendBlocked ||= Boolean(group?.blocked || group?.sendBlocked);
+            return ref;
+        }).filter(Boolean);
+    }
+
+    /** 当前引用必须从持久化实例读取；文件旧测试的人工索引也只在串行锁内补齐身份。 */
+    async function noticeRefs(sourceStoreId, spuIds) {
+        if (sql) return sql.noticeRefs(sourceStoreId, spuIds);
+        return enqueueMutation(async () => {
+            const index = await readIndex();
+            index.noticeStates ||= {};
+            if (refreshNoticeStates(index.noticeStates, index.batches).length) {
+                rebuildProducts(index);
+                await writeIndex(index);
+            }
+            return fileNoticeRefs(index, sourceStoreId, spuIds);
+        });
+    }
+
+    /** 只在最终交接点持来源锁；已有归属事务连接直接复用，禁止异步等待接收页面。 */
+    async function withNoticeDelivery(claimed, deliver, connection = null) {
+        if (sql) return sql.withNoticeDelivery(claimed, deliver, connection);
+        return enqueueMutation(async () => {
+            const index = await readIndex();
+            const stores = [...new Set(claimed.filter(item => item.sourceNoticeRef).map(item => item.sourceStoreId))];
+            const refs = stores.flatMap(id => fileNoticeRefs(index, id, claimed.filter(item => item.sourceStoreId === id).map(item => item.spuId)));
+            return deliverNoticeNow(deliver, filterNoticeDelivery(claimed, refs));
+        });
+    }
+
+    /** 入口已完成错误范围分类；当前实例/版本/代次一致才可保存第一次小型通知。 */
+    async function recordErrorNotice(ref, error, connection = null) {
+        if (sql) return sql.runMutation(() => sql.recordErrorNotice(ref, error), [ref.sourceStoreId], [], connection, { cleanupAfter: false });
+        return enqueueMutation(async () => {
+            const index = await readIndex();
+            const state = index.noticeStates?.[noticeStateKey(ref.sourceStoreId, ref.spuId)];
+            if (!noticeRefMatches(state, ref)) return { status: 'stale_or_deleted' };
+            const group = index.products.find(product => (product.sourceStoreIds || []).includes(ref.sourceStoreId)
+                && (product.spuIds || [product.spuId]).includes(ref.spuId));
+            if (!group) return { status: 'stale_or_deleted' };
+            // 同一归并行的其他原子 SPU 已报错时，只保留整行最早的通知，不另写第二个实例。
+            if (group.sendBlocked) return { status: 'already_marked' };
+            state.notice = boundedErrorNotice(error);
+            rebuildProducts(index);
+            await writeIndex(index);
+            return { status: 'marked' };
+        });
+    }
+
+    /** 详情显式绑定实例，已删除或重传的新实例不能读到上一实例的错误原因。 */
+    async function errorDetails(input) {
+        if (sql) return sql.errorDetails(input);
+        const index = await readIndex();
+        const state = index.noticeStates?.[noticeStateKey(input.sourceStoreId, input.spuId)];
+        if (!state || state.sourceInstanceId !== input.sourceInstanceId) return { notice: null, sendBlocked: false };
+        return { notice: state.notice, sendBlocked: fileNoticeRefs(index, input.sourceStoreId, [input.spuId])[0].sendBlocked };
+    }
+
+    /** 精确核对指定实例和预期代次才解除；同行所有成员推进代次，防止旧提示恢复禁传。 */
+    async function unblockErrorProducts(input, connection = null) {
+        const targets = noticeUnblockTargets(input);
+        if (sql) return sql.runMutation(() => sql.unblockErrorProducts(input), [input.sourceStoreId], [], connection, { cleanupAfter: false });
+        return enqueueMutation(async () => {
+            const index = await readIndex();
+            let cleared = 0;
+            const epochKeys = new Set();
+            for (const [spuId, expected] of targets) {
+                const state = index.noticeStates?.[noticeStateKey(input.sourceStoreId, spuId)];
+                if (!state || state.sourceInstanceId !== expected.sourceInstanceId || state.noticeEpoch !== expected.noticeEpoch) continue;
+                if (state.notice) cleared++;
+                state.notice = null;
+                epochKeys.add(noticeStateKey(input.sourceStoreId, spuId));
+                // 同行旧凭证也必须失效，但只解除请求精确指定的实例，不误清其他实例的错误。
+                const group = index.products.find(product => (product.sourceStoreIds || []).includes(input.sourceStoreId)
+                    && (product.spuIds || [product.spuId]).includes(spuId));
+                for (const member of group?.spuIds || []) epochKeys.add(noticeStateKey(input.sourceStoreId, member));
+            }
+            let advanced = 0;
+            for (const key of epochKeys) if (index.noticeStates?.[key]) { index.noticeStates[key].noticeEpoch++; advanced++; }
+            if (advanced) { rebuildProducts(index); await writeIndex(index); }
+            return { cleared, advanced };
+        });
     }
 
     /**
@@ -635,10 +742,13 @@ export function createStore(rootDir, options = {}) {
             applyFileFacts(record, onDisk, record?.storedName);
         }
 
+        // 同来源连续采集即使发生在同一毫秒，也要保持新批次的来源优先级，避免 SQL 读回倒序换版。
+        const sourceCreatedAt = index.batches.filter(item => String(item.sourceStoreId || '') === String(owner))
+            .reduce((latest, item) => Math.max(latest, Date.parse(item.createdAt) || 0), 0);
         const batch = {
             id: randomUUID().slice(0, 8),
             fingerprint,
-            createdAt: new Date().toISOString(),
+            createdAt: new Date(Math.max(Date.now(), sourceCreatedAt + 1)).toISOString(),
             label: options.label || parsed.shopName || "未命名批次",
             shopName: parsed.shopName || options.shopName || "",
             sourceStoreId: parsed.sourceStoreId || options.sourceStoreId || "",
@@ -664,31 +774,61 @@ export function createStore(rootDir, options = {}) {
             source: options.source || (options.seed ? "seed" : "upload")
         };
         index.batches.unshift(batch);
-        // 重新采集并入库即视为“这件商品已按新资料覆盖”，解除红标；清除条件必须是重新采集，手工删除库存不解除。
+        // 重新采集可清历史红标，同时撤销旧通知凭证；新版错误事实仍须实际换版才能解除。
         const incomingStoreId = batch.sourceStoreId || options.sourceStoreId || "";
         const incomingSpuIds = parsed.products.map((product) => String(product.spuId || "")).filter(Boolean);
         if (incomingStoreId && incomingSpuIds.length) {
             const blocked = readBlockedMap(index);
             let cleared = 0;
+            const clearedKeys = [];
             for (const spuId of incomingSpuIds) {
                 const key = blockedProductKey(incomingStoreId, spuId);
                 if (!blocked[key]) continue;
+                clearedKeys.push(key);
                 delete blocked[key];
                 cleared += 1;
             }
-            if (cleared) index.blockedProducts = blocked;
+            if (cleared) { index.blockedProducts = blocked; await invalidateLegacyNoticeRefs(index, clearedKeys); }
         }
         rebuildProducts(index);
         await writeIndex(index);
         return { batch, reused: false, warnings: parsed.warnings };
     }
 
+    /** 解除标记仅递增商品提示代次，不记录任务；旧投递凭证不能在解除后重新标红。 */
+    function advanceFailureEpoch(index, key) {
+        index.failureEpochs = { ...index.failureEpochs, [key]: Number(index.failureEpochs?.[key] || 0) + 1 };
+    }
+
+    /** 只对实际清掉的历史红标撤销当前同行凭证；批量解除同一行只推进一次，不清新版首因。 */
+    async function invalidateLegacyNoticeRefs(index, clearedKeys) {
+        const pairs = [...new Set(clearedKeys)].map(key => key.split('\u0000'));
+        if (sql) return sql.invalidateLegacyNoticeRefs(pairs);
+        const keys = new Set();
+        for (const [storeId, spuId] of pairs) {
+            keys.add(noticeStateKey(storeId, spuId));
+            for (const group of index.products || []) {
+                if (!(group.sourceStoreIds || []).includes(storeId) || !(group.spuIds || [group.spuId]).includes(spuId)) continue;
+                for (const member of group.spuIds || [group.spuId]) keys.add(noticeStateKey(storeId, member));
+            }
+        }
+        for (const key of keys) if (index.noticeStates?.[key]) index.noticeStates[key].noticeEpoch++;
+    }
+
+    /** 下发凭证只携带来源商品的标记代次，保持人工新发送与旧迟到提示的边界。 */
+    async function getFailureEpochs(storeId, spuIds) {
+        await ensure();
+        if (sql) return sql.getFailureEpochs(storeId, spuIds);
+        const index = JSON.parse(await readFile(indexPath, 'utf8'));
+        return Object.fromEntries(spuIds.map(spuId => [spuId, Number(index.failureEpochs?.[blockedProductKey(storeId, spuId)] || 0)]));
+    }
+
     /**
-     * 保存来源商品的历史失败提示；发送资格由目标任务决定，不再根据该提示禁传。
-     * 只接受来源店 + SPU：服务器不判断商品内容缺什么，只记录“这件上传没过”这个事实；
+     * 保存来源商品的处理异常提示；当前红标阻止后续分发，目标店执行仍由插件判断。
+     * 只接受来源店 + SPU：服务器不判断商品内容缺什么，只记录插件给出的异常提示；
      * 重复命中（目标店已存在同款）不算内容缺失，由调用方过滤，不能标红。
      */
-    async function markProductBlocked({ storeId, spuId, reason } = {}) {
+    async function markProductBlocked({ storeId, spuId, reason, sourceBatchId, eventId, failureEpoch } = {}) {
         const key = blockedProductKey(storeId, spuId);
         const [store, spu] = key.split("\u0000");
         if (!store || !spu) {
@@ -698,20 +838,31 @@ export function createStore(rootDir, options = {}) {
         }
         return enqueueMutation(async () => {
             await ensure();
+            if (sql) return sql.markProductBlocked({ storeId: store, spuId: spu, reason, sourceBatchId, eventId, failureEpoch });
             const index = sql ? await readIndex() : JSON.parse(await readFile(indexPath, "utf8"));
             const blocked = readBlockedMap(index);
+            if (failureEpoch !== undefined && failureEpoch !== Number(index.failureEpochs?.[key] || 0)) return { blocked: false, ignored: true };
+            // 插件迟到提示不能给重新采集后的新资料或已删除商品补回旧红标；核对与写入共用来源店锁。
+            if (sourceBatchId) {
+                const batches = (index.batches || []).filter(batch => batch.sourceStoreId === store
+                    && (batch.products || []).some(product => String(product.spuId) === spu));
+                const latest = [...batches].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+                if (!latest || latest.id !== sourceBatchId) return { blocked: false, ignored: true };
+            }
             const previous = blocked[key];
+            // 去重按来源商品而非投递事件：多个目标同时报错只标红一次，保留首次原因与时间。
+            if (previous) return { ...previous, blocked: true, skipped: true, changed: false };
             blocked[key] = {
                 storeId: store,
                 spuId: spu,
                 reason: String(reason || "").slice(0, 300),
                 at: new Date().toISOString(),
-                // 同一件商品被标记的次数用于排查反复失败，不参与是否标红的判断。
-                count: Number(previous && previous.count ? previous.count : 0) + 1
+                ...(eventId ? { eventId } : {}),
+                count: 1
             };
             index.blockedProducts = blocked;
             await writeIndex(index);
-            return { blocked: true, key, ...blocked[key] };
+            return { blocked: true, changed: true, key, ...blocked[key] };
         });
     }
 
@@ -728,14 +879,18 @@ export function createStore(rootDir, options = {}) {
             const index = sql ? await readIndex() : JSON.parse(await readFile(indexPath, "utf8"));
             const blocked = readBlockedMap(index);
             let cleared = 0;
+            const clearedKeys = [];
             for (const spuId of ids) {
                 const key = blockedProductKey(store, spuId);
                 if (!blocked[key]) continue;
+                advanceFailureEpoch(index, key);
+                clearedKeys.push(key);
                 delete blocked[key];
                 cleared += 1;
             }
             if (!cleared) return { cleared: 0 };
             index.blockedProducts = blocked;
+            await invalidateLegacyNoticeRefs(index, clearedKeys);
             await writeIndex(index);
             return { cleared };
         });
@@ -748,7 +903,7 @@ export function createStore(rootDir, options = {}) {
      *
      * scope 是调用方给的可见店铺集合：只解除落在这些店里的标记。
      * 少了这道校验，任何登录用户都能拿一串 SPU 解除别人店铺的红标，
-     * 绕过"标红禁止再次上传"的保护把问题商品推进去。
+     * 擅自清除别人商品的异常提示。
      */
     async function unblockProducts(spuIds, scope = null) {
         const ids = [...new Set((Array.isArray(spuIds) ? spuIds : []).map((value) => String(value || "").trim()).filter(Boolean))];
@@ -761,9 +916,16 @@ export function createStore(rootDir, options = {}) {
             await ensure();
             const index = sql ? await readIndex() : JSON.parse(await readFile(indexPath, "utf8"));
             const blocked = readBlockedMap(index);
+            // 页面只选中归并行的主 SPU；实际红标可能在同行另一成员，必须按当前行展开。
+            const expandedIds = new Set(ids);
+            for (const product of index.products || []) {
+                const members = product.spuIds || [product.spuId];
+                if (members.some(id => ids.includes(String(id)))) for (const id of members) expandedIds.add(String(id));
+            }
             // 先按当前商品表反查每个 SPU 的来源店；索引里找不到时退回扫描红标表自身的 storeId。
             const storeIdsBySpu = new Map();
             for (const product of index.products || []) {
+                if (!(product.spuIds || [product.spuId]).some(id => ids.includes(String(id)))) continue;
                 for (const spuId of [product.spuId, ...(product.spuIds || [])]) {
                     const key = String(spuId || "").trim();
                     if (!key) continue;
@@ -773,10 +935,11 @@ export function createStore(rootDir, options = {}) {
                 }
             }
             let cleared = 0;
+            const clearedKeys = [];
             const missing = [];
             // 只允许操作落在可见范围内的店铺标记；范围外的一律当作"找不到"，不泄露它是否存在。
             const inScope = (storeId) => !scope || scope.has(String(storeId));
-            for (const spuId of ids) {
+            for (const spuId of expandedIds) {
                 const storeIds = storeIdsBySpu.get(spuId);
                 let hit = false;
                 if (storeIds && storeIds.size) {
@@ -784,17 +947,21 @@ export function createStore(rootDir, options = {}) {
                         if (!inScope(storeId)) continue;
                         const key = blockedProductKey(storeId, spuId);
                         if (!blocked[key]) continue;
+                        advanceFailureEpoch(index, key);
+                        clearedKeys.push(key);
                         delete blocked[key];
                         cleared += 1;
                         hit = true;
                     }
                 }
-                if (!hit) {
+                if (!hit && !storeIds?.size) {
                     // 商品表里查不到来源店时退回按红标表匹配，保证标记能被解除而不是卡住。
                     for (const key of Object.keys(blocked)) {
                         const [storeId, blockedSpu] = key.split("\u0000");
                         if (blockedSpu !== spuId) continue;
                         if (!inScope(storeId)) continue;
+                        advanceFailureEpoch(index, key);
+                        clearedKeys.push(key);
                         delete blocked[key];
                         cleared += 1;
                         hit = true;
@@ -804,6 +971,7 @@ export function createStore(rootDir, options = {}) {
             }
             if (!cleared) return { cleared: 0, missing };
             index.blockedProducts = blocked;
+            await invalidateLegacyNoticeRefs(index, clearedKeys);
             await writeIndex(index);
             return { cleared, missing };
         });
@@ -811,7 +979,7 @@ export function createStore(rootDir, options = {}) {
 
     async function listOverview() {
         const index = await readIndex();
-        const products = Array.isArray(index.products) ? index.products : [];
+        const products = Array.isArray(index.products) ? index.products.map(noticeDisplayProduct) : [];
         return {
             batchCount: index.batches.length,
             productCount: products.length,
@@ -825,8 +993,8 @@ export function createStore(rootDir, options = {}) {
             fileCount: index.batches.reduce((sum, batch) => sum + (batch.files || []).length, 0),
             // 保留该字段兼容旧客户端；新删除语义会物理清理记录，因此正常状态下始终为 0。
             excludedCount: (index.excludedSpuIds || []).length,
-            // 已判定上传失败、禁止再传的商品数；解除条件是重新采集覆盖。
-            blockedCount: products.filter((item) => item.blocked).length,
+            // 历史红标与新禁传都能被筛选，每个归并行只计一次，不按原子 SPU 重复计数。
+            blockedCount: products.filter((item) => item.blocked || item.sendBlocked).length,
             batches: index.batches.map(summarizeBatch),
             products
         };
@@ -856,7 +1024,17 @@ export function createStore(rootDir, options = {}) {
         const product = index.products.find((item) => item.spuId === String(spuId) || (item.spuIds || []).includes(String(spuId)));
         if (!product) return null;
         const related = index.batches.filter((batch) => (batch.products || []).some((item) => (product.spuIds || [product.spuId]).includes(String(item.spuId || ""))));
-        return { product, batches: related.map(summarizeBatch) };
+        return { product: noticeDisplayProduct(product), batches: related.map(summarizeBatch) };
+    }
+
+    /** 状态读取只返回已请求且仍有权限的实例；生产 MySQL 使用有限投影，文件模式沿用单索引。 */
+    async function readProductStatuses(requested, scope) {
+        if (sql) return sql.productStatuses(requested, scope);
+        const index = await readIndex();
+        const ids = new Set(requested.map(ref => ref.spuId));
+        const products = (index.products || []).filter(product => ids.has(String(product.spuId))
+            && (!scope || (product.sourceStoreIds || []).some(id => scope.has(String(id)))));
+        return productStatusResponse(requested, products);
     }
 
     /**
@@ -1041,7 +1219,7 @@ export function createStore(rootDir, options = {}) {
             if (blockedKeys.length) index.blockedProducts = blocked;
 
             if (keepProducts) {
-                // 只清红标；商品与批次原样保留。
+                // 只清历史展示红标；商品和禁传实例保留，不能借保留资料的删店操作解除新通知。
                 if (blockedKeys.length) await writeIndex(index);
                 return { storeId: id, mode: "keep", deletedProductCount: 0, deletedBatchCount: 0, deletedFileCount: 0, clearedBlockedCount: blockedKeys.length };
             }
@@ -1066,6 +1244,10 @@ export function createStore(rootDir, options = {}) {
                 deletedBatchCount += 1;
             }
             index.batches = nextBatches;
+            if (sql) await sql.deleteNoticeStates([id]);
+            for (const [key, state] of Object.entries(index.noticeStates || {})) {
+                if (state.sourceStoreId === id) delete index.noticeStates[key];
+            }
             delete index.excludedSpuIds;
             rebuildProducts(index);
             await writeIndex(index);
@@ -1136,6 +1318,17 @@ export function createStore(rootDir, options = {}) {
     async function purgeProductsFromIndex(index, productIds, storeScope = null) {
         const requestedIds = new Set((productIds || []).map((value) => String(value || "").trim()).filter(Boolean));
         if (!requestedIds.size) return { changed: false, cleanupFiles: [], deletedFileCount: 0, deletedBatchCount: 0 };
+        // 实例与旧红标按实际删除来源范围清理，不能误删其他店的同名 SPU。
+        const deletingStores = [...new Set((index.batches || []).filter(batch => !storeScope || storeScope.has(String(batch.sourceStoreId || '')))
+            .map(batch => String(batch.sourceStoreId || '')))];
+        if (sql) await sql.deleteNoticeStates(deletingStores, [...requestedIds]);
+        for (const [key, state] of Object.entries(index.noticeStates || {})) {
+            if (deletingStores.includes(state.sourceStoreId) && requestedIds.has(state.spuId)) delete index.noticeStates[key];
+        }
+        for (const key of Object.keys(readBlockedMap(index))) {
+            const [storeId, spuId] = key.split('\u0000');
+            if (deletingStores.includes(storeId) && requestedIds.has(spuId)) delete index.blockedProducts[key];
+        }
         const expandedIds = expandProductDeletionIds(index, requestedIds, storeScope);
         const cleanupFiles = new Set();
         let deletedBatchCount = 0;
@@ -1278,6 +1471,19 @@ export function createStore(rootDir, options = {}) {
         return { updated };
     }
 
+    /** 离线迁移校正当前来源投影；数量变化须先人工核对，不能用修复工具悄悄增删商品。 */
+    async function rebuildNoticeProjection(sourceStoreId) {
+        if (!sql || !sourceStoreId) throw Error('投影修复仅用于已停服的 MySQL 来源店迁移');
+        return sql.runMutation(async () => {
+            const index = await sql.read([sourceStoreId]);
+            const previousCount = index.products.length;
+            rebuildProducts(index);
+            if (index.products.length !== previousCount) throw Error('当前来源投影数量异常，需先核对历史归并记录再迁移');
+            await sql.write(index);
+            return { sourceStoreId, products: index.products.length };
+        }, [sourceStoreId], [], null, { cleanupAfter: false });
+    }
+
     /** 只在显式离线迁移中恢复旧资料；正常启动不会偷偷导入旧 JSON 覆盖新数据库。 */
     async function importLegacyIndex(index) {
         if (!sql) throw new Error("迁移要求启用 MySQL");
@@ -1301,9 +1507,9 @@ export function createStore(rootDir, options = {}) {
                 const facts = await readExistingFileFacts(file.storedName);
                 if (!facts || facts.fileSha256 !== file.fileSha256 || facts.fileBytes !== Number(file.fileBytes)) throw Object.assign(Error('来源原始文件字节校验失败'), { status: 422 });
             }
-            // 新账户链保存完整摘要命名的单一原包；核对字节后逐件重建，避免主进程JSON.parse整个64MiB。
-            if (batch.files.length === 1 && file.fileSha256 && !file.contentSha256
-                && file.storedName === `${file.fileSha256}-capture.json`) {
+            // 单一原包已有真实字节证据时可逐件重建，不依赖旧账户运行器的文件名；大包发送不再整包解析。
+            if (batch.files.length === 1 && file.fileSha256
+                && (Number(file.fileBytes) > 8 * 1024 * 1024 || (!file.contentSha256 && file.storedName === `${file.fileSha256}-capture.json`))) {
                 const full = path.join(filesDir, file.storedName);
                 const metadata = await readCaptureMetadata(full);
                 if (metadata.source?.sourceStoreId !== batch.sourceStoreId) throw Object.assign(Error('原包与批次的来源店铺不一致'), { status: 422 });
@@ -1347,19 +1553,20 @@ export function createStore(rootDir, options = {}) {
             }
             verified.push(product);
             } catch (error) {
-                // 批量清单可收集单件异常继续确认其余版本；正式创建任务仍沿用遇错停止的原子校验。
+                // 可选批量核验收集单件异常；一次性发送默认遇错停止，不能把错误正文当作完整商品传输。
                 if (!options.collectErrors || error.status !== 422) throw error;
                 errors.push({ spuId: String(product.spuId), reason: error.message });
             }
         }
         return options.collectErrors ? { products: verified, errors } : verified;
     }
-    const api = { ensure, importFiles, importPreparedCapture, deleteProducts, markProductBlocked, clearProductBlocked, unblockProducts, listOverview, indexSignature, getBatch, getProduct, readStoredFile, attachSourceStore, storeDataImpact, deleteStoreData, filesDir, importLegacyIndex, verifyBatchTransfer };
+    const api = { ensure, importFiles, importPreparedCapture, deleteProducts, markProductBlocked, getFailureEpochs, clearProductBlocked, unblockProducts, listOverview, indexSignature, getBatch, getProduct, readStoredFile, attachSourceStore, storeDataImpact, deleteStoreData, filesDir, importLegacyIndex, rebuildNoticeProjection, verifyBatchTransfer,
+        noticeRefs, withNoticeDelivery, recordErrorNotice, errorDetails, unblockErrorProducts, readProductStatuses };
     if (sql) {
         // 预查询沿用业务层的输入归一化，非法请求仍由原入口返回明确校验错误。
         const lookupIds = ids => (Array.isArray(ids) ? ids : []).map(id => String(id || "").trim()).filter(Boolean);
         // 已知来源直接加该店锁；按 SPU 操作先用小型关联索引解析来源，再在锁内读当前资料。
-        api.markProductBlocked = input => sql.runMutation(() => markProductBlocked(input), [String(input?.storeId || "").trim()]);
+        api.markProductBlocked = (input, connection = null) => sql.runMutation(() => markProductBlocked(input), [String(input?.storeId || "").trim()], [], connection);
         api.clearProductBlocked = (id, ids) => sql.runMutation(() => clearProductBlocked(id, ids), [String(id || "").trim()]);
         api.deleteStoreData = (id, options) => sql.runMutation(() => deleteStoreData(id, options), [String(id || "").trim()]);
         api.unblockProducts = async (ids, scope = null) => {

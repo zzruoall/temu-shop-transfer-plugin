@@ -51,40 +51,6 @@ const failed = { ...third.base, phase: 'preflight_failed', reason: '来源字段
 await queue.directProgress(failed);
 assert.equal((await queue.directProgress(failed)).acknowledged, true);
 
-const memory = {}, requests = [], logs = [];
-let online = false, dropResponse = true, now = Date.now();
-const outbox = await readFile(new URL('../../plugin/direct-receipts.js', import.meta.url), 'utf8');
-/** 模拟重启时保留 storage，丢弃内存队列；模拟网络请求仅调用上面的临时仓库。 */
-function boot() {
-    const context = vm.createContext({ crypto, Date: class extends Date { static now() { return now; } },
-        chrome: { alarms: { create: async () => {} }, storage: { local: {
-            get: async key => structuredClone(key === null ? memory : { [key]: memory[key] }),
-            set: async values => Object.assign(memory, structuredClone(values)), remove: async key => { delete memory[key]; }
-        } } }, TemuOperationLog: { append: async value => { logs.push(value); } },
-        hubJson: async (_url, body) => {
-            requests.push(body); if (!online) throw Error('offline');
-            const reply = await queue.directProgress(body);
-            if (dropResponse) { dropResponse = false; throw Error('response_lost'); }
-            return reply;
-        } });
-    vm.runInContext(outbox, context);
-    return context.TemuDirectReceipts;
-}
-let receipts = boot();
-const fourth = await receive(products[0].spuId);
-const pending = await receipts.send({ ...fourth.base, phase: 'preflight_failed', reason: '转换失败' });
-assert.equal(pending.pending, true);
-assert.equal(Object.keys(memory).length, 1);
-const receiptId = Object.values(memory)[0].body.receiptId;
-receipts = boot(); online = true; now += 41000;
-await receipts.flush();
-assert.equal(Object.keys(memory).length, 1, '服务端已提交但响应丢失，必须保留原回执');
-assert.equal(Object.values(memory)[0].body.receiptId, receiptId);
-receipts = boot(); now += 71000;
-await receipts.flush();
-assert.equal(Object.keys(memory).length, 0);
-assert.ok(receiptId);
-await assert.rejects(receipts.send({ phase: 'begin' }), /不允许/);
 
 const context = vm.createContext({ window: {} });
 vm.runInContext(await readFile(new URL('../../plugin/direct-source-preservation.js', import.meta.url), 'utf8'), context);
@@ -96,4 +62,4 @@ assert.equal(preserve(source, request), true);
 for (const mutate of [r => { r.productSkcReqs[0].extCode = ''; }, r => { r.carouselImageUrls = []; }, r => { delete r.productSkcReqs[0].productSkuReqs[0].supplierPrice; }, r => { delete r.productSkcReqs[0].productSkuReqs[0].productSkuMultiPackReq; }]) {
     const broken = structuredClone(request); mutate(broken); assert.throws(() => preserve(source, broken), /丢失或改变/);
 }
-console.log(JSON.stringify({ passed: true, cancelledDoesNotOccupy: true, unknownNeverResubmitted: true, receiptsIdempotent: true, noGlobalBlock: true, preservesPresentFields: true, realPlatformRequests: 0, temporaryRoot: root }));
+console.log(JSON.stringify({ passed: true, historicalQueueIsolation: true, noGlobalBlock: true, preservesPresentFields: true, realPlatformRequests: 0, temporaryRoot: root }));

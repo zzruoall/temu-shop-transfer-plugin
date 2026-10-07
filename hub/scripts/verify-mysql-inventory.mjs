@@ -49,7 +49,11 @@ const instrumented = {
                         current.entered();
                         await current.wait;
                     }
+                    const queryStart = performance.now();
                     const result = await target.query(sql, params);
+                    if (process.argv.includes('--scale-5000') && performance.now() - queryStart > 1000) {
+                        console.log(JSON.stringify({ slowQueryMs: Math.round(performance.now() - queryStart), sql: sql.slice(0, 200) }));
+                    }
                     if (fileGate && lane === "ingest" && sql.startsWith("INSERT INTO hub_inventory_file_locks")) {
                         const current = fileGate;
                         fileGate = null;
@@ -131,8 +135,19 @@ async function verifyScale5000(store) {
         pageTimes.sort((a, b) => a - b);
         timings.pageP50Ms = Math.round(pageTimes[9]);
         timings.pageP95Ms = Math.round(pageTimes[18]);
-        await measure("markOneMs", () => store.markProductBlocked({ storeId: source, spuId: "9700000000", reason: "五千件下单商品标红" }));
+        assert.ok(timings.pageP95Ms < 5000, `五千件列表分页 P95 不得超过 5 秒，实际 ${timings.pageP95Ms}ms`);
+        // 大库存也走新版来源实例通知，验证真实标记集合非空时的统计和过滤，不只测旧展示红标。
+        const [noticeRef] = await store.noticeRefs(source, ['9700000000']);
+        const notice = await measure("markOneMs", () => store.recordErrorNotice(noticeRef,
+            { reason: '五千件单商品资料错误', code: 'PRODUCT_FIELD_INVALID', stage: 'prepare', targetStoreId: 'SCALE-TARGET' }));
+        assert.equal(notice.status, 'marked');
         assert.equal((await store.getProduct("9700000000")).product.blocked, true);
+        const markedPage = await measure('markedPageMs', () => store.listOverviewPage(scope, new URL('http://local/?blocked=blocked')));
+        assert.equal(markedPage.productCount, count);
+        assert.equal(markedPage.blockedCount, 1);
+        assert.equal(markedPage.productTotal, 1);
+        assert.equal(markedPage.products[0].sendBlocked, true);
+        assert.ok(timings.markedPageMs < 5000, '五千件标记筛选不得超过 5 秒');
         await measure("incrementOneMs", () => store.importFiles(upload(source, "9700050001"), { sourceStoreId: source }));
         assert.equal((await store.listOverviewPage(scope, new URL("http://local/?productLimit=0"))).productCount, count + 1);
         mutationPayloadIds = new Set();
@@ -309,8 +324,10 @@ try {
         () => contender.protectFile("lock-contention.json"), ["same-source"], ["same-spu"]
     )));
     assert.equal(concurrent.filter(item => item.status === "rejected").length, 0, JSON.stringify(concurrent.filter(item => item.status === "rejected").map(item => item.reason.message)));
-    const marks = await Promise.all(Array.from({ length: 24 }, () => store.markProductBlocked({ storeId: "M", spuId: "16001", reason: "并发累计" })));
-    assert.equal(Math.max(...marks.map(mark => mark.count)), 25, "来源锁必须防止并发红标计数丢失");
+    // 历史红标也保留首次事实；重复请求不能累计次数或覆盖原因，旧累计断言已经不符合协议。
+    const marks = await Promise.all(Array.from({ length: 24 }, () => store.markProductBlocked({ storeId: "M", spuId: "16001", reason: "并发重复" })));
+    assert.equal(Math.max(...marks.map(mark => mark.count)), 1, "重复红标不能增加首次标记次数");
+    assert.ok(marks.every(mark => mark.reason === '回填后仍可标红' && mark.skipped));
     const [[dangling]] = await db.query("query", `SELECT COUNT(*) AS n FROM hub_batch_products b LEFT JOIN hub_inventory_payloads p ON p.id=b.payload_id WHERE p.id IS NULL`);
     assert.equal(Number(dangling.n), 0);
     const scale = process.argv.includes("--scale-5000") ? await verifyScale5000(store) : undefined;

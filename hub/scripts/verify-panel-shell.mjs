@@ -90,7 +90,7 @@ async function seedBoundStore(context) {
     }, { storeId: FIXTURE_STORE_ID, storeName: FIXTURE_STORE_NAME });
 }
 
-/** 逐店停止标记的落盘键。刷新后仍存在，才说明“刷新页面不再自动继续上传”是真的。 */
+/** 历史本地停止标记只用于核对升级清理，当前暂停状态不得持久化到新页面。 */
 async function pauseKeys(context) {
     const worker = await backgroundWorker(context);
     return worker.evaluate(async () => Object.keys(await chrome.storage.local.get(null)).filter(key => key.startsWith("directPause:")));
@@ -304,19 +304,23 @@ try {
     assertPanelWithinViewport(restoredHost, "历史位置恢复");
     await clickPanelNode(client, "toggle");
     /**
-     * 展开后要等夹取真正生效再断言。
+     * 展开后要等**展开本身与夹取都完成**再断言。
      *
-     * 夹取由 ResizeObserver 异步触发；固定 100ms 在慢机器上可能早于回调，
-     * 让这条断言时有时无（实测同一份代码 3 次里失败 1 次）。
-     * 这里等到"面板底部回到视口内"或超时，让结论可重复；
+     * 两个坑都要避开：
+     * 1) 夹取由 ResizeObserver 异步触发，固定等待会早于回调；
+     * 2) 只等"在视口内"会**提前满足**——展开尚未发生时面板本来就在视口内，
+     *    于是等到的是旧状态，断言随后读到已展开但未夹取的状态（实测 2/4 失败）。
+     * 因此同时要求：高度确实变大了（展开生效）且底部仍在视口内（夹取生效）。
      * 超时后仍由 assertPanelWithinViewport 给出具体数值，不掩盖失败。
      */
     await page.waitForFunction(() => {
         const host = document.getElementById('temu-local-dataset-panel');
         if (!host) return false;
         const rect = host.getBoundingClientRect();
-        return rect.bottom <= window.innerHeight + 1 && rect.height > 0;
-    }, null, { timeout: 3000 }).catch(() => { /* 超时后由下面的断言给出具体数值 */ });
+        // 工具区展开后高度会明显大于折叠态（折叠约 300px、展开约 580px）。
+        const expanded = rect.height > 450;
+        return expanded && rect.bottom <= window.innerHeight + 1;
+    }, null, { timeout: 5000 }).catch(() => { /* 超时后由下面的断言给出具体数值 */ });
     assertPanelWithinViewport(await panelHostState(page, "temu-local-dataset-panel"), "展开工具后");
     await clickPanelNode(client, "toggle");
 
@@ -354,15 +358,12 @@ try {
     assert.equal(restored.miniVisible, true, "还原后应重新显示收缩入口");
 
     // 停止接口创建按钮：没有本店待办时不应占位，否则面板长期挂一个点了没反应的按钮。
-    // 协议 1 的店铺在未点"启用本轮"前即为停止态：按钮显示"启用本轮"是正常初始状态。
-    // 注意：启用/停止轮次需要服务端参与（/api/jobs/execution-run），本测试用 route.abort()
-    // 切断全部网络，所以这里只核对初始渲染与文案，不模拟需要服务端的往返；
-    // 轮次启停的语义由 verify-execution-runs.mjs 在服务端侧覆盖。
+    // 10.10.71 初始化不再冒充主动暂停；真实轮次控制由独立的本地队列回归覆盖。
     const idle = await stopButtonState(client);
-    assert.equal(idle.visible, true, `未启用轮次时应露出启用入口，实际 ${JSON.stringify(idle)}`);
-    assert.equal(idle.text, "启用本轮", `未启用时按钮文案应为启用本轮，实际 ${idle.text}`);
-    assert.equal(idle.disabled, false, "启用入口不应被禁用，否则操作者点不动");
-    assert.equal(idle.progressPaused, true, "未启用时进度块应为暂停配色，与按钮文案一致");
+    assert.equal(idle.visible, false, `空队列不能显示暂停或继续，实际 ${JSON.stringify(idle)}`);
+    assert.equal(idle.progressVisible, false, '初始化不得显示空任务进度卡');
+    assert.equal(idle.progressPaused, false, '初始化不是用户主动暂停');
+    assert.equal(idle.headStage, '准备就绪');
     assert.deepEqual(await pauseKeys(context), [], "初始不应存在任何停止标记");
 
     /*
@@ -437,7 +438,7 @@ try {
         compactAfterReload,
         restoredAfterReload,
         pageScope: { onCreatePage, backOnList },
-        // 只报告壳层可验证的初始态；轮次启停需要服务端，由 verify-execution-runs.mjs 覆盖。
+        // 壳层只核对初始空状态；本地队列控制由 verify-plugin-relay.mjs 覆盖。
         stop: { idle }
     }));
 } finally {

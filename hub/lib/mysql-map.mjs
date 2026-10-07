@@ -52,7 +52,8 @@ export function createMysqlMap(database, domain, field) {
         if (context.getStore()) return fn();
         return database.transaction("maintenance", async conn => {
             await conn.query("INSERT INTO hub_map_locks(domain) VALUES(?) ON DUPLICATE KEY UPDATE domain=VALUES(domain)", [domain]);
-            return context.run(conn, fn);
+            // 允许受控调用复用目录事务连接，避免持有单连接维护池时再申请连接自等待。
+            return context.run(conn, () => fn(conn));
         });
     }
     return { read, write, transaction };

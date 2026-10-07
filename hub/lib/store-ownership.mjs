@@ -10,7 +10,7 @@
  * - 管理员可改派（员工离职、店铺换人），改派即转移归属，数据随之转移。
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { createMysqlMap } from "./mysql-map.mjs";
 
@@ -77,6 +77,8 @@ export function createStoreOwnership(rootDir, options = {}) {
             ownerName: text(entry.ownerName),
             storeName: text(entry.storeName),
             claimedAt: text(entry.claimedAt),
+            // 旧目录用认领时间作兼容代次；新认领用随机标识防止同账号解绑再认领复活旧授权。
+            claimId: text(entry.claimId) || text(entry.claimedAt),
             claimedBySelf: entry.claimedBySelf !== false
         };
     }
@@ -101,6 +103,19 @@ export function createStoreOwnership(rootDir, options = {}) {
     async function findOwner(storeId) {
         const assignments = await listAssignments();
         return assignments[text(storeId)] || null;
+    }
+    /** 异常标记必须与归属改派互斥；SQL 下把同一连接交给库存写入，不嵌套申请连接。 */
+    async function withStableOwners(expected, fn) {
+        return withLock(async connection => {
+            const state = await readState();
+            for (const [storeId, snapshot] of Object.entries(expected)) {
+                const current = normalize(state.assignments[storeId]);
+                if ((current?.ownerId || '') !== (snapshot.ownerId || '') || (current?.claimId || '') !== (snapshot.claimId || '')) {
+                    throw Object.assign(Error('failure_source_changed'), { status: 409 });
+                }
+            }
+            return fn(connection);
+        });
     }
 
     /**
@@ -140,6 +155,7 @@ export function createStoreOwnership(rootDir, options = {}) {
                     ownerName,
                     storeName: request.storeName || existing?.storeName || "",
                     claimedAt,
+                    claimId: existing?.claimId || randomUUID(),
                     claimedBySelf: true
                 };
                 state.assignments[storeId] = entry;
@@ -185,6 +201,7 @@ export function createStoreOwnership(rootDir, options = {}) {
                 ownerName: text(user.username),
                 storeName: text(storeName) || previous?.storeName || "",
                 claimedAt: new Date().toISOString(),
+                claimId: randomUUID(),
                 claimedBySelf: false
             };
             state.assignments[id] = entry;
@@ -247,6 +264,7 @@ export function createStoreOwnership(rootDir, options = {}) {
                 ownerName: text(ownerName),
                 storeName: text(storeName),
                 claimedAt: text(claimedAt) || new Date().toISOString(),
+                claimId: randomUUID(),
                 claimedBySelf: false
             };
             await writeState(state);
@@ -270,5 +288,5 @@ export function createStoreOwnership(rootDir, options = {}) {
         return createHash("sha256").update(stablePayload).digest("base64url");
     }
 
-    return { listAssignments, ownedStoreIds, findOwner, claim, claimMany, release, reassign, forceRelease, releaseByOwner, restoreAssignment, liveSignature };
+    return { listAssignments, ownedStoreIds, findOwner, withStableOwners, claim, claimMany, release, reassign, forceRelease, releaseByOwner, restoreAssignment, liveSignature };
 }

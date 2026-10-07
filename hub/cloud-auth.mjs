@@ -1,8 +1,8 @@
 /**
  * 云端认证：用户会话 + 插件令牌，两者权限边界严格分离。
  *
- * 关键安全约束：插件令牌只允许访问插件侧接口（上传采集包、登记店铺、领取任务、回传结果），
- * 绝不能读改用户数据。此前插件令牌与管理员等价，任何能伪造 Origin 头的客户端都能拿到全量权限。
+ * 关键安全约束：插件令牌只允许上传、连接与接收；失败提示还须携带商品专用签名授权。
+ * 不能借失败提示读取或任意改写库存，更不能回传完整执行状态或取得管理员权限。
  *
  * 用户口令一律 scrypt 加盐，会话用独立 sessionSecret 签名，不与任何用户口令哈希共用密钥。
  */
@@ -15,9 +15,9 @@ import { normalizeBasePathValue, resolveRequestBasePath, stripRequestBasePath } 
 
 /**
  * 插件令牌的可访问路径白名单。只有这些接口允许用插件令牌访问；
- * 用户数据接口（商品库、任务列表、日志、导入、删除等）一律要求用户会话或设备令牌。
+ * 普通用户数据接口一律要求用户会话或设备令牌；商品失败提示另由投递签名限制写入范围。
  */
-const PLUGIN_SCOPED_PATHS = /^\/api\/(?:ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|ingest-info|plugin\/register|agents\/register|jobs\/(?:claim|report|target-task-states|direct-progress))$/;
+const PLUGIN_SCOPED_PATHS = /^\/api\/(?:ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|ingest-info|plugin\/register|agents\/register|jobs\/claim|products\/(?:failure|error-notice))$/;
 
 export function createCloudAuth({ dataRoot, credentialPath }) {
     const users = createUsers(dataRoot);
@@ -226,7 +226,7 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
      *
      * 关键在于"非管理员一律拒绝"：普通用户即使打开管理登录页、输入自己的正确口令，
      * 也不能拿到管理站的会话——否则"分开设计"就只是外观上的分开。
-     * 文案与普通登录一致地含糊（"账号或密码错误"），避免被用来枚举哪个账号是管理员。
+     * 只有口令核验成功后才说明角色不符；无效口令不透露账号角色。
      */
     async function handleAdminLogin(req, res, basePrefix) {
         const ip = clientIp(req);
@@ -265,7 +265,7 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
      * 两个站点各有各的入口，退出后应该留在自己这边。
      */
     function handleAdminLogout(res, basePrefix) {
-        res.writeHead(303, { location: `${basePrefix}/admin`, 'set-cookie': clearSessionCookie(basePrefix), 'cache-control': 'no-store' });
+        res.writeHead(303, { location: `${basePrefix}/admin/login`, 'set-cookie': clearSessionCookie(basePrefix), 'cache-control': 'no-store' });
         res.end();
         return false;
     }
@@ -381,6 +381,23 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
         if (req.method === 'POST' && pathname === '/logout') {
             return handleLogout(res, basePrefix);
         }
+        // 管理入口及表单必须先于普通会话处理，否则已登录普通用户无法重新提交管理员口令。
+        if (req.method === 'GET' && ['/admin/', '/admin.html'].includes(pathname)) {
+            res.writeHead(303, { location: `${basePrefix}/admin`, 'cache-control': 'no-store' });
+            res.end();
+            return false;
+        }
+        if (req.method === 'GET' && pathname === '/admin/login') {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(adminLoginPage('', basePrefix));
+            return false;
+        }
+        if (req.method === 'POST' && pathname === '/admin/session') {
+            return handleAdminLogin(req, res, basePrefix);
+        }
+        if (req.method === 'POST' && pathname === '/admin/logout') {
+            return handleAdminLogout(res, basePrefix);
+        }
         const sessionUser = await users.verifySession(readCookie(req, 'temu_session'));
         if (sessionUser) {
             req.temuUser = sessionUser;
@@ -395,11 +412,11 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
             /**
              * 管理站是独立页面（/admin），权限在这里按路径拦下。
              * 不能只靠前端隐藏入口：那样任何人手输地址就能进管理页。
-             * 非管理员明确返回 403 并给出返回入口，而不是悄悄跳走——静默跳转会让人以为页面坏了。
+             * 普通会话不能进入管理页，但不能阻止用户重新输入管理员口令；管理 API 仍单独校验权限。
              */
             if (pathname === '/admin' && !req.temuIsAdmin) {
-                res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-                res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>无权访问</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#eef2f6;color:#10243a;font:15px system-ui,sans-serif"><main style="text-align:center"><h1 style="font-size:18px">无权访问管理控制台</h1><p style="color:#5b7288">当前账号不是管理员。</p><p><a href="${basePrefix}/" style="color:#2f7cd0">返回工作台</a></p></main></body></html>`);
+                res.writeHead(303, { location: `${basePrefix}/admin/login`, 'cache-control': 'no-store' });
+                res.end();
                 return false;
             }
             return true;
@@ -411,20 +428,6 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
                 res.writeHead(403); res.end('origin_denied'); return false;
             }
             return handleLogin(req, res, basePrefix);
-        }
-        /**
-         * 管理站的登录与退出走独立端点。
-         * 与普通登录分开：管理登录页提交到这里，服务端额外校验管理员角色，
-         * 普通用户即使拿到登录页也拿不到管理会话。
-         */
-        if (req.method === 'POST' && pathname === '/admin/session') {
-            if (!isTrustedPageOrigin(origin)) {
-                res.writeHead(403); res.end('origin_denied'); return false;
-            }
-            return handleAdminLogin(req, res, basePrefix);
-        }
-        if (req.method === 'POST' && pathname === '/admin/logout') {
-            return handleAdminLogout(res, basePrefix);
         }
         if (req.method === 'POST' && pathname === '/register') {
             if (!isTrustedPageOrigin(origin)) {
@@ -439,13 +442,13 @@ export function createCloudAuth({ dataRoot, credentialPath }) {
             return false;
         }
         /**
-         * 未登录访问 /admin：直接给管理登录页，而不是把他送去业务登录页。
+         * 未登录访问 /admin：跳到管理登录页，与普通会话误入时采用相同入口。
          * 两个入口各管各的：管理员在管理站登录，普通用户在业务站登录，
          * 不会出现"管理员被送到业务登录页、登录完却落在业务工作台"的错位。
          */
         if (req.method === 'GET' && pathname === '/admin') {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(adminLoginPage('', basePrefix));
+            res.writeHead(303, { location: `${basePrefix}/admin/login`, 'cache-control': 'no-store' });
+            res.end();
             return false;
         }
         if (isRegisterPage) {

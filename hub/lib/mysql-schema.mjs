@@ -5,6 +5,7 @@ import { MAP_SCHEMA } from "./mysql-map.mjs";
 import { BULK_SCHEMA } from "./bulk-dispatch.mjs";
 import { INGEST_PROTOCOL_SCHEMA } from './ingest-protocol.mjs';
 import { ACCOUNT_PROCESS_EXTRA_TABLES } from './account-execution-schema.mjs';
+import { PRODUCT_NOTICE_REQUIRED_COLUMNS } from './product-notice-state.mjs';
 
 /**
  * 账户进程模式依赖的字段清单。
@@ -42,6 +43,10 @@ export async function assertMysqlReady(database, rootDir) {
     await database.query("maintenance", "SELECT bulk_id FROM hub_bulk_failures LIMIT 0");
     await database.query('maintenance', 'SELECT store_id FROM hub_execution_wait LIMIT 0');
     await database.query('maintenance', 'SELECT id FROM hub_ingest_requests LIMIT 0');
+    // 通知实例必须先完成离线建表和回填，启动只校验，不替运维执行 DDL。
+    for (const [table, columns] of Object.entries(PRODUCT_NOTICE_REQUIRED_COLUMNS)) {
+        await database.query('maintenance', `SELECT ${columns.map(name => `\`${name}\``).join(',')} FROM ${table} LIMIT 0`);
+    }
 }
 
 /**

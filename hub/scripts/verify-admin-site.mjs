@@ -2,7 +2,7 @@
  * 管理站（独立页面 /admin）回归。
  *
  * 锁住四条边界：
- *   1. 非管理员访问 /admin 必须被服务端拦下（前端隐藏入口从来不是权限边界）；
+ *   1. 普通会话误入 /admin 应转到管理员登录，管理 API 仍拒绝普通身份；
  *   2. 未登录访问 /admin 也拿不到内容；
  *   3. 管理站是独立页面，不加载业务工作台那一整套逻辑；
  *   4. 业务 SPA 里不再持有管理界面代码（否则两处维护、权限判断容易分叉）。
@@ -33,7 +33,7 @@ async function startServer(port) {
         ...process.env,
         ZINIAO_PORT: String(port), ZINIAO_BIND: "127.0.0.1",
         ZINIAO_DATA_ROOT: root, TEMU_CREDENTIALS: credentialPath,
-        ZINIAO_INSTANCE_ID: "admin-site-test"
+        ZINIAO_INSTANCE_ID: "admin-site-test", TEMU_MYSQL_CONFIG: "", ZINIAO_SEED: "0"
     };
     delete env.TEMU_BASE_PATH;
     const child = spawn(process.execPath, ["server.mjs"], { cwd: hubDir, env, stdio: ["ignore", "ignore", "pipe"] });
@@ -70,7 +70,7 @@ try {
     assert.ok(userCookie.startsWith("temu_session="), "普通用户登录必须成功");
 
     /**
-     * 一、未登录访问 /admin：直接给管理登录页，不是跳去业务登录页。
+     * 一、未登录访问 /admin：跳到管理员登录，不是业务登录页。
      * 两个入口分开设计：管理员在管理站登录、普通用户在业务站登录，
      * 避免"管理员被送到业务登录页、登录完却落在业务工作台"的错位。
      */
@@ -79,8 +79,11 @@ try {
             redirect: "manual",
             headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" }
         });
-        assert.equal(response.status, 200, `未登录访问 /admin 必须直接给管理登录页，实际 ${response.status}`);
-        const body = await response.text();
+        assert.equal(response.status, 303, `未登录访问 /admin 必须进入管理登录，实际 ${response.status}`);
+        assert.equal(response.headers.get('location'), '/admin/login');
+        const loginResponse = await fetch(base + response.headers.get('location'));
+        assert.equal(loginResponse.status, 200);
+        const body = await loginResponse.text();
         assert.ok(body.includes("管理员登录"), "必须是管理登录页");
         assert.ok(body.includes('action="/admin/session"'), "管理登录必须提交到独立端点");
         assert.ok(!body.includes('action="/session"'), "管理登录不应提交到普通登录端点");
@@ -138,14 +141,55 @@ try {
         assert.ok(body.error, "接口未登录应返回 JSON 错误体");
     }
 
-    // 二、普通用户访问 /admin：必须 403，且拿不到管理界面。
+    // 普通会话仅用于继续工作台业务，不能阻止打开管理员登录，也不能直接取得管理数据。
     {
         const response = await fetch(`${base}/admin`, { headers: { cookie: userCookie }, redirect: "manual" });
-        assert.equal(response.status, 403, "普通用户访问 /admin 必须 403");
-        const body = await response.text();
-        assert.ok(body.includes("无权访问"), "403 页面应说明原因，而不是空白");
-        assert.ok(body.includes("返回工作台"), "403 页面必须给出返回入口");
-        assert.ok(!body.includes("admin-store-list"), "403 不能泄露管理界面结构");
+        assert.equal(response.status, 303, "普通会话误入管理员入口应转到管理员登录");
+        assert.equal(response.headers.get('location'), '/admin/login');
+        assert.equal(response.headers.get('set-cookie'), null, '打开管理员登录不能直接清掉普通登录');
+        const loginResponse = await fetch(base + '/admin/login', { headers: { cookie: userCookie } });
+        const body = await loginResponse.text();
+        assert.equal(loginResponse.status, 200);
+        assert.ok(body.includes('管理员登录') && body.includes('action="/admin/session"'));
+        assert.ok(!body.includes('无权访问') && !body.includes('admin-store-list'));
+    }
+
+    // 带普通会话提交真实管理员口令时，登录端点必须被处理而非被普通会话短路成静态 404。
+    {
+        const response = await fetch(base + '/admin/session', { method: 'POST', redirect: 'manual',
+            headers: { cookie: userCookie, origin, 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'username=13800000001&password=admin12345' });
+        assert.equal(response.status, 303);
+        assert.equal(response.headers.get('location'), '/admin');
+        const switchedCookie = response.headers.get('set-cookie').split(';')[0];
+        assert.ok(switchedCookie.startsWith('temu_session='));
+        const me = await (await fetch(base + '/api/me', { headers: { cookie: switchedCookie } })).json();
+        assert.equal(me.isAdmin, true);
+        const denied = await fetch(base + '/admin/session', { method: 'POST', redirect: 'manual',
+            headers: { cookie: userCookie, origin, 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'username=13800000002&password=user12345' });
+        assert.equal(denied.status, 403);
+        assert.equal(denied.headers.get('set-cookie'), null);
+        const crossOrigin = await fetch(base + '/admin/session', { method: 'POST', redirect: 'manual',
+            headers: { cookie: userCookie, origin: 'https://evil.invalid', 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'username=13800000001&password=admin12345' });
+        assert.equal(crossOrigin.status, 403);
+        assert.equal(crossOrigin.headers.get('set-cookie'), null);
+        const logout = await fetch(base + '/admin/logout', { method: 'POST', redirect: 'manual', headers: { cookie: switchedCookie, origin } });
+        assert.equal(logout.status, 303);
+        assert.equal(logout.headers.get('location'), '/admin/login');
+        assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
+    }
+    // 同一页面的别名与反代挂载前缀不能绕过入口规则，返回目标也不得跳出站点。
+    for (const prefix of ['', '/temu']) {
+        for (const alias of ['/admin', '/admin/', '/admin.html']) {
+            const response = await fetch(base + prefix + alias, { redirect: 'manual', headers: { cookie: userCookie } });
+            assert.equal(response.status, 303);
+            assert.equal(response.headers.get('location'), prefix + (alias === '/admin' ? '/admin/login' : '/admin'));
+        }
+        const page = await fetch(base + prefix + '/admin/login?next=https://evil.invalid', { headers: { cookie: adminCookie } });
+        assert.equal(page.status, 200, '显式登录页不根据现有身份自动跳回工作台');
+        assert.ok((await page.text()).includes(`action="${prefix}/admin/session"`));
     }
 
     // 三、管理员访问 /admin：拿到独立的管理页，且不包含业务工作台的内容。
@@ -201,7 +245,7 @@ try {
         assert.equal(response.status, 403, "普通用户调管理接口必须 403");
     }
 
-    console.log("admin site checks passed（未登录/普通用户拦在 /admin 外、管理员可得独立管理页、不加载业务逻辑、导航指向独立站）");
+    console.log("admin site checks passed（普通会话转管理员登录、带旧会话重新登录有效、角色及跨源拒绝、退出与前缀别名、管理数据权限不放宽）");
 } finally {
     child.kill("SIGKILL");
     await new Promise((resolve) => setTimeout(resolve, 500));

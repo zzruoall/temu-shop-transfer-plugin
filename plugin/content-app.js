@@ -95,7 +95,7 @@
         ,detailTimeoutTimer: null
         ,detailSupplementStarted: false
         ,transferTasks: []
-        // 面板展示当前页面轮次状态；是否允许执行由扩展后台与服务端共同核验。
+        // 面板只展示本页主动暂停；执行门禁独立核对文档，初始化保护不等于暂停。
         ,directPaused: false
         // 接口诊断独立于普通采集开关；用户可在不开启采集的情况下，打开一个商品后只导出接口结构摘要。
         ,interfaceDiagnostics: { active: false, sessionId: "", sampleCount: 0, skippedCount: 0, droppedCount: 0, startedAt: "" }
@@ -126,6 +126,8 @@
     let agentNextSyncAt = 0;
     // 停止/继续按钮的防重入标记：连点会让后台重复落盘，也让按钮文案与真实状态脱节。
     let directPauseBusy = false;
+    // 所有控制动作递增面板代次，发出较早的异步快照不能覆盖控制后的新队列。
+    let targetViewEpoch = 0;
 
     /** 内容脚本只发送状态白名单；后台统一脱敏、限额与持久化，页面切换后仍能导出上一页操作。 */
     function logOperation(entry) {
@@ -271,6 +273,9 @@
                 /* 小球态只保留边缘箭头，避免遮挡卖家中心内容；拖动由标题栏完成。 */
                 .panel.compact{width:42px;background:transparent;border:0;box-shadow:none}.panel.compact .head{width:42px;height:42px;box-sizing:border-box;padding:0;justify-content:center;border-radius:21px}.panel.compact .head-copy,.panel.compact .mini{display:none}.panel.compact .head-actions{gap:0}.panel.compact .toggle{width:42px;height:42px;font-size:20px;line-height:42px;padding:0}.panel.compact .core,.panel.compact .tools{display:none}
                 .head{cursor:move;user-select:none}.toggle{cursor:pointer}
+                /* 异常清单独立于任务控制；长货号和平台原文换行，窄窗口不遮挡关闭入口。 */
+                .error-dialog{box-sizing:border-box;width:min(760px,calc(100vw - 24px));max-height:calc(100vh - 24px);padding:16px;border:1px solid #d1d5db;border-radius:8px;color:#1f2937;background:#fff;overflow:auto;font:13px/1.5 Arial,sans-serif}
+                .error-dialog::backdrop{background:rgba(0,0,0,.4)}.error-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}.error-dialog h2{margin:0;font-size:18px}.error-dialog .error-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.error-dialog .error-item{border-top:1px solid #e5e7eb;padding:12px 0;overflow-wrap:anywhere}.error-dialog h3{font-size:14px;margin:0 0 8px}.error-dialog dl{margin:0;display:grid;grid-template-columns:80px minmax(0,1fr);gap:6px}.error-dialog dt{color:#4b5563}.error-dialog dd{margin:0;white-space:pre-wrap}.error-dialog button{border:1px solid #d1d5db;border-radius:4px;background:#fff;color:#1f2937;padding:6px 10px;cursor:pointer}.error-dialog button:focus-visible{outline:2px solid #4338ca;outline-offset:2px}
                 /* 缩小只收起操作工具，不隐藏运行状态；用户无需展开面板也能看到接口创建进展。 */
                 .toggle:focus-visible,.btn:focus-visible{outline:2px solid #c7d2fe;outline-offset:2px}
             </style>
@@ -288,12 +293,13 @@
                     <div class="transfer-progress" hidden aria-live="polite">
                         <div class="transfer-progress-head"><span class="transfer-progress-title">接口创建进度</span><span class="transfer-progress-percent"></span></div>
                         <div class="stage-track" role="list" aria-label="接口创建阶段">
-                            <span class="stage" data-stage="duplicate_check">对比</span><span class="stage" data-stage="authorizing">预检</span><span class="stage" data-stage="submitting">提交</span><span class="stage" data-stage="verifying">回查</span><span class="stage" data-stage="created">已创建</span>
+                            <span class="stage" data-stage="duplicate_check">对比</span><span class="stage" data-stage="authorizing">预检</span><span class="stage" data-stage="submitting">提交</span><span class="stage" data-stage="created">已创建</span>
                         </div>
                         <div class="transfer-progress-detail"></div>
                         <button type="button" class="btn secondary wide transfer-retry" hidden>人工确认后重试</button>
-                        <button type="button" class="btn secondary wide transfer-cancel" hidden>取消本店待传任务</button>
-                        <button type="button" class="btn secondary wide transfer-pause">停止并清理</button>
+                        <button type="button" class="btn secondary wide transfer-cancel" hidden>结束</button>
+                        <button type="button" class="btn secondary wide transfer-pause">暂停</button>
+                        <button type="button" class="btn secondary wide transfer-errors" hidden>查看异常</button>
                     </div>
                     <div class="row selection-row"><span>已选商品</span><span class="value selected-count">0 个</span></div>
                     <div class="core-actions">
@@ -324,9 +330,7 @@
                     <div class="actions">
                         <button class="btn secondary wide logs">导出操作日志</button>
                         <button class="btn secondary wide push">上传采集包到网站</button>
-                        <button class="btn primary wide transfer-next">接口任务自动创建</button>
                         <button class="btn secondary wide transfer-export">导出当前待上传商品资料</button>
-                        <button class="btn secondary wide transfer-done">确认当前商品已上传</button>
                         <button class="btn secondary wide settings">连接设置与测试</button>
                     </div>
                     <details class="advanced"><summary>备用导出与高级诊断</summary>
@@ -403,12 +407,11 @@
         root.querySelector(".export").addEventListener("click", exportData);
         root.querySelector(".logs").addEventListener("click", exportLogs);
         root.querySelector(".push").addEventListener("click", pushToWarehouse);
-        root.querySelector(".transfer-next").addEventListener("click", openNextTransferTask);
         root.querySelector(".transfer-export").addEventListener("click", exportCurrentTransferTask);
-        root.querySelector(".transfer-done").addEventListener("click", confirmCurrentTransferTask);
         root.querySelector(".transfer-pause").addEventListener("click", toggleDirectCreatePaused);
         root.querySelector(".transfer-retry").addEventListener("click", retryUnknownDirectTask);
         root.querySelector(".transfer-cancel").addEventListener("click", cancelStoreTransferTasks);
+        root.querySelector(".transfer-errors").addEventListener("click", openDirectErrors);
         root.querySelector(".settings").addEventListener("click", openSettings);
     }
 
@@ -1025,7 +1028,7 @@
     /**
      * 插件只在商品列表页工作。
      * 面板此前会出现在首页、新建商品页、草稿页等管理路由上，遮挡平台内容且容易误操作；
-     * 而所有实际动作（判重、预检、提交、回查、采集）都必须在商品列表页发起——
+     * 而所有实际动作（判重、预检、提交、结果读取、采集）都必须在商品列表页发起——
      * directPage 对这些操作会直接校验 location.pathname === '/goods/list'，在别的页面根本执行不了。
      * 因此这里收敛到列表页一种，面板与心跳共用同一判定，避免出现"面板显示正常但点了没用"。
      */
@@ -1627,12 +1630,12 @@
         const reason = String(task.reason || "");
         const checking = state === "received" || (state === "authorizing" && /检索|重复|对比/.test(reason));
         const stage = checking ? "duplicate_check" : state === "authorizing" ? "authorizing" : state;
-        const stages = ["duplicate_check", "authorizing", "submitting", "verifying", "created"];
+        const stages = ["duplicate_check", "authorizing", "submitting", "created"];
         const labels = {
             duplicate_check: "重复对比中",
             authorizing: "资料预检中",
             submitting: "正在提交",
-            verifying: "正在回查",
+            verifying: "正在读取提交结果",
             created: "创建成功",
             unknown: "结果待核对",
             preflight_failed: "预检失败",
@@ -1640,11 +1643,15 @@
             duplicate_wait: "等待重复检索",
             duplicate_exists: "已存在，未重复创建"
         };
-        const terminalError = ["unknown", "preflight_failed", "rejected"].includes(state);
-        const terminalDone = state === "created" || state === "duplicate_exists";
-        const index = terminalError ? Math.max(0, stages.indexOf(state === "unknown" ? "verifying" : "authorizing")) : Math.max(0, stages.indexOf(stage));
-        const percent = terminalDone ? 100 : Math.round(((index + 1) / stages.length) * 100);
-        return { state, stage, stages, index, percent, label: labels[state] || labels[stage] || "任务处理中", reason, terminalError, terminalDone };
+        // 已处理不等于创建成功：未知结果只结束本轮自动处理，仍需人工核对，不能染成失败或成功。
+        const outcome = directTaskOutcome(task);
+        const terminalError = outcome === "failed";
+        const terminalUnknown = outcome === "unknown";
+        const terminalDone = outcome === "success" || outcome === "skipped";
+        const terminalProcessed = Boolean(outcome);
+        const index = terminalUnknown ? stages.indexOf("submitting") : terminalError ? stages.indexOf(state === "rejected" ? "submitting" : "authorizing") : Math.max(0, stages.indexOf(stage === "verifying" ? "submitting" : stage));
+        const percent = terminalProcessed ? 100 : Math.round(((index + 1) / stages.length) * 100);
+        return { state, stage, stages, index, percent, label: labels[state] || labels[stage] || "任务处理中", reason, terminalError, terminalUnknown, terminalDone, terminalProcessed };
     }
 
     function captureStatusText() {
@@ -1755,29 +1762,33 @@
             ingestStatus.classList.remove("on", "off", "warn", "bad", "done");
             ingestStatus.classList.add(ingestStatusClass());
         }
-        const agentStatus = root.querySelector(".agent-status");
-        if (agentStatus) {
-            // CLI 与商品入库 HTTP 是两条通道，接收同步成功不能伪装成 HTTP 入库成功。
-            const cliOnline = currentPageIdentity().storeId && Date.now() - Number(state.cliConnectedAt || 0) < 120000;
-            agentStatus.textContent = cliOnline ? "CLI 已连接（任务同步）" : (agentState.detail || "识别店铺中");
-            agentStatus.classList.remove("on", "off", "warn", "bad", "done");
-            agentStatus.classList.add(cliOnline || agentState.phase === "verified" || agentState.phase === "claimed" ? "done" : (agentState.phase === "error" ? "bad" : (agentState.phase === "idle" ? "off" : "warn")));
-        }
-        const transferStatus = root.querySelector(".transfer-status");
         const storeTasks = currentStoreTransferTasks();
         const current = currentTransferTask();
         const directProgress = directProgressView(current);
         const directBatch = directBatchProgress(storeTasks);
+        const batchSummary = directBatchSummary(directBatch);
+        const batchResultClass = directBatch.failed ? "bad" : (directBatch.unknown ? "warn" : "done");
+        const agentStatus = root.querySelector(".agent-status");
+        if (agentStatus) {
+            // CLI 与商品入库 HTTP 是两条通道，接收同步成功不能伪装成 HTTP 入库成功。
+            const cliOnline = currentPageIdentity().storeId && Date.now() - Number(state.cliConnectedAt || 0) < 120000;
+            agentStatus.textContent = cliOnline ? "CLI 已连接（任务同步）" : (directBatch.complete ? "本批已处理结束" : (agentState.detail || "识别店铺中"));
+            agentStatus.classList.remove("on", "off", "warn", "bad", "done");
+            agentStatus.classList.add(cliOnline ? "done" : (directBatch.complete ? batchResultClass : (agentState.phase === "verified" || agentState.phase === "claimed" ? "done" : (agentState.phase === "error" ? "bad" : (agentState.phase === "idle" ? "off" : "warn")))));
+        }
+        const transferStatus = root.querySelector(".transfer-status");
         const directTasks = storeTasks.filter(task => task.directCreate);
-        const directPaused = Boolean(state.directPaused);
+        closeForeignErrorDialog(String(currentPageIdentity()?.storeId || ''), storeTasks);
+        // 空队列没有可继续的任务；旧暂停摘要或身份初始化不得生成“停止 0/0”卡片。
+        const directPaused = Boolean(state.directPaused) && directTasks.length > 0 && !directBatch.complete;
         const headStage = root.querySelector(".head-stage");
-        if (headStage) headStage.textContent = directPaused ? "已停止接口创建" : (directProgress ? directProgress.label : (storeTasks.length ? "有待处理任务" : "准备就绪"));
+        if (headStage) headStage.textContent = directBatch.complete ? "本批已处理结束" : (directPaused ? "已停止接口创建" : (directProgress ? directProgress.label : (storeTasks.length ? "有待处理任务" : "准备就绪")));
         if (transferStatus) {
             const count = storeTasks.length;
             const labels = {
                 authorizing: "预检中",
                 submitting: "提交中",
-                verifying: "回查中",
+                verifying: "读取提交结果",
                 created: "已创建",
                 unknown: "结果待核对",
                 preflight_failed: "预检失败",
@@ -1785,56 +1796,60 @@
                 duplicate_wait: "等待重复检索",
                 duplicate_exists: "已存在"
             };
-            transferStatus.textContent = directPaused
-                ? `已停止 · 批次 ${directBatch.finished}/${directBatch.total}`
+            transferStatus.textContent = directBatch.complete
+                ? `已处理 ${directBatch.finished}/${directBatch.total} · 已结束`
+                : directPaused
+                ? `已停止 · 已处理 ${directBatch.finished}/${directBatch.total}`
                 : current?.directCreate
-                ? `批次 ${directBatch.finished}/${directBatch.total} · ${directProgress?.stage === "duplicate_check" ? "重复对比中" : (labels[current.directState] || "自动处理中")}`
+                ? `已处理 ${directBatch.finished}/${directBatch.total} · ${directProgress?.stage === "duplicate_check" ? "重复对比中" : (labels[current.directState] || "自动处理中")}`
                 : (count ? `${count} 个待处理` : "0 个");
             transferStatus.classList.remove("on", "off", "warn", "bad", "done");
-            transferStatus.classList.add(directPaused ? "warn" : (directProgress?.terminalDone ? "done" : (directProgress?.terminalError ? "bad" : (count ? "warn" : "off"))));
+            transferStatus.classList.add(directBatch.complete ? batchResultClass : (directPaused ? "warn" : (directProgress?.terminalDone ? "done" : (directProgress?.terminalError ? "bad" : (count ? "warn" : "off")))));
         }
         const transferProgress = root.querySelector(".transfer-progress");
         if (transferProgress) {
-            // 本店只要还有接口创建任务就必须露出这张卡片：否则操作者既看不到批次进度，也找不到停止/继续入口。
-            transferProgress.hidden = !directProgress && !directPaused && !directTasks.length;
+            // 任务卡只由当前页真实队列决定；安全门禁或空暂停标记不能产生空任务。
+            transferProgress.hidden = !directTasks.length;
             transferProgress.classList.toggle("paused", directPaused);
             const percentNode = transferProgress.querySelector(".transfer-progress-percent");
             const detailNode = transferProgress.querySelector(".transfer-progress-detail");
             if (directProgress) {
-                const percent = directBatch.total > 1 ? directBatch.percent : directProgress.percent;
+                // 单件与整批统一按已处理商品计数；失败停在提交阶段也必须显示 1/1，而不是阶段百分比。
+                const percent = directBatch.percent;
                 percentNode.textContent = directPaused
-                    ? `已停止 · ${directBatch.total > 1 ? `批次 ${directBatch.finished}/${directBatch.total} · ` : ""}SPU ${current.spuId || "未知"}`
-                    : `${percent}% · ${directBatch.total > 1 ? `批次 ${directBatch.finished}/${directBatch.total} · ` : ""}SPU ${current.spuId || "未知"}`;
-                detailNode.textContent = directPaused
+                    && !directBatch.complete
+                    ? `已停止 · 已处理 ${directBatch.finished}/${directBatch.total} · SPU ${current.spuId || "未知"}`
+                    : `${percent}% · 已处理 ${directBatch.finished}/${directBatch.total} · SPU ${current.spuId || "未知"}`;
+                detailNode.textContent = `${batchSummary}\n${directBatch.complete ? "本批已处理结束。" : ""}${directPaused && !directBatch.complete
                     ? "接口创建已停止：插件不会继续上传，刷新页面也不会自动恢复。"
-                    : (directProgress.reason || directProgress.label);
+                    : (directProgress.reason || directProgress.label)}`;
                 transferProgress.querySelectorAll(".stage").forEach(node => {
                     const nodeStage = node.getAttribute("data-stage");
                     const nodeIndex = directProgress.stages.indexOf(nodeStage);
-                    const errorStage = directProgress.state === "unknown" ? "verifying" : (directProgress.state === "preflight_failed" ? "authorizing" : directProgress.stage);
+                    const errorStage = directProgress.state === "preflight_failed" ? "authorizing" : (directProgress.state === "rejected" ? "submitting" : directProgress.stage);
                     node.classList.remove("active", "done", "error");
-                    if (directPaused) return;
+                    if (directPaused || directProgress.terminalUnknown) return;
                     if (directProgress.terminalError && nodeStage === errorStage) node.classList.add("error");
                     else if (directProgress.terminalDone || nodeIndex < directProgress.index) node.classList.add("done");
                     else if (nodeIndex === directProgress.index) node.classList.add("active");
                 });
             } else if (directPaused) {
-                percentNode.textContent = "已停止";
-                detailNode.textContent = "接口创建已停止：插件不会继续上传，刷新页面也不会自动恢复。";
+                percentNode.textContent = `已停止 · 已处理 ${directBatch.finished}/${directBatch.total}`;
+                detailNode.textContent = `${batchSummary}\n接口创建已停止：插件不会继续上传，刷新页面也不会自动恢复。`;
                 transferProgress.querySelectorAll(".stage").forEach(node => node.classList.remove("active", "done", "error"));
             } else {
                 // 有接口创建任务但当前没有进行中的阶段：只报批次完成度，不伪造阶段高亮。
-                percentNode.textContent = `${directBatch.percent}% · 批次 ${directBatch.finished}/${directBatch.total}`;
-                detailNode.textContent = "接口创建任务已在插件后台排队，保持商品列表页打开即可。";
+                percentNode.textContent = `${directBatch.percent}% · 已处理 ${directBatch.finished}/${directBatch.total}`;
+                detailNode.textContent = `${batchSummary}\n${directBatch.complete ? "本批已处理结束。" : "接口创建任务已在插件后台排队，保持商品列表页打开即可。"}`;
                 transferProgress.querySelectorAll(".stage").forEach(node => node.classList.remove("active", "done", "error"));
             }
         }
         const pauseButton = root.querySelector(".transfer-pause");
         if (pauseButton) {
-            // 只有本店确实有接口创建任务（或已停止）时才露出按钮，避免普通采集店铺看到无关入口。
-            pauseButton.hidden = false;
+            // 无待办或整批结束时不显示暂停/继续，避免空操作让初始页误显示旧任务。
+            pauseButton.hidden = !directTasks.length || directBatch.complete;
             pauseButton.disabled = directPauseBusy;
-            pauseButton.textContent = directPaused ? "启用本轮" : "停止并清理";
+            pauseButton.textContent = directPaused ? "继续" : "暂停";
             pauseButton.classList.toggle("primary", directPaused);
             pauseButton.classList.toggle("secondary", !directPaused);
         }
@@ -1854,32 +1869,21 @@
                 : [];
             cancelButton.hidden = storeTasks.length === 0;
             cancelButton.disabled = directPauseBusy;
-            cancelButton.textContent = storeTasks.length ? `取消本店待传任务（${storeTasks.length}）` : "取消本店待传任务";
+            cancelButton.textContent = "结束";
         }
-        const nextButton = root.querySelector(".transfer-next");
         const exportButton = root.querySelector(".transfer-export");
-        const doneButton = root.querySelector(".transfer-done");
-        // 接口创建任务由心跳自动执行，按钮只展示进度，避免用户误点打开表单。
-        if (nextButton) {
-            if (current?.directCreate) {
-                nextButton.disabled = true;
-                nextButton.textContent = directProgress?.terminalDone
-                    ? (current.directState === "duplicate_exists" ? "已存在，未重复创建" : "接口已自动创建")
-                    : (current.directState === "unknown" || current.directState === "preflight_failed"
-                        ? "接口创建未完成"
-                        : "正在自动创建，无需点击");
-            } else {
-                nextButton.disabled = false;
-                nextButton.textContent = location.pathname === "/goods/edit"
-                    ? "填入商品资料（不提交）"
-                    : "打开待上传商品页";
-            }
-        }
         if (exportButton) exportButton.hidden = !storeTasks.length;
-        if (doneButton) doneButton.hidden = !storeTasks.some(task => task.status === "upload_opened");
+        const errorsButton = root.querySelector(".transfer-errors");
+        if (errorsButton) {
+            const errors = directErrorEntries(storeTasks);
+            errorsButton.hidden = !errors.length;
+            errorsButton.textContent = `查看异常（${errors.length} 件）`;
+        }
         syncCaptureButtons();
         syncInterfaceDiagnosticControls();
-        root.querySelector(".message").textContent = state.message || "";
+        // 后台快照可能先更新终态、后更新提示；只替换过期运行提示，保留导出、重试等用户操作回执。
+        root.querySelector(".message").textContent = directBatch.complete && /正在自动创建|后台排队|自动处理中/.test(state.message || "")
+            ? `本批已处理结束。${batchSummary}` : (state.message || "");
         publishPublicStatus();
         const operationState = { action: "panel-state", phase: state.phase, ingestPhase: ingestState.phase,
             agentPhase: agentState.phase, enabled: state.enabled, expectedCount: expected,
@@ -2006,6 +2010,8 @@
         ));
         if (mappedStore.storeId && page.storeName && !mappedMatchesPage) {
             mappedStore = { storeId: "", storeName: "" };
+            // 切店立即关闭旧店清单，不能在新店页面保留可复制的旧店错误。
+            root?.querySelector('.error-dialog')?.close();
         }
         const boundMatchesPage = Boolean(boundStore.storeName && page.storeName && helper && (
             helper.namesMatch(page.storeName, boundStore.storeName)
@@ -2049,6 +2055,7 @@
     }
 
     async function syncStoreAgentNow() {
+        const viewEpoch = targetViewEpoch;
         const bound = await send("getBoundStore").catch(() => null);
         if (bound && bound.ok && bound.store) boundStore = bound.store;
         const identity = currentPageIdentity();
@@ -2133,10 +2140,12 @@
             // 没有本地待办时无需访问状态核对接口；有待办才清理终态，减少一次串行请求。
             if (currentStoreTransferTasks(agentIdentity).length) {
                 const reconciled = await send("reconcileTargetUploadTasks", { identity: agentIdentity }).catch(() => null);
+                if (viewEpoch !== targetViewEpoch || directPauseBusy) return;
                 if (reconciled && reconciled.ok && Array.isArray(reconciled.tasks)) state.transferTasks = reconciled.tasks;
                 if (reconciled && reconciled.ok && typeof reconciled.directPaused === "boolean") state.directPaused = reconciled.directPaused;
             }
             const claimed = await send("claimStoreJobs", { identity: agentIdentity });
+            if (viewEpoch !== targetViewEpoch || directPauseBusy) return;
             if (!claimed?.ok) throw new Error(claimed?.error || "task_claim_failed");
             const jobs = claimed && Array.isArray(claimed.claimed) ? claimed.claimed : [];
             if (claimed && claimed.ok && Array.isArray(claimed.tasks)) state.transferTasks = claimed.tasks;
@@ -2151,24 +2160,31 @@
                 state.message = "接口创建任务已接收，插件正在自动创建，无需点击上传。";
             }
             const currentTask = currentTransferTask(agentIdentity);
-            if (currentTask?.directCreate) {
+            const directBatch = directBatchProgress(currentStoreTransferTasks(agentIdentity));
+            // 领取回执可能仍含已接收数量；界面以本店终态快照为准，结束后不能继续声称自动创建。
+            if (directBatch.complete) {
+                agentState = { phase: directBatch.failed ? "error" : (directBatch.unknown ? "unknown" : "verified"), detail: "本批已处理结束", claimed: jobs.length };
+                state.message = `本批已处理结束。${directBatchSummary(directBatch)}${currentTask?.reason ? `\n${currentTask.reason}` : ""}`;
+            } else if (currentTask?.directCreate) {
                 const labels = {
                     received: "重复对比中",
                     authorizing: "正在预检",
                     submitting: "正在提交",
-                    verifying: "正在回查",
+                    verifying: "正在读取提交结果",
                     created: "接口已创建",
                     unknown: "结果待核对",
                     preflight_failed: "预检失败",
+                    rejected: "平台拒绝",
+                    duplicate_wait: "等待重复检索",
                     duplicate_exists: "已存在，未重复创建"
                 };
                 agentState = {
                     phase: currentTask.directState === "created" ? "verified" : (currentTask.directState === "preflight_failed" || currentTask.directState === "unknown" ? "error" : "claimed"),
-                    detail: state.directPaused ? "已停止接口创建" : (labels[currentTask.directState] || `已接收，正在自动创建 ${currentStoreTransferTasks(agentIdentity).length} 个`),
+                    detail: state.directPaused ? "已暂停" : (labels[currentTask.directState] || `已接收，正在自动创建 ${currentStoreTransferTasks(agentIdentity).length} 个`),
                     claimed: jobs.length
                 };
                 if (state.directPaused) {
-                    state.message = "本轮已停止，旧任务不会恢复。";
+                    state.message = "已暂停，保留本页队列；新发送会替换未开始商品。";
                 } else if (currentTask.reason) {
                     state.message = currentTask.reason;
                 } else if (!currentTask.directState || currentTask.directState === "received") {
@@ -2912,14 +2928,14 @@
     }
 
     /**
-     * 停止并清理当前轮次，或人工启用新轮次。
-     * 刷新页面不会继承旧授权；这里只负责把操作者的意图发过去并如实回显结果，
-     * 不能在本地先改状态，否则后台拒绝时面板会显示成“已停止”而上传仍在继续。
+     * 暂停保留本页队列，继续从本地队列接着处理；刷新不恢复旧页面任务。
+     * 等后台控制成功才更新面板，避免页面显示已暂停而后台尚未停止新增。
      */
     async function toggleDirectCreatePaused() {
         if (directPauseBusy) return;
         const identity = currentPageIdentity();
         const nextPaused = !state.directPaused;
+        targetViewEpoch++;
         directPauseBusy = true;
         render();
         try {
@@ -2931,11 +2947,11 @@
                 action: state.directPaused ? "stop-direct-create" : "resume-direct-create",
                 status: "clicked",
                 storeId: identity.storeId,
-                reason: state.directPaused ? "操作者停止并清理本轮" : "操作者启用新一轮"
+                reason: state.directPaused ? "操作者暂停本页队列" : "操作者继续本页队列"
             });
             render(state.directPaused
-                ? "本轮已停止，未提交项正在清理；已提交项保留结果核对。"
-                : "新一轮已启用，等待接收商品。");
+                ? "已暂停，未完成商品保留在本页；新发送的批次会替换未开始队列。"
+                : "已继续，按本页队列顺序处理商品。");
         } catch (error) {
             render(`操作未完成：${String(error?.message || error)}。`);
         } finally {
@@ -2946,6 +2962,7 @@
 
     /** 目标店任务只从扩展后台读取，页面 DOM 与页面脚本不会接触完整商品资料。 */
     async function refreshTargetUploadTasks() {
+        const viewEpoch = targetViewEpoch;
         // 刷新页面后先恢复本地可信绑定，待办展示不依赖中转仓 HTTP 心跳成功。
         const binding = await send("getBoundStore").catch(() => null);
         if (binding?.ok && binding.store) boundStore = binding.store;
@@ -2953,10 +2970,12 @@
         const identity = currentPageIdentity();
         // 未能映射店铺时不展示任何共享存储里的待办，避免用户误在 A 店处理 B 店商品。
         const result = await send("getTargetUploadTasks", { storeId: identity.storeId || "" }).catch(() => null);
+        if (viewEpoch !== targetViewEpoch) return state.transferTasks;
         if (result && result.ok) {
             state.transferTasks = Array.isArray(result.tasks) ? result.tasks : [];
-            // 停止标记随任务摘要一起返回，刷新后不点任何按钮也能看到插件已停止。
+            // 暂停标记只属于当前页面会话，刷新后由后台重新建立初始状态。
             if (typeof result.directPaused === "boolean") state.directPaused = result.directPaused;
+            closeForeignErrorDialog(String(identity.storeId || ''), state.transferTasks);
         }
         return state.transferTasks;
     }
@@ -2968,22 +2987,149 @@
         return (state.transferTasks || []).filter(task => task && String(task.targetStoreId || "") === storeId);
     }
 
+    /** 仅用于展示分类；未知结果计已处理但不计成败，不改变后台判重、授权或重试规则。 */
+    function directTaskOutcome(task) {
+        if (!task?.directCreate) return "";
+        const directState = String(task.directState || "");
+        if (directState === "created") return "success";
+        if (directState === "duplicate_exists") return "skipped";
+        if (directState === "preflight_failed" || directState === "rejected") return "failed";
+        if (directState === "unknown") return "unknown";
+        return "";
+    }
+
+    /** 当前展示优先运行中、等待中和人工待办；全部结束后保留最后一件失败或待核对，方便人工重试。 */
     function currentTransferTask(identity = currentPageIdentity()) {
         const tasks = currentStoreTransferTasks(identity);
-        const activeDirect = tasks.find(task => task.directCreate && !['created', 'duplicate_exists', 'preflight_failed'].includes(String(task.directState || '')));
+        const activeDirect = tasks.find(task => task.directCreate && ['authorizing', 'submitting', 'verifying'].includes(String(task.directState || '')))
+            || tasks.find(task => task.directCreate && !directTaskOutcome(task));
         if (activeDirect) return activeDirect;
-        return tasks.find(task => task.status === "upload_opened")
-            || tasks.find(task => task.status === "received")
+        return tasks.find(task => !task.directCreate && task.status === "upload_opened")
+            || tasks.find(task => !task.directCreate && task.status === "received")
+            || tasks.filter(task => ['failed', 'unknown'].includes(directTaskOutcome(task))).at(-1)
+            || tasks.filter(task => directTaskOutcome(task)).at(-1)
             || null;
     }
 
-    /** 批量接口任务的完成度独立于单商品阶段，避免面板把单件 80% 显示成整批 80%。 */
+    /** 本店任务先由调用方隔离；处理数涵盖所有终态，等待重复检索仍是待办，成败与待核对独立统计。 */
     function directBatchProgress(tasks) {
         const directTasks = (Array.isArray(tasks) ? tasks : []).filter(task => task.directCreate);
         const total = directTasks.length;
-        const finished = directTasks.filter(task => ['created', 'duplicate_exists', 'preflight_failed'].includes(String(task.directState || ''))).length;
-        const currentIndex = Math.max(0, directTasks.findIndex(task => !['created', 'duplicate_exists', 'preflight_failed'].includes(String(task.directState || ''))));
-        return { total, finished, currentIndex, percent: total ? Math.round(finished / total * 100) : 0 };
+        const counts = { success: 0, failed: 0, skipped: 0, unknown: 0 };
+        for (const task of directTasks) {
+            const outcome = directTaskOutcome(task);
+            if (outcome) counts[outcome]++;
+        }
+        const finished = counts.success + counts.failed + counts.skipped + counts.unknown;
+        const runningIndex = directTasks.findIndex(task => ['authorizing', 'submitting', 'verifying'].includes(String(task.directState || '')));
+        const currentIndex = Math.max(0, runningIndex >= 0 ? runningIndex : directTasks.findIndex(task => !directTaskOutcome(task)));
+        return { total, finished, ...counts, currentIndex, percent: total ? Math.round(finished / total * 100) : 0, complete: total > 0 && finished === total };
+    }
+
+    /** 面板与心跳提示共用同一统计文案，避免“已处理”被误读为全部创建成功。 */
+    function directBatchSummary(progress) {
+        return `已处理 ${progress.finished}/${progress.total} · 创建成功 ${progress.success}，失败 ${progress.failed}，跳过 ${progress.skipped}，待核对 ${progress.unknown}`;
+    }
+
+    /** 仅汇总本店当前页异常；同一投递的重复进度只显示一次，查重等待与结果未知不冒充创建失败。 */
+    function directErrorEntries(tasks = currentStoreTransferTasks()) {
+        const kinds = { rejected: '平台拒绝', preflight_failed: '预检失败', unknown: '结果待核对', duplicate_wait: '查重等待' };
+        const entries = new Map();
+        for (const task of tasks || []) {
+            if (!task.directCreate || !kinds[task.directState]) continue;
+            const key = JSON.stringify([task.targetStoreId, task.jobId, task.spuId]);
+            const codes = values => [...new Set((Array.isArray(values) ? values : []).map(value => String(value).trim()).filter(Boolean))];
+            entries.set(key, {
+                jobId: String(task.jobId || ''), spuId: String(task.spuId || ''), storeId: String(task.targetStoreId || ''),
+                title: String(task.title || ''), state: task.directState, label: kinds[task.directState],
+                productCodes: codes(task.productCodes), skuCodes: codes(task.skuCodes),
+                errorCode: String(task.errorCode || String(task.reason || '').match(/错误码\s*[:：]?\s*([\w-]+)/)?.[1] || ''),
+                stage: String(task.errorStage || (task.directState === 'duplicate_wait' ? '查重' : task.directState === 'preflight_failed' ? '预检' : '提交')),
+                reason: String(task.reason || '未提供具体错误，请导出操作日志核对'),
+                noticeStatus: String(task.errorNoticeStatus || ''),
+                offendingSkuCode: String(task.offendingSkuCode || ''), reasonTruncated: Boolean(task.reasonTruncated)
+            });
+        }
+        return [...entries.values()];
+    }
+
+    /** 复制与导出使用同一份只读快照，不包含快照正文、令牌或自动重试指令。 */
+    function directErrorsText(entries) {
+        return entries.map(entry => `${entry.label} · SPU ${entry.spuId}\n商品货号：${entry.productCodes.join('、') || '未提供'}\n关联 SKU 货号：${entry.skuCodes.join('、') || '未提供'}\n具体错误 SKU：${entry.offendingSkuCode || '未记录'}\n阶段：${entry.stage}\n错误码：${entry.errorCode || '未提供'}\n原因：${entry.reason}${entry.reasonTruncated ? '\n回传内容已截断' : ''}`).join('\n\n');
+    }
+
+    /** 弹窗与队列同属当前店铺和接收会话；切到非空的新店队列也必须关闭旧快照。 */
+    function closeForeignErrorDialog(storeId, tasks) {
+        const dialog = root?.querySelector('.error-dialog');
+        if (!dialog) return;
+        const sameSession = (tasks || []).some(task => task.targetStoreId === storeId
+            && (!dialog.dataset.relaySessionId || task.relaySessionId === dialog.dataset.relaySessionId));
+        if (dialog.dataset.storeId !== storeId || !sameSession) dialog.close();
+    }
+
+    /** 弹窗只查看当前店铺异常；平台未指定 SKU 时展示关联集合，不猜测是哪一个 SKU 出错。 */
+    function openDirectErrors() {
+        const entries = directErrorEntries();
+        if (!entries.length) return;
+        root.querySelector('.error-dialog')?.remove();
+        const dialog = document.createElement('dialog');
+        dialog.className = 'error-dialog';
+        dialog.dataset.storeId = String(currentPageIdentity()?.storeId || '');
+        dialog.dataset.relaySessionId = String(currentStoreTransferTasks()[0]?.relaySessionId || '');
+        dialog.setAttribute('aria-label', '本店异常商品');
+        const add = (parent, tag, text) => {
+            const node = document.createElement(tag);
+            node.textContent = text;
+            parent.appendChild(node);
+            return node;
+        };
+        const header = add(dialog, 'header', '');
+        add(header, 'h2', `异常商品（${entries.length} 件）`);
+        const close = add(header, 'button', '关闭');
+        close.type = 'button';
+        close.addEventListener('click', () => dialog.close());
+        const status = add(dialog, 'p', '');
+        status.setAttribute('role', 'status');
+        const actions = add(dialog, 'div', '');
+        actions.className = 'error-actions';
+        const copy = add(actions, 'button', '复制清单');
+        copy.type = 'button';
+        copy.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(directErrorsText(entries)); status.textContent = '已复制'; }
+            catch (_) { status.textContent = '复制不可用，请导出清单'; }
+        });
+        const download = add(actions, 'button', '导出清单');
+        download.type = 'button';
+        download.addEventListener('click', () => {
+            const url = URL.createObjectURL(new Blob([directErrorsText(entries)], { type: 'text/plain;charset=utf-8' }));
+            const anchor = add(dialog, 'a', '');
+            anchor.href = url;
+            anchor.download = `temu-errors-${Date.now()}.txt`;
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            status.textContent = '已导出';
+        });
+        for (const entry of entries) {
+            const item = add(dialog, 'section', '');
+            item.className = 'error-item';
+            add(item, 'h3', `${entry.label} · SPU ${entry.spuId}`);
+            const fields = add(item, 'dl', '');
+            for (const [label, value] of [
+                ['商品名称', entry.title || '未提供'], ['商品货号', entry.productCodes.join('、') || '未提供'],
+                ['关联 SKU', entry.skuCodes.join('、') || '未提供'], ['阶段', entry.stage],
+                ['具体错误 SKU', entry.offendingSkuCode || '未记录'],
+                ['错误码', entry.errorCode || '未提供'], ['错误原因', entry.reason],
+                ['原因长度', entry.reasonTruncated ? '回传内容已截断' : '未触及回传上限'],
+                ['服务器标记', ({ pending: '通知发送中', marked: '已提交商品禁传标记', already_marked: '此前已标记，无需重复',
+                    not_product_error: '此错误不禁传商品', stale_or_deleted: '来源已变化，旧通知已忽略', not_delivered: '通知未送达，服务器可能未标记' })[entry.noticeStatus]
+                    || '未发送商品错误通知']
+            ]) { add(fields, 'dt', label); add(fields, 'dd', value); }
+        }
+        dialog.addEventListener('close', () => { dialog.remove(); root.querySelector('.transfer-errors')?.focus(); }, { once: true });
+        root.appendChild(dialog);
+        dialog.showModal();
+        close.focus();
     }
 
     /** 结果未知时只允许操作者确认后重试；后台会把该商品排到当前店铺队列末尾。 */
@@ -2996,32 +3142,26 @@
         render('已确认重试，商品已排到上传队列末尾。');
     }
 
-    /**
-     * 取消本店还没提交到平台的待传任务。
-     *
-     * 与"停止并清理"的区别：停止是终止当前轮次（后续还能启用新一轮继续）；
-     * 取消是主动丢弃本店队列里还没提交的任务，不等自动清理。
-     * 已提交或结果未知的项不会被取消——它们可能已在平台建成商品，删掉会导致重复创建。
-     */
+    /** 结束清空本页队列；已发送的平台请求无法撤回，后续新批仍正常接收。 */
     async function cancelStoreTransferTasks() {
         if (directPauseBusy) return;
         const identity = currentPageIdentity();
         if (!identity?.storeId) return render("未识别到本店，无法取消任务。");
         const pending = (state.transferTasks || []).filter(task => String(task.targetStoreId || "") === String(identity.storeId));
-        const confirmed = window.confirm(`取消本店 ${pending.length} 个待上传任务？\n\n已提交到平台或结果待核对的任务会保留，不会被取消。`);
+        const confirmed = window.confirm(`结束本店队列并清除 ${pending.length} 个商品？\n\n已发往平台的请求无法撤回；之后发送的新商品仍正常处理。`);
         if (!confirmed) return;
+        root.querySelector('.error-dialog')?.close();
+        targetViewEpoch++;
         directPauseBusy = true;
         render(`正在取消本店 ${pending.length} 个待传任务…`);
         try {
             const result = await send("cancelStoreTasks", { identity });
             if (!result?.ok) throw new Error(result?.error || "cancel_store_tasks_failed");
-            // 服务端把未提交项置为取消后，本地已领快照也要跟着删掉，否则下次仍会显示待上传。
-            const purged = await send("purgeCancelledStoreTasks", { storeId: identity.storeId }).catch(() => ({ removed: 0 }));
             await refreshTargetUploadTasks();
             const kept = Number(result.kept || 0);
             render(kept
-                ? `已取消 ${Number(result.cancelled || 0)} 个待传任务，保留 ${kept} 个已在平台提交或结果待核对的任务。`
-                : `已取消 ${Number(result.cancelled || 0)} 个待传任务（本地清理 ${Number(purged?.removed || 0)} 个）。`);
+                ? `队列已清空；${kept} 个已开始的请求无法撤回，结果请到目标店查看。`
+                : `已清空 ${Number(result.cancelled || 0)} 个商品，后续新发送正常处理。`);
             await logOperation({ action: "cancel-store-tasks", status: "clicked", storeId: identity.storeId,
                 reason: `操作者取消本店待传任务：取消 ${Number(result.cancelled || 0)}，保留 ${kept}` });
         } catch (error) {
@@ -3032,82 +3172,6 @@
         }
     }
 
-    /**
-     * 列表页请求打开目标任务，新建基本信息页则响应用户点击填入资料。
-     * 类目、合规字段和最终提交仍由操作者核对，填写成功不代表发布成功。
-     */
-    async function openNextTransferTask() {
-        const directTask = currentTransferTask(currentPageIdentity());
-        if (directTask?.directCreate) {
-            const labels = {
-                received: "正在检索目标店商品",
-                authorizing: "正在预检商品资料",
-                submitting: "正在提交新增接口",
-                verifying: "已提交，正在回查商品ID",
-                created: "接口创建并回查成功，请到目标店商品列表核对",
-                unknown: "提交结果待核对，禁止重复发送",
-                preflight_failed: "接口预检失败",
-                duplicate_exists: "目标店已存在，未重复创建"
-            };
-            render(directTask.reason || labels[directTask.directState] || "接口创建任务已接收，插件正在自动创建，无需点击。");
-            return;
-        }
-        if (location.pathname === "/goods/edit") return fillCurrentTransferForm();
-        const identity = currentPageIdentity();
-        const task = currentTransferTask(identity);
-        if (!task) {
-            await logOperation({ action: "open-upload", status: "blocked", reason: "no_local_task", pendingCount: 0, storeId: identity.storeId });
-            render("插件尚未收到商品任务。请在网站发送后查看连接状态；若仍为 0 个，请导出操作日志排查。检测到插件不代表任务已送达。");
-            return;
-        }
-        const identityMatched = currentPageIdentityMatched(identity);
-        if (!identity.storeId || !identity.pageStoreName || !identityMatched || String(task.targetStoreId || "") !== identity.storeId) {
-            render("当前店铺尚未完成身份识别，不能打开上传任务。");
-            return;
-        }
-        render(`正在为 SPU ${task.spuId} 打开新建商品页…`);
-        const result = await send("reportTargetUploadTask", { payload: {
-            jobId: task.jobId,
-            spuId: task.spuId,
-            status: "upload_opened",
-            storeId: identity.storeId,
-            pageUrl: identity.pageUrl,
-            pageStoreName: identity.pageStoreName,
-            identityMatched,
-            reason: "操作者已在目标店打开新建商品页，等待手动填写和确认"
-        } }).catch(() => null);
-        if (!result || !result.ok) {
-            render(`无法打开上传任务：${result && result.error ? result.error : "任务回传失败"}`);
-            return;
-        }
-        state.transferTasks = Array.isArray(result.tasks) ? result.tasks : state.transferTasks;
-        if (result.pending) {
-            render("已请求网站核验任务，请稍后再点击打开；核验前不会进入商品页。");
-            return;
-        }
-        const createUrl = `${location.origin}/goods/create/category`;
-        location.assign(createUrl);
-    }
-
-    /** 仅用户点击才发送完整资料到新建表单；页面转换后仍由操作者检查并点击平台创建。 */
-    async function fillCurrentTransferForm() {
-        const identity = currentPageIdentity();
-        const task = currentTransferTask(identity);
-        if (!task || task.status !== "upload_opened") return render("任务尚未通过网站打开核验，请先在列表页打开待上传任务。");
-        if (!confirm(`将 SPU ${task.spuId} 的资料填入当前空白新建表单？\n不会自动创建或发布。`)) return;
-        const data = await send("getTargetFormProduct", { jobId: task.jobId, spuId: task.spuId, pageStoreName: identity.pageStoreName }).catch(() => null);
-        if (!data?.ok) return render(data?.error || "无法读取待上传商品资料");
-        const requestId = `fill-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const result = await new Promise(resolve => {
-            const done = value => { clearTimeout(timer); window.removeEventListener("temu-fill-result", listener); resolve(value); };
-            const listener = event => { try { const value = JSON.parse(event.detail); if (value.requestId === requestId) done(value); } catch {} };
-            const timer = setTimeout(() => done({ok:false,error:"填写响应超时，请检查表单，不要重复点击创建"}), 10000);
-            window.addEventListener("temu-fill-result", listener);
-            window.dispatchEvent(new CustomEvent("temu-fill-product", { detail: JSON.stringify({requestId,product:data.product}) }));
-        });
-        await logOperation({action:"fill-target-form",status:result.ok?"succeeded":"failed",jobId:task.jobId,spuId:task.spuId,error:result.error});
-        render(result.ok ? `已填入 ${result.skuCount} 个 SKU、${result.imageCount} 张轮播图。请核对必填项、资质和合规声明，再点击平台“创建”；尚未提交。` : `填写停止：${result.error}`);
-    }
 
     /** 资料缺少时提供当前任务 JSON 作为人工核对附件；文件中不包含领取凭证。 */
     async function exportCurrentTransferTask() {
@@ -3125,37 +3189,6 @@
         render(result && result.ok ? `已导出 SPU ${task.spuId} 的待上传资料 JSON。` : "导出待上传资料失败，请重试。");
     }
 
-    /** 只有操作者完成目标店页面填写后点击确认，仓库才记为已上传；该按钮不执行发布动作。 */
-    async function confirmCurrentTransferTask() {
-        const identity = currentPageIdentity();
-        const task = currentStoreTransferTasks(identity).find(item => item.status === "upload_opened");
-        if (!task) {
-            render("没有正在填写的上传任务。");
-            return;
-        }
-        const identityMatched = currentPageIdentityMatched(identity);
-        if (!identity.storeId || !identity.pageStoreName || !identityMatched || String(task.targetStoreId || "") !== identity.storeId) {
-            render("当前店铺尚未完成身份识别，不能确认上传。");
-            return;
-        }
-        if (!confirm(`确认 SPU ${task.spuId} 已由你在当前目标店完成上传吗？\n\n此操作只写入中转仓工作日志，不会点击发布。`)) return;
-        const result = await send("reportTargetUploadTask", { payload: {
-            jobId: task.jobId,
-            spuId: task.spuId,
-            status: "uploaded",
-            storeId: identity.storeId,
-            pageUrl: identity.pageUrl,
-            pageStoreName: identity.pageStoreName,
-            identityMatched,
-            reason: "操作者已确认在目标店完成上传"
-        } }).catch(() => null);
-        if (!result || !result.ok) {
-            render(`确认失败：${result && result.error ? result.error : "任务回传失败"}`);
-            return;
-        }
-        state.transferTasks = Array.isArray(result.tasks) ? result.tasks : [];
-        render(result.pending ? "已保存你的确认，等待 CLI 同步到网站；尚未回传成功。" : `SPU ${task.spuId} 已记录为“操作者确认上传”，未执行自动发布。`);
-    }
 
     /** 手动推送仍会等待在途写入；成功或失败都写进入库状态行，不改采集完成度。 */
     async function pushToWarehouse() {
@@ -3376,8 +3409,11 @@
             const incoming = message.task;
             const tasks = Array.isArray(state.transferTasks) ? state.transferTasks : [];
             const index = tasks.findIndex((task) => String(task.jobId) === String(incoming.jobId || "") && String(task.spuId) === String(incoming.spuId || ""));
-            if (index >= 0) state.transferTasks[index] = { ...tasks[index], ...incoming };
-            else state.transferTasks = [...tasks, incoming];
+            // 进度不是入队通道，迟到消息不能复活已结束/刷新或另一轮的任务。
+            if (index < 0 || tasks[index].targetStoreId !== incoming.targetStoreId
+                || tasks[index].relaySessionId !== incoming.relaySessionId
+                || tasks[index].executionRunId !== incoming.executionRunId) return;
+            state.transferTasks[index] = { ...tasks[index], ...incoming };
             if (incoming.reason) state.message = incoming.reason;
             render();
         });
