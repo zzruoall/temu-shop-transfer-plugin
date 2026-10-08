@@ -27,7 +27,7 @@
     // SKC ID 只在删除状态核验时使用：它是行内可见标识，能按当前页商品精准取回平台状态。
     // 页面常把前一个 SPU 数字与“SKC ID”直接连写，因此左边界只能排除字母，不能把数字当成边界。
     const SKC_TEXT_PATTERN = /(?:^|[^A-Za-z])SKC\s*ID\s*[：:#]?\s*([0-9]{6,20})(?![0-9])/i;
-    // 选择性采集锁定范围的行标记；平台隐藏了真实复选框，插件必须提供自己的可见反馈。
+    // 旧版锁定标记仅用于清理；当前版本不得按任务清单回写平台复选框。
     const LOCKED_ROW_ATTRIBUTE = "data-temu-selected-capture";
     const LOCKED_ROW_STYLE_ID = "temu-selected-capture-locked-style";
     const state = {
@@ -58,13 +58,19 @@
         capturedProductIds: new Set(),
         verifiedMatchedProductIds: new Set(),
         pageVisibleCount: 0,
-        // 用户在 Temu 原生商品表格中勾选的 SPU，独立于当前分页 DOM，保证选择性采集不受刷新影响。
+        // 当前列表的实时勾选清单；虚拟滚动暂时卸载的行保留最后一次原生勾选状态。
         selectedProductIds: new Set(),
+        // 点击启动时复制的批次范围；null 表示尚无批次，空集合也不能回退为整页采集。
+        captureTargetIds: null,
         selectionMode: false,
+        captureStarting: false,
+        selectionTimer: null,
         declaredProductCount: null,
         expectedSource: "暂无",
         pageScanReady: false,
         pageKey: getPageContextKey(),
+        // 同一路由也可能切换店铺；已识别店名变化必须淘汰旧选择与行元数据。
+        pageStoreName: "",
         pendingWrites: 0,
         bufferOverflow: false,
         productEvents: 0,
@@ -284,7 +290,7 @@
                 <div class="core">
                     <div class="row"><span>采集</span><span class="value capture-status off">未启动</span></div>
                     <div class="progress-block">
-                        <div class="progress-label"><span>进度</span><span class="value coverage">—</span></div>
+                        <div class="progress-label"><span>本次采集进度</span><span class="value coverage">—</span></div>
                         <div class="progress" role="progressbar" aria-label="采集进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="未开始"><span class="progress-bar"></span></div>
                     </div>
                     <div class="row ingest-row"><span>入库</span><span class="value ingest-status off">未配置</span></div>
@@ -301,7 +307,7 @@
                         <button type="button" class="btn secondary wide transfer-pause">暂停</button>
                         <button type="button" class="btn secondary wide transfer-errors" hidden>查看异常</button>
                     </div>
-                    <div class="row selection-row"><span>已选商品</span><span class="value selected-count">0 个</span></div>
+                    <div class="row selection-row"><span>当前选择</span><span class="value selected-count">0 个</span></div>
                     <div class="core-actions">
                         <button type="button" class="btn primary start wide">采集当前页</button>
                         <button type="button" class="btn secondary start-selected wide" disabled>采集已选商品</button>
@@ -636,7 +642,7 @@
      * 不能写入动态商品数量或当前可见 SPU，否则列表总数变化和虚拟滚动会把进行中的采集当成切页。
      */
     function getPageContextKey() {
-        const activeLabels = Array.from(document.querySelectorAll("[role='tab'][aria-selected='true'], .ant-tabs-tab-active, [aria-current='page']"))
+        const activeLabels = Array.from(document.querySelectorAll("[role='tab'][aria-selected='true'], .ant-tabs-tab-active, [aria-current='page'], [class*='TAB_tabItem'][class*='TAB_active']"))
             .filter(isVisible)
             .map(element => stablePageLabel(element.textContent))
             .filter(Boolean)
@@ -659,10 +665,15 @@
     function syncPageContext() {
         const currentPageKey = getPageContextKey();
         const helper = typeof TemuPageContext !== "undefined" ? TemuPageContext : null;
-        const genuine = helper && typeof helper.isGenuineListContextChange === "function"
+        const identityHelper = typeof TemuStoreIdentity !== "undefined" ? TemuStoreIdentity : null;
+        const pageStoreName = identityHelper?.readPageIdentity
+            ? String(identityHelper.readPageIdentity(document, { location }).storeName || "").trim() : "";
+        const storeChanged = Boolean(state.pageStoreName && pageStoreName && state.pageStoreName !== pageStoreName);
+        if (pageStoreName) state.pageStoreName = pageStoreName;
+        const listChanged = helper && typeof helper.isGenuineListContextChange === "function"
             ? helper.isGenuineListContextChange(state.pageKey, currentPageKey)
             : Boolean(state.pageKey) && state.pageKey !== currentPageKey;
-        if (genuine) {
+        if (storeChanged || listChanged) {
             // 页码或分类发生真实变化时，连采集结束后仍在等待入库的旧轮也终止，不能自动重开采集。
             state.enabled = false;
             state.runGeneration += 1;
@@ -739,7 +750,7 @@
         return visible.filter(row => !visible.some(other => other !== row && row.contains(other)));
     }
 
-    /** 从真实商品行读取已勾选 SPU；表头全选框没有 SPU，不会误加入选择清单。 */
+    /** 只同步当前挂载行的原生选择；不读取任务快照，也不改平台复选框。 */
     function readSelectedProductIds() {
         const roots = getProductScanRoots();
         const ids = new Set(state.selectedProductIds);
@@ -754,82 +765,39 @@
         return ids;
     }
 
-    /** 选择清单按标签页保存，刷新或分页重绘后仍能继续；两小时未使用自动失效。 */
-    async function persistSelectedProductIds() {
-        const ids = [...state.selectedProductIds];
-        if (!ids.length) {
-            await send("clearSelectedCaptureIntent").catch(() => {});
-            return;
-        }
-        await send("saveSelectedCaptureIntent", { input: {
-            spuIds: ids,
-            pageUrl: location.href,
-            pageStoreName: currentPageIdentity().storeName || ""
-        } }).catch(() => {});
-    }
-
-    async function restoreSelectedProductIds() {
-        const result = await send("getSelectedCaptureIntent").catch(() => null);
-        const intent = result && result.intent;
-        if (!intent || !Array.isArray(intent.spuIds)) return;
-        if (intent.pageUrl && !String(intent.pageUrl).startsWith(`${location.origin}/goods/list`)) return;
-        const page = currentPageIdentity();
-        if (intent.pageStoreName && page.storeName && typeof TemuStoreIdentity !== "undefined"
-            && typeof TemuStoreIdentity.namesCompatible === "function"
-            && !TemuStoreIdentity.namesCompatible(intent.pageStoreName, page.storeName)) {
-            await send("clearSelectedCaptureIntent").catch(() => {});
-            return;
-        }
-        state.selectedProductIds = new Set(intent.spuIds.map(normalizeProductId).filter(Boolean));
-        state.selectionMode = state.selectedProductIds.size > 0;
-    }
-
+    /** 行选择即时同步；表头全选只作用于当前列表已识别的商品，不能改本次采集快照。 */
     function handleNativeProductSelection(event) {
         const checkbox = event.target;
         if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== "checkbox") return;
+        syncPageContext();
         const row = checkbox.closest("tr, [role='row'], [data-row-key], [class*='table-row' i]");
         const spuId = readSpuIdFromRow(row);
-        if (!spuId) return;
-        if (checkbox.checked) state.selectedProductIds.add(spuId);
-        else state.selectedProductIds.delete(spuId);
-        persistSelectedProductIds();
+        if (spuId) {
+            if (checkbox.checked) state.selectedProductIds.add(spuId);
+            else state.selectedProductIds.delete(spuId);
+        } else if (checkbox.closest("thead, [role='columnheader']")) {
+            if (checkbox.checked) {
+                state.domProductIds.forEach(productId => state.selectedProductIds.add(productId));
+            } else {
+                state.selectedProductIds.clear();
+            }
+        } else return;
         render();
     }
 
-    /**
-     * 卖家中心把真实复选框渲染成 opacity:0 的隐藏 input，可见勾选由旁边的图标 div 负责。
-     * 因此仅回写 checked 属性用户看不到任何变化，必须再给商品行加一个插件自己的可见标记，
-     * 让用户刷新后仍能确认哪些商品属于本次已锁定范围。标记只作用于行属性，不改平台 DOM 结构。
-     */
-    function ensureLockedRowStyle() {
-        if (document.getElementById(LOCKED_ROW_STYLE_ID)) return;
-        const style = document.createElement("style");
-        style.id = LOCKED_ROW_STYLE_ID;
-        // 平台会在运行期继续注入表格样式，标记必须 !important 才不会被后到的行背景覆盖掉。
-        style.textContent = `[${LOCKED_ROW_ATTRIBUTE}="1"]{box-shadow:inset 3px 0 0 #1677ff !important;background:rgba(22,119,255,.06) !important;}`;
-        (document.head || document.documentElement).appendChild(style);
-    }
-
-    /** 退出选择性采集后必须清掉残留标记，否则用户会以为旧勾选仍然生效。 */
+    /** 清理旧版本留下的锁定样式，页面勾选的唯一真值仍由平台维护。 */
     function clearLockedRowMarkers() {
         document.querySelectorAll(`[${LOCKED_ROW_ATTRIBUTE}="1"]`).forEach(row => row.removeAttribute(LOCKED_ROW_ATTRIBUTE));
+        document.getElementById(LOCKED_ROW_STYLE_ID)?.remove();
     }
 
-    /** 刷新或分页重绘后把已锁定的 SPU 映射回原生复选框，避免用户看到全未选中并在启动时误清空清单。 */
-    function restoreVisibleProductCheckboxes(rows) {
-        if (!state.selectionMode || !state.selectedProductIds.size) {
-            clearLockedRowMarkers();
-            return;
-        }
-        ensureLockedRowStyle();
-        rows.forEach(row => {
-            const checkbox = row.querySelector("input[type='checkbox']");
-            const spuId = readSpuIdFromRow(row);
-            const locked = Boolean(spuId && state.selectedProductIds.has(spuId));
-            if (checkbox && locked) checkbox.checked = true;
-            if (locked) row.setAttribute(LOCKED_ROW_ATTRIBUTE, "1");
-            else row.removeAttribute(LOCKED_ROW_ATTRIBUTE);
-        });
+    /** 平台可能只更新 checked 属性而不触发 DOM 变更；轻量轮询只在选择真正变化时渲染。 */
+    function syncLiveSelection() {
+        if (!isWorkPage() || state.detailMode) return;
+        const contextChanged = syncPageContext();
+        const previous = state.selectedProductIds;
+        const current = readSelectedProductIds();
+        if (contextChanged || previous.size !== current.size || [...previous].some(id => !current.has(id))) render();
     }
 
     /** 优先限制在主内容/商品列表容器，行级过滤会进一步排除侧栏通知和导航。 */
@@ -928,9 +896,9 @@
     /** 以商品表格 SPU 为主；当前页主列表接口可补齐虚拟滚动未挂载的行，其他任务接口不进入集合。 */
     function refreshExpectedProducts() {
         const previousKey = `${state.pageProductIds.size}:${state.expectedSource}`;
-        if (state.selectionMode && state.selectedProductIds.size) {
-            state.pageProductIds = new Set(state.selectedProductIds);
-            state.expectedSource = "用户勾选的 SPU";
+        if (state.captureTargetIds !== null) {
+            state.pageProductIds = new Set(state.captureTargetIds);
+            state.expectedSource = state.selectionMode ? "本次采集快照（勾选 SPU）" : "本次采集快照（当前页 SPU）";
             applyRemovalToExpectedProducts();
             const currentKey = `${state.pageProductIds.size}:${state.expectedSource}`;
             if (previousKey !== currentKey) matchPendingProductIds();
@@ -970,14 +938,9 @@
         syncPageContext();
         const roots = getProductScanRoots();
         const rows = getProductTableRows(roots);
-        // 采集任务恢复后不再用刷新后的未勾选 DOM 覆盖跨页选择；普通浏览状态才同步当前页勾选。
-        if (!state.selectionMode) {
-            readSelectedProductIds();
-            // 非选择性采集下平台自身会显示勾选，插件的锁定标记必须清掉，避免误导。
-            clearLockedRowMarkers();
-        } else {
-            restoreVisibleProductCheckboxes(rows);
-        }
+        // 实时选择与固定批次独立：运行、停止和失败时都读原生勾选，不按旧清单勾回。
+        readSelectedProductIds();
+        clearLockedRowMarkers();
         const ids = new Set(rows.map(readSpuIdFromRow).filter(Boolean));
         // SKC 只在核验店铺删除状态时使用；虚拟滚动会移除旧行，因此映射按已见行累积，避免后滚动丢失。
         rows.forEach(row => {
@@ -1023,6 +986,7 @@
         // 搜索框和分页输入通常只改 value，不改子节点；必须额外监听，否则 DOM 筛选切页不会重置集合。
         document.addEventListener("input", schedulePageScan, true);
         document.addEventListener("change", event => { handleNativeProductSelection(event); schedulePageScan(); }, true);
+        if (!state.selectionTimer) state.selectionTimer = setInterval(syncLiveSelection, 500);
     }
 
     /**
@@ -1180,17 +1144,21 @@
 
     async function startDetailSupplement() {
         if (state.detailSupplementStarted || state.detailMode) return false;
+        const generation = state.runGeneration;
         // 详情补采前先按当前页商品核验店铺删除状态，已删除商品不再补详情，也不会进入入库白名单。
         const verificationTargetIds = captureProductIds();
         const removal = await verifyRemovedProducts(verificationTargetIds);
+        // 暂停或切页后晚到的核验回执不得启动旧批次详情队列。
+        if (!state.enabled || generation !== state.runGeneration) return false;
         // 有目标商品但状态不完整时禁止继续：拿不到实时删除状态只能停止，不能把未知状态当成“仍在店铺”。
         if (verificationTargetIds.size && !removal.checked) {
             state.detailSupplementStarted = false;
             state.enabled = false;
-            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
+            clearCompletionTimers();
             state.phase = "待人工确认";
             state.message = `未能核验当前页商品的店铺删除状态：${removal.reason || "未知原因"}。为避免误传，本轮已停止，未上传；请刷新页面后重试。`;
             render();
+            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
             return false;
         }
         // 删除状态核验结果并入详情补采提示，运营在面板上能直接看到本页跳过了几件已删除商品。
@@ -1214,13 +1182,15 @@
             eventIds: Array.from(state.runEventIds),
             listUrl: location.href
         } }).catch(error => ({ transportError: true, error: String(error && error.message || error) }));
+        if (!state.enabled || generation !== state.runGeneration) return false;
         if (!result || result.transportError || result.ok === false || (result.active === false && !result.total)) {
             state.detailSupplementStarted = false;
             state.enabled = false;
-            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
+            clearCompletionTimers();
             state.phase = "采集失败";
             state.message = `详情补采队列启动失败：${result && result.error || "未知错误"}`;
             render();
+            await send("setCaptureEnabled", { enabled: false, captureToken: state.captureToken }).catch(() => {});
             return false;
         }
         state.detailQueue = result;
@@ -1301,11 +1271,10 @@
         } finally { state.apiRunning = false; }
     }
 
-    /** 当前采集目标优先使用用户勾选集合；未勾选时才回退到整页商品集合。 */
+    /** 只返回点击启动时的批次快照；删除状态可排除目标，但后续勾选不能改变范围。 */
     function captureProductIds() {
-        const targetIds = state.selectionMode && state.selectedProductIds.size ? state.selectedProductIds : state.pageProductIds;
+        const targetIds = state.captureTargetIds === null ? state.pageProductIds : state.captureTargetIds;
         // 店铺已删除的商品不补详情、不进入库白名单；即使运营手动勾选过也不上传。
-        if (!state.removedProductIds.size) return targetIds;
         return new Set(Array.from(targetIds).filter(productId => !state.removedProductIds.has(productId)));
     }
 
@@ -1351,10 +1320,11 @@
     /**
      * 按当前页商品自己的 SKC ID 向平台核验店铺删除状态。
      * 只读当前页商品，不按货号检索整店：同一货号删除后可能被重新建成新商品，货号历史无法区分两者，
-     * 而 SKC/商品 ID 是平台对单个商品的实时标识。查询失败或页面未提供 SKC 时保持原有行为，
-     * 不会因为拿不到状态就少传商品。
+     * 而 SKC/商品 ID 是平台对单个商品的实时标识。查询失败或缺少 SKC 时停止本轮，
+     * 不能把未核验状态当成“仍在店铺”。
      */
     async function verifyRemovedProducts(targetIds) {
+        const generation = state.runGeneration;
         const targetProductIds = Array.from(targetIds || []).map(normalizeProductId).filter(Boolean);
         const unresolvedProductIds = targetProductIds.filter(productId => !state.removalKnownProductIds.has(productId));
         if (!unresolvedProductIds.length) return { checked: true, removed: 0, active: 0 };
@@ -1385,6 +1355,7 @@
             window.addEventListener("message", onMessage);
             window.postMessage({ source: "temu-shop-transfer-api-v1", kind: "removal", requestId, skcIds }, location.origin);
         });
+        if (generation !== state.runGeneration) return { checked: false, removed: 0, active: 0, reason: "本轮已停止或页面已切换" };
         if (response && response.error) return { checked: false, removed: 0, active: 0, reason: String(response.error) };
         const items = Array.isArray(response?.payload?.items) ? response.payload.items : [];
         const validItems = items.filter(item => {
@@ -1415,7 +1386,7 @@
         if (state.detailQueue && (state.detailMode || state.apiRunning || state.finished)) return Number(state.detailQueue.total) || 0;
         if (!state.pageScanReady) return null;
         // 页面商品指当前页实际可匹配集合；接口总数可能是筛选结果总量，单独展示，不阻断当前页完成。
-        if (captureProductIds().size) return captureProductIds().size;
+        if (state.captureTargetIds !== null || captureProductIds().size) return captureProductIds().size;
         // 当前页识别出的商品全部是店铺已删除时，本页没有可上传目标，不再按可见行数要求采集。
         if (state.removedOnlyPage) return 0;
         if (state.pageVisibleCount) return state.pageVisibleCount;
@@ -1521,7 +1492,7 @@
         const start = root.querySelector(".start");
         const selected = root.querySelector(".start-selected");
         const stop = root.querySelector(".stop");
-        const running = Boolean(state.enabled && !state.finished);
+        const running = Boolean(state.captureStarting || (state.enabled && !state.finished));
         start.classList.toggle("hidden", running);
         stop.classList.toggle("hidden", !running);
         start.disabled = running;
@@ -1735,7 +1706,7 @@
         root.querySelector(".completed").textContent = String(completed);
         root.querySelector(".coverage").textContent = coverageText();
         const selectedCount = root.querySelector(".selected-count");
-        if (selectedCount) selectedCount.textContent = `${state.selectedProductIds.size} 个${state.selectionMode ? "（本次采集）" : ""}`;
+        if (selectedCount) selectedCount.textContent = `${state.selectedProductIds.size} 个`;
         const progress = root.querySelector(".progress");
         const progressBar = root.querySelector(".progress-bar");
         if (progress && progressBar) {
@@ -1960,6 +1931,8 @@
             mappedStoreId: mappedStore.storeId || page.storeId || "",
             mappedStoreName: mappedStore.storeName || (page.storeId ? page.storeName : "") || "",
             expectedCount: expected,
+            // 当前选择仅供面板观察，与 expectedCount 表示的本次采集范围分别发布。
+            selectedCount: state.selectedProductIds.size,
             // 店铺已删除、已从本批次排除的商品数；只写数量，不写货号或商品正文。
             removedCount: state.removedProductIds.size,
             completedCount: matchedProductCount(),
@@ -1984,6 +1957,7 @@
             panel.setAttribute("data-mapped-store-id", status.mappedStoreId);
             panel.setAttribute("data-mapped-store-name", status.mappedStoreName);
             panel.setAttribute("data-expected-count", status.expectedCount == null ? "" : String(status.expectedCount));
+            panel.setAttribute("data-selected-count", String(status.selectedCount));
             panel.setAttribute("data-removed-count", String(status.removedCount || 0));
             panel.setAttribute("data-completed-count", String(status.completedCount || 0));
             panel.setAttribute("data-capture-phase", status.capturePhase || "");
@@ -2288,24 +2262,30 @@
         return code || "未知错误";
     }
 
-    /** 页面路由或任务代际变化时清理旧商品集合，防止跨页响应污染当前页。 */
-    function resetPageContext(resetTechnicalCounters) {
+    /** 切页清空选择、快照和页面索引；同页启动保留实时读取结果，但运行证据必须重建。 */
+    function resetPageContext(resetTechnicalCounters, { preserveSelection = false, preservePageIndex = false } = {}) {
         clearCompletionTimers();
         state.pageKey = getPageContextKey();
         state.pageProductIds.clear();
-        state.domProductIds.clear();
-        state.listProductIds.clear();
+        if (!preservePageIndex) {
+            state.domProductIds.clear();
+            state.listProductIds.clear();
+            state.rowSkcIds.clear();
+            state.pageVisibleCount = 0;
+            state.declaredProductCount = null;
+        }
         state.removedProductIds.clear();
         state.removalKnownProductIds.clear();
-        state.rowSkcIds.clear();
+        // 选择及页面索引不属于运行证据；启动不能把虚拟列表已卸载的行和 SKC 一起丢掉。
+        if (!preserveSelection) state.selectedProductIds.clear();
+        state.captureTargetIds = null;
+        state.selectionMode = false;
         state.removedOnlyPage = false;
         state.pendingProductIds.clear();
         state.pendingVerifiedProductIds.clear();
         state.runEventIds.clear();
         state.capturedProductIds.clear();
         state.verifiedMatchedProductIds.clear();
-        state.pageVisibleCount = 0;
-        state.declaredProductCount = null;
         state.expectedSource = "暂无";
         state.pageScanReady = false;
         // 诊断必须与 pageContextKey 同生共死，筛选或分页切换后不能把上一页的 DOM 误写进新日志。
@@ -2469,6 +2449,7 @@
         return {
             phase,
             expectedCount: expectedProductCount(),
+            selectedCount: state.selectedProductIds.size,
             completedCount: matchedProductCount(),
             pageProductIdsCount: state.pageProductIds.size,
             matchedProductIdsCount: state.verifiedMatchedProductIds.size,
@@ -2729,7 +2710,7 @@
         }
         if (!hasProductResponse && !forceTimeout) return;
         const targets = captureProductIds();
-        const selectedRunReady = state.selectionMode && state.selectedProductIds.size > 0
+        const selectedRunReady = state.selectionMode && state.captureTargetIds?.size > 0
             && state.primaryProductEvents > 0;
         const complete = !writeDrainTimedOut && targets.size > 0
             && (selectedRunReady || state.verifiedMatchedProductIds.size >= targets.size)
@@ -2792,70 +2773,79 @@
         }, delay);
     }
 
-    async function startCapture() {
+    /** 普通采集和选择采集共用启动边界，启动前即冻结目标，避免后台回执期间选择发生变化。 */
+    async function startCaptureBatch(selectedOnly) {
+        if (state.captureStarting || (state.enabled && !state.finished)) return;
         if (state.interfaceDiagnostics && state.interfaceDiagnostics.active) {
             render("接口诊断正在记录。请先点击“停止并导出接口诊断”，再启动正常采集，避免同一大响应被重复处理。");
             setToolsExpanded(true);
             return;
         }
-        let result;
-        state.selectionMode = false;
-        state.selectedProductIds.clear();
-        send("clearSelectedCaptureIntent").catch(() => {});
-        try {
-            // 新采集显式丢弃旧终态，防止刷新后恢复上一批“完成”而跳过本次执行。
-            await send("clearDetailSupplement");
-            result = await send("setCaptureEnabled", { enabled: true });
-            state.captureToken = result?.captureToken || '';
-        } catch (error) {
-            result = { error: error?.message || "无法启动采集" };
-        }
-        state.enabled = Boolean(result && result.ok && result.enabled);
-        if (!state.enabled) {
-            state.phase = "采集失败";
-            render(result?.error || "无法启动采集，请确认扩展后台正常运行。");
+        scanPageProducts();
+        // 旧批次完成/失败后 pageProductIds 仍表示旧快照；普通新采集必须改用实时页面索引。
+        const targets = new Set(selectedOnly ? state.selectedProductIds : [...state.domProductIds, ...state.listProductIds]);
+        if (!targets.size) {
+            render(selectedOnly ? "请先在商品行左侧勾选至少一个商品，再开始选择性采集。" : "当前页面尚未识别到商品，请等待列表加载后重试。");
             return;
         }
-        // 采集范围必须从点击时的当前页重建，不能沿用平台切页后累积的上一页 SPU 集合。
         resetDetailRuntimeForNewCapture();
-        resetPageContext(true);
-        beginRun();
-        if (!await waitForCurrentPageScan()) {
+        resetPageContext(true, { preserveSelection: true, preservePageIndex: true });
+        state.captureTargetIds = targets;
+        state.selectionMode = selectedOnly;
+        state.captureStarting = true;
+        refreshExpectedProducts();
+        const generation = state.runGeneration;
+        const pageKey = state.pageKey;
+        render("正在启动本次采集…");
+        let result;
+        try {
+            await send("clearDetailSupplement");
+            syncPageContext();
+            if (generation !== state.runGeneration || pageKey !== state.pageKey) return;
+            result = await send("setCaptureEnabled", { enabled: true });
+            syncPageContext();
+            if (generation !== state.runGeneration || pageKey !== state.pageKey) {
+                // 切页时启动回执可能晚到；只关闭这个旧令牌，不接续到新页面。
+                if (result?.captureToken) await send("setCaptureEnabled", { enabled: false, captureToken: result.captureToken }).catch(() => {});
+                return;
+            }
+            state.captureToken = result?.captureToken || "";
+            state.enabled = Boolean(result && result.ok && result.enabled);
+            if (!state.enabled) {
+                state.phase = "采集失败";
+                render(result?.error || "无法启动采集，请确认扩展后台正常运行。");
+                return;
+            }
+            beginRun();
+        } catch (error) {
+            if (generation === state.runGeneration) {
+                state.enabled = false;
+                state.phase = "采集失败";
+                render(error?.message || "无法启动采集");
+            }
+            return;
+        } finally {
+            state.captureStarting = false;
+            render();
+        }
+        const activeGeneration = state.runGeneration;
+        const scanned = await waitForCurrentPageScan();
+        if (!state.enabled || activeGeneration !== state.runGeneration) return;
+        if (!scanned) {
             finishCapture("采集超时", "当前页商品未在等待时间内完成识别，未上传；请确认列表已加载后重试。");
             return;
         }
         await startDetailSupplement();
     }
 
-    /** 选择性采集沿用当前文档的接口采集，不能再用刷新继承队列绕过轮次终止。 */
+    /** 普通采集冻结点击时已识别的当前页范围，不清空用户正在编辑的勾选。 */
+    async function startCapture() {
+        await startCaptureBatch(false);
+    }
+
+    /** 选择性采集只复制点击时的原生勾选；之后的选择留给下一批，不再刷新或恢复旧勾选。 */
     async function startSelectedCapture() {
-        readSelectedProductIds();
-        if (!state.selectedProductIds.size) {
-            render("请先在商品行左侧勾选至少一个商品，再开始选择性采集。");
-            return;
-        }
-        state.selectionMode = true;
-        await persistSelectedProductIds();
-        let captureError = "";
-        try {
-            await send("clearDetailSupplement");
-            const result = await send("setCaptureEnabled", { enabled: true });
-            state.captureToken = result?.captureToken || '';
-            state.enabled = Boolean(result && result.ok && result.enabled);
-        } catch (error) { state.enabled = false; captureError = error?.message || ""; }
-        if (!state.enabled) {
-            state.phase = "采集失败";
-            render(captureError || "无法启动选择性采集，请确认扩展后台正常运行。");
-            return;
-        }
-        resetDetailRuntimeForNewCapture();
-        resetPageContext(true);
-        beginRun();
-        if (!await waitForCurrentPageScan()) {
-            finishCapture('采集超时', '当前页商品未就绪，未上传。');
-            return;
-        }
-        await startDetailSupplement();
+        await startCaptureBatch(true);
     }
 
     async function stopCapture() {
@@ -3424,7 +3414,8 @@
         send("getCaptureEnabled").then(async result => {
             state.captureToken = result?.captureToken || '';
             state.enabled = Boolean(result && result.ok && result.enabled);
-            await restoreSelectedProductIds();
+            // 只读当前页面选择，不把旧版 session 清单恢复成任务或强制勾选。
+            await send("clearSelectedCaptureIntent").catch(() => {});
             // 等待 document_start 发起的恢复请求，不能等 DOM 就绪后再重新问一次，
             // 否则商品编辑页首批详情请求已经错过。
             await interfaceDiagnosticsBootstrap;
@@ -3436,7 +3427,7 @@
             }
             const inDetailSupplement = await initializeDetailSupplement(detailQueue);
             const completedDetailSupplement = !inDetailSupplement && restoreFinishedDetailSupplement(detailQueue);
-            if (!inDetailSupplement && !completedDetailSupplement) startPageTracking();
+            if (!inDetailSupplement) startPageTracking();
             if (state.enabled && !inDetailSupplement && !completedDetailSupplement) beginRun();
             state.ready = true;
             const buffered = pendingEvents.splice(0, pendingEvents.length);
