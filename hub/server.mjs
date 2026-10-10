@@ -901,7 +901,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === "GET" && url.pathname === "/api/stores") {
             /**
              * 店铺页数据源，分两类：
-             *   online —— 插件连接过的所有店铺（供认领，别人已认领的也可见但不可再认领）；
+             *   online —— 非本人认领的店铺（供认领，别人已认领的也可见但不可再认领）；
              *   mine   —— 我已认领的店铺（含当前离线的，用于解除认领）。
              * 两份数据合并自"插件心跳表"与"归属表"：归属表保证认领过的店永不消失，
              * 心跳表保证只看插件连过一次就被记住，即使它之后再没上线。
@@ -961,24 +961,28 @@ const server = http.createServer(async (req, res) => {
             const byName = (left, right) => collator.compare(String(left.storeName || left.storeId), String(right.storeName || right.storeId));
             stores.sort((left, right) => (left.online === right.online) ? byName(left, right) : (left.online ? -1 : 1));
             const mine = stores.filter((store) => store.claimState === "mine");
+            // 用户的“全部店铺”只浏览尚未由本人认领的店；先排除再分页，避免空页和总数虚高。
+            // 默认完整目录及管理员用途保持原口径，隐藏不解除归属，也不改变商品投递权限。
+            const view = String(url.searchParams.get("view") || "all").trim().toLocaleLowerCase();
+            const listingStores = view === "online" ? stores.filter((store) => store.claimState !== "mine") : stores;
+            const countedStores = view === "mine" ? mine : listingStores;
             const counts = {
-                unclaimed: stores.filter((store) => store.claimState === "unclaimed").length,
+                unclaimed: countedStores.filter((store) => store.claimState === "unclaimed").length,
                 mine: mine.length,
-                others: stores.filter((store) => store.claimState === "others").length,
-                online: stores.filter((store) => store.online).length,
-                offline: stores.filter((store) => !store.online).length
+                others: countedStores.filter((store) => store.claimState === "others").length,
+                online: countedStores.filter((store) => store.online).length,
+                offline: countedStores.filter((store) => !store.online).length
             };
             const hasStoreQuery = ["limit", "offset", "view", "q", "online", "claimState"]
                 .some((key) => url.searchParams.has(key));
             if (hasStoreQuery) {
-                const view = String(url.searchParams.get("view") || "all").trim().toLocaleLowerCase();
                 const query = String(url.searchParams.get("q") || "").trim().toLocaleLowerCase();
                 const onlineFilter = String(url.searchParams.get("online") || "").trim();
                 const claimFilter = String(url.searchParams.get("claimState") || "").trim();
                 const requestedLimit = Number(url.searchParams.get("limit"));
                 const limit = Number.isFinite(requestedLimit) ? Math.min(200, Math.max(1, requestedLimit)) : 50;
                 const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
-                const filtered = stores.filter((store) => {
+                const filtered = listingStores.filter((store) => {
                     if (view === "mine" && store.claimState !== "mine") return false;
                     if (onlineFilter === "1" && !store.online) return false;
                     if (onlineFilter === "0" && store.online) return false;
@@ -1001,6 +1005,8 @@ const server = http.createServer(async (req, res) => {
                     mine: page.filter((store) => store.claimState === "mine"),
                     isAdmin,
                     counts,
+                    // 完整分类归属快照只带不可认领的标识，跨页勾选不能依赖当前搜索页判断是否已被认领。
+                    ...(view === "online" ? { unclaimableStoreIds: stores.filter((store) => store.claimState !== "unclaimed").map((store) => store.storeId) } : {}),
                     total: filtered.length,
                     offset,
                     limit,

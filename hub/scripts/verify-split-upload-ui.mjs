@@ -191,7 +191,7 @@ try {
     const empty = await fixture({ online: false, red: 0 });
     await openBatch(empty); await chooseTask(empty.page, 'qualification_upload', []);
     assert.equal(await empty.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
-    await empty.page.locator('#single-target-options').getByText('暂无在线目标店铺。').waitFor();
+    await empty.page.locator('#single-target-options').getByText('暂无可接收当前任务的在线店铺。').waitFor();
     await empty.page.keyboard.press('Escape');
     await empty.page.locator('[data-transfer-spu]').first().click();
     await chooseTask(empty.page, 'product_create', []);
@@ -318,7 +318,8 @@ try {
     const oldTarget = await fixture({ count: 1, red: 0 }); oldTarget.setVersion('11.0.3'); await oldTarget.notify();
     await openBatch(oldTarget);
     assert.equal(await oldTarget.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
-    assert.equal(await oldTarget.page.locator('#single-target-dialog [data-store-id]').count(), 0);
+    assert.equal(await oldTarget.page.locator('#single-target-options input[type="checkbox"]').count(), 0);
+    assert.equal(await oldTarget.page.locator('#single-target-dialog button[value="qualification_upload"]').isDisabled(), true);
     assert.equal(oldTarget.sends.length, 0); await oldTarget.close();
 
     // 模拟BFCache保留DOM的离页，不能靠节点仍连接继续下一分段或下一店铺。

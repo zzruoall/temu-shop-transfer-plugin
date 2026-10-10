@@ -17,5 +17,15 @@ const dialog = source.slice(source.indexOf('<dialog id="single-target-dialog"'),
 assert.doesNotMatch(dialog, /upload-task-notice|upload-product-compliance|商品合规声明|已发内容不撤回/);
 assert.match(dialog, /value="product_create"[^>]*>上架商品<\/button>/);
 assert.match(dialog, /value="qualification_upload"[^>]*>补全资质<\/button>/);
-assert.match(source, /Number\(version\[2\]\) >= 4/);
-console.log(JSON.stringify({ noticesRemoved: true, bothCommandsPreserved: true, minimumPluginPreserved: '11.0.4', productionWrites: 0 }));
+// 静态资源核验附带纯函数边界检查，不把它当作真实店铺已经能够执行的证明。
+const match = source.match(/function canReceiveSplitUpload\(agent\)\s*\{([\s\S]*?)\n\}/);
+assert.ok(match);
+const receives = new Function('agent', match[1]);
+const ready = { online: true, pluginDetected: true, identityMatched: true, canReceiveUploads: true, storeId: 'synthetic' };
+assert.equal(receives({ ...ready, pluginVersion: '11.0.3' }), false);
+assert.equal(receives({ ...ready, pluginVersion: '11.0.4' }), true);
+assert.equal(receives({ ...ready, pluginVersion: '11.0.4', online: false }), false);
+assert.match(source, /\.filter\(canReceiveSplitUpload\)/);
+const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
+assert.match(server, /pluginVersionAtLeast\(target\.pluginVersion, \[11, 0, 4\]\)/);
+console.log(JSON.stringify({ noticesRemoved: true, bothCommandsPreserved: true, versionAndOnlineBoundariesChecked: true, productionWrites: 0 }));

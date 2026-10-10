@@ -272,7 +272,7 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
                 <div class="batch-dialog-head"><div><h2 id="batch-target-dialog-title">选择目标店铺</h2><p>勾选一个或多个店铺，完成后回到商品库继续上传。</p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
                 <label class="batch-dialog-search"><span class="search-symbol" aria-hidden="true"></span><span class="visually-hidden">搜索店铺</span><input id="batch-target-search" type="search" placeholder="搜索店铺名称" autocomplete="off"></label>
                 <label class="batch-dialog-select-all"><input id="batch-target-select-all" type="checkbox"><span></span>全选当前店铺</label>
-                <div class="batch-target-options" id="batch-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml((store.storeName || store.storeId).toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无在线目标店铺。</p>`}</div>
+                <div class="batch-target-options" id="batch-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml((store.storeName || store.storeId).toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无可接收当前任务的在线店铺。</p>`}</div>
                 <div class="task-load-more" id="batch-target-load-more-wrap" ${targetStoresHaveMore ? "" : "hidden"}><button type="button" class="toolbar-button" id="batch-target-load-more">加载更多目标店铺</button><span id="batch-target-load-more-status">已显示 ${targetStores.length} / ${targetStoreTotal} 家</span></div>
                 <div class="batch-dialog-footer"><span id="batch-dialog-count">已选择 0 家店铺</span><button type="submit" value="apply" class="toolbar-button primary">完成选择</button></div>
             </form>
@@ -284,7 +284,7 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
                 <fieldset class="upload-target-fields" id="upload-target-fields"><legend>本账户绑定的在线店铺</legend>
                 <label class="batch-dialog-search"><span class="search-symbol" aria-hidden="true"></span><span class="visually-hidden">搜索上传店铺</span><input id="single-target-search" type="search" placeholder="搜索店铺名称或 ID" autocomplete="off"></label>
                 <label class="batch-dialog-select-all"><input id="single-target-select-all" type="checkbox"><span></span>全选当前店铺</label>
-                <div class="batch-target-options" id="single-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml(`${store.storeName || store.storeId} ${store.storeId}`.toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)} · 在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无在线目标店铺。</p>`}</div>
+                <div class="batch-target-options" id="single-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml(`${store.storeName || store.storeId} ${store.storeId}`.toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)} · 在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无可接收当前任务的在线店铺。</p>`}</div>
                 <div class="task-load-more" id="single-target-load-more-wrap" ${targetStoresHaveMore ? "" : "hidden"}><button type="button" class="toolbar-button" id="single-target-load-more">加载更多目标店铺</button><span id="single-target-load-more-status">已显示 ${targetStores.length} / ${targetStoreTotal} 家</span></div>
                 </fieldset>
                 </div>
@@ -1084,7 +1084,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                         option.dataset.storeSearch = `${store.storeName} ${store.storeId}`.toLocaleLowerCase();
                         option.querySelector("strong").textContent = store.storeName;
                     }
-                    if (!targetStores.length) container.innerHTML = `<p class="muted">暂无在线目标店铺。</p>`;
+                    if (!targetStores.length) container.innerHTML = `<p class="muted">暂无可接收当前任务的在线店铺。</p>`;
                 }
                 batchTargetOptions = [...document.querySelectorAll("#batch-target-options .batch-target-option")];
                 singleTargetOptions = [...document.querySelectorAll("#single-target-options .batch-target-option")];
@@ -1382,8 +1382,10 @@ function renderStores(payload = { stores: [] }, successMessage = "", minePayload
     const counts = payload.counts || {};
     const filters = payload.filters || {};
     const mineFilters = minePayload.filters || {};
-    // 当前页出现已被认领的店铺时撤销其旧选择，最终认领权限仍由服务端再次核验。
-    for (const store of stores) {
+    // 完整归属快照不受搜索或分页影响；另一窗口认领后，即使两页都不显示该店也撤销旧勾选。
+    for (const id of payload.unclaimableStoreIds || []) selectedClaimStores.delete(String(id));
+    // 当前页仍更新待认领店名，兼容旧服务响应；最终权限始终由服务端核验。
+    for (const store of [...stores, ...mineStores]) {
         const id = String(store.storeId);
         if (store.claimState !== "unclaimed") selectedClaimStores.delete(id);
         else if (selectedClaimStores.has(id)) selectedClaimStores.set(id, { storeId: id, storeName: store.storeName || id });
@@ -1443,7 +1445,7 @@ function renderStores(payload = { stores: [] }, successMessage = "", minePayload
     const listOf = (rows, emptyText, allowSelection = true) => rows.map((store) => rowOf(store, allowSelection)).join("") || `<div class="catalog-empty">${emptyText}</div>`;
     const allStoreEmptyText = filters.q || filters.online || filters.claimState
         ? "没有符合当前筛选条件的店铺。"
-        : "暂无店铺上报，请在紫鸟中打开 Temu 商品列表页。";
+        : "暂无其他店铺。";
     const mineStoreEmptyText = mineFilters.q
         ? "没有符合搜索条件的已认领店铺。"
         : "你还没有认领任何店铺。请到「全部店铺」里认领自己的店铺。";
@@ -1455,14 +1457,14 @@ function renderStores(payload = { stores: [] }, successMessage = "", minePayload
                 <button type="button" class="active" data-store-view-button="online" role="tab" aria-selected="true">全部店铺 <b>${Number(payload.total) || stores.length}</b></button>
                 <button type="button" data-store-view-button="mine" role="tab" aria-selected="false">我的店铺 <b>${Number(minePayload.total) || mineStores.length}</b></button>
             </div>
-            <div class="store-status-summary"><span><i class="store-light online" aria-hidden="true"></i>在线 ${Number(counts.online) || 0}</span><span><i class="store-light offline" aria-hidden="true"></i>离线 ${Number(counts.offline) || 0}</span>${payload.isAdmin ? `<span>他人认领 ${Number(counts.others) || 0}</span>` : ""}</div>
+            <div class="store-status-summary"><span><i class="store-light online" aria-hidden="true"></i>在线 <span id="store-online-count">${Number(counts.online) || 0}</span></span><span><i class="store-light offline" aria-hidden="true"></i>离线 <span id="store-offline-count">${Number(counts.offline) || 0}</span></span>${payload.isAdmin ? `<span>他人认领 ${Number(counts.others) || 0}</span>` : ""}</div>
         </div>
         <p class="store-claim-feedback" id="store-claim-feedback" role="status" hidden></p>
         <section class="store-claim-panel" data-store-panel="online" aria-label="全部店铺">
             <div class="store-toolbar">
                 <div class="store-filter-cluster" role="group" aria-label="店铺筛选">
                     <label class="store-filter-field"><span>店铺状态</span><select id="online-store-online-filter" aria-label="店铺状态"><option value="">全部 ${Number(counts.online) + Number(counts.offline)}</option><option value="1"${filters.online === "1" ? " selected" : ""}>在线 ${Number(counts.online) || 0}</option><option value="0"${filters.online === "0" ? " selected" : ""}>离线 ${Number(counts.offline) || 0}</option></select></label>
-                    <label class="store-filter-field"><span>认领情况</span><select id="online-store-filter" aria-label="认领情况"><option value="">全部 ${Number(counts.online) + Number(counts.offline)}</option><option value="unclaimed"${filters.claimState === "unclaimed" ? " selected" : ""}>可认领 ${unclaimedCount}</option><option value="mine"${filters.claimState === "mine" ? " selected" : ""}>我认领 ${Number(counts.mine) || 0}</option><option value="others"${filters.claimState === "others" ? " selected" : ""}>他人认领 ${othersCount}</option></select></label>
+                    <label class="store-filter-field"><span>认领情况</span><select id="online-store-filter" aria-label="认领情况"><option value="">全部 ${Number(counts.online) + Number(counts.offline)}</option><option value="unclaimed"${filters.claimState === "unclaimed" ? " selected" : ""}>可认领 ${unclaimedCount}</option><option value="others"${filters.claimState === "others" ? " selected" : ""}>他人认领 ${othersCount}</option></select></label>
                     <form class="catalog-search-form store-filter-search" id="online-store-search-form" role="search"><label class="catalog-search"><span class="visually-hidden">搜索店铺</span><input id="online-store-search" type="search" placeholder="店铺、标识或归属账号" autocomplete="off" value="${escapeHtml(storeViews.online.draft)}"></label><button class="toolbar-button" type="submit">搜索</button></form>
                 </div>
             </div>
@@ -1486,6 +1488,10 @@ function renderStores(payload = { stores: [] }, successMessage = "", minePayload
     const storeViewButtons = [...app.querySelectorAll("[data-store-view-button]")];
     const showStoreView = (name) => {
         activeClaimView = name;
+        // 在线/离线计数随当前标签切换，不能拿隐藏的本人店铺冒充“全部店铺”的可见数量。
+        const activeCounts = name === "mine" ? (minePayload.counts || {}) : counts;
+        document.getElementById("store-online-count").textContent = Number(activeCounts.online) || 0;
+        document.getElementById("store-offline-count").textContent = Number(activeCounts.offline) || 0;
         storeViewButtons.forEach((button) => {
             const active = button.getAttribute("data-store-view-button") === name;
             button.classList.toggle("active", active);
