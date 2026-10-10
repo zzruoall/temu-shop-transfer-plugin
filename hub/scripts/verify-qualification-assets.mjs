@@ -8,6 +8,7 @@ import { qualificationSnapshot, spuId } from './qualification-fixture.mjs';
 
 const source = await readFile(new URL('../../plugin/qualification-reader.js', import.meta.url), 'utf8');
 const bridgeSource = await readFile(new URL('../../plugin/api-reader.js', import.meta.url), 'utf8');
+const livePhotoSource = await readFile(new URL('../../plugin/live-photo-reader.js', import.meta.url), 'utf8');
 const MiB = 1024 * 1024;
 const pdf = size => { const bytes = new Uint8Array(size); bytes.set(new TextEncoder().encode('%PDF-')); return bytes; };
 const url = name => `https://bstatic.kwcdn.com/${name}.pdf`;
@@ -303,7 +304,10 @@ function bridgeHarness(fetch, files = [file('a')]) {
     const location = { hostname: 'agentseller.temu.com', pathname: '/goods/list', origin: 'https://agentseller.temu.com', href: 'https://agentseller.temu.com/goods/list' };
     let mallId = 'offline-mall';
     const client = { mallIdClient: { getMallIdAsync: async () => mallId }, post: async (address, input) => {
-        if (address.endsWith('/product/query')) return { productId: input.productId };
+        if (address.endsWith('/product/query')) return { productId: input.productId,
+            productSkcList: [{ productSkuList: [{ productSkuId: '464860473011', extCode: 'SKU-TEST' }] }] };
+        // 本夹具只验证证书网络与取消边界；独立实拍图明确没有商品，不复用证书响应冒充空图。
+        if (address === '/api/flash/real_picture/list') return { total: 0, items: [], isSemiManagedMall: false };
         if (address.endsWith('/list')) return { ifSemiManaged: false, total: 1, productWithCertList: [{ productBaseInfo: { productId: input.product_ids[0] }, productCertInfoList: [{ certType: 1421 }] }] };
         assert.ok(address.endsWith('/detail')); return { productCertInfo: detail(files) };
     } };
@@ -313,7 +317,9 @@ function bridgeHarness(fetch, files = [file('a')]) {
     const ctx = vm.createContext({ window, location, URL, crypto: webcrypto, TextEncoder, AbortController, atob, btoa,
         setTimeout: (fn, ms) => { const id = setTimeout(() => { timers.delete(id); fn(); }, ms <= 5000 ? 25 : ms); timers.add(id); return id; },
         clearTimeout: id => { timers.delete(id); clearTimeout(id); } });
-    vm.runInContext(source, ctx); vm.runInContext(bridgeSource, ctx);
+    vm.runInContext(source, ctx);
+    vm.runInContext(livePhotoSource, ctx);
+    vm.runInContext(bridgeSource, ctx);
     const send = data => listeners.get('message')({ source: window, origin: location.origin, data: { source: 'temu-shop-transfer-api-v1', ...data } });
     return { replies, timers, location, listeners, setMall: id => { mallId = id; }, send,
         query: (extra = {}) => send({ kind: 'query', requestId: webcrypto.randomUUID(), runId: 'run-1', spuId, ...extra }) };

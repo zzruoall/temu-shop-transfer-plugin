@@ -9,7 +9,12 @@ importScripts("operation-log.js");
 importScripts("cli-receiver.js");
 importScripts("transfer-integrity.js");
 importScripts("qualification-reader.js");
+importScripts("live-photo-reader.js");
 importScripts("qualification-transfer.js");
+importScripts("attachment-ledger.js");
+importScripts("live-photo-transfer.js");
+importScripts("live-photo-panel.js");
+importScripts("live-photo-executor.js");
 importScripts("qualification-executor.js");
 // 目标执行独立；仅错误发送小型通知，正常进度与成功结果不回传。
 importScripts("direct-executor.js");
@@ -498,6 +503,8 @@ function classifyEvent(requestUrl, payload, pageUrl = "") {
     const url = String(requestUrl || "");
     // 只认专用资质快照；平台原始资质清单不能冒充商品详情，也不能把附件混入商品素材。
     if (/\/mms\/arbok\/product_cert\/query\/list(?:$|[?])/.test(url) && payload?.success === true && payload.result?.schemaVersion === 1) return "product-qualifications";
+    // 独立实拍图不冒充证书、商品详情或主图，只认经采集器校验过的专用快照。
+    if (/\/api\/flash\/real_picture\/detail(?:$|[?])/.test(url) && payload?.success === true && payload.result?.schemaVersion === 1) return "product-live-photos";
     const hasDetailPayload = hasDetailPayloadEvidence(payload);
     // 先处理已确认的 Temu 主列表接口，避免其中携带单个 productId 时被库存旁路接口规则抢先误判。
     if (/\/visage-agent-seller\/product\/skc\/pageQuery(?:$|[/?])/i.test(url)) return "product-list";
@@ -539,12 +546,19 @@ async function saveCapture(event, sender) {
     if (!event || event.kind !== "network-json" || !event.payload || typeof event.payload !== "object") {
         throw new Error("invalid_capture_event");
     }
+    // 被动网络响应不具备实际图片边界；旧页面脚本或迟到消息也不能绕过专用快照校验。
+    if (/\/api\/flash\/(?:hq\/)?real_picture\//.test(String(event.requestUrl || ''))
+        && classifyEvent(event.requestUrl, event.payload, sender.tab?.url) !== 'product-live-photos') {
+        return { saved: false, skipped: true, reason: 'live_photo_snapshot_only', productRelated: false };
+    }
     const serializedPayload = JSON.stringify(event.payload);
     const payloadBytes = getUtf8ByteLength(serializedPayload);
-    // 附件归档允许独立字节预算；只对可信资质结构放宽，普通页面响应仍保持 8MiB 上限。
+    // 附件归档允许独立字节预算；只对校验过的证书和实拍图快照放宽，普通响应仍保持 8MiB 上限。
     const qualificationEvent = classifyEvent(event.requestUrl, event.payload, sender.tab?.url) === 'product-qualifications';
+    const livePhotoEvent = classifyEvent(event.requestUrl, event.payload, sender.tab?.url) === 'product-live-photos';
     if (qualificationEvent) TemuQualificationReader.validateSnapshot(event.payload.result, event.payload.result?.productId);
-    if (payloadBytes > (qualificationEvent ? 56 * 1024 * 1024 : MAX_RESPONSE_BYTES)) {
+    if (livePhotoEvent) TemuLivePhotoReader.validateSnapshot(event.payload.result, event.payload.result?.productId);
+    if (payloadBytes > (qualificationEvent || livePhotoEvent ? 56 * 1024 * 1024 : MAX_RESPONSE_BYTES)) {
         const error = new Error("capture_too_large");
         error.captureMeta = { payloadBytes, productRelated: false };
         throw error;
@@ -558,24 +572,26 @@ async function saveCapture(event, sender) {
     const detailCapture = summarizeDetailCapture(payload, event.requestUrl, rawPageUrl, event.responseStatus);
     const detailEvidence = detailCapture.detailText;
     const primaryProduct = isPrimaryProductDetailRequestUrl(event.requestUrl) ? (payload.result || payload.res || payload) : null;
-    // 资质独立快照只以自己的 SPU 建立身份，不能递归把模板或关联商品 ID 算作本次采集对象。
+    // 证书与实拍图独立快照只以自己的 SPU 建立身份，不能把关联商品或 SKU 算作额外采集对象。
     const qualificationSnapshot = dataType === "product-qualifications"
         ? TemuQualificationReader.validateSnapshot(payload.result, payload.result.productId) : null;
-    const explicitSpu = normalizeProductId(qualificationSnapshot?.productId || primaryProduct && primaryProduct.productId);
+    const livePhotoSnapshot = dataType === 'product-live-photos'
+        ? TemuLivePhotoReader.validateSnapshot(payload.result, payload.result.productId) : null;
+    const explicitSpu = normalizeProductId(qualificationSnapshot?.productId || livePhotoSnapshot?.productId || primaryProduct && primaryProduct.productId);
     const routeSpu = readDetailPageProductId(rawPageUrl);
     if (explicitSpu && routeSpu && explicitSpu !== routeSpu) throw new Error("detail_product_id_mismatch");
     const detailPageProductId = explicitSpu || routeSpu;
     const detailPage = isProductDetailPageUrl(rawPageUrl);
     const detailRequestSeen = isPrimaryProductDetailRequestUrl(event.requestUrl) || (detailPage && (isProductDetailRequestUrl(event.requestUrl) || dataType === "product-detail"));
     // 详情接口有时只返回 detail/图片，不重复 productId；页面路由是当前 SPU 的唯一上下文证据。
-    if ((dataType === "product-detail" || dataType === "product-qualifications") && detailPageProductId) {
+    if ((dataType === "product-detail" || dataType === "product-qualifications" || livePhotoSnapshot) && detailPageProductId) {
         // 核心响应自身ID优先，编辑路由仅作缺ID时的上下文；冲突已在前面拒绝。
         productMeta.productIds = [detailPageProductId];
         productMeta.idSources.spu = (Array.isArray(productMeta.idSources.spu) ? productMeta.idSources.spu : [])
             .filter(source => Array.isArray(source.samples) && source.samples.includes(detailPageProductId));
         productMeta.idSources.spu.unshift({ path: explicitSpu ? "$payload.productId" : "$pageUrl.productId", key: explicitSpu ? "productId" : "pageProductId", count: 1, samples: [detailPageProductId] });
     }
-    if (qualificationSnapshot) {
+    if (qualificationSnapshot || livePhotoSnapshot) {
         productMeta.goodsIds = [];
         productMeta.skcIds = [];
         productMeta.skuIds = [];
@@ -751,7 +767,7 @@ async function exportFullPacketToDownload(options = {}) {
     if (!packet.products.length) return { skipped: true, reason: "no_products", recordCount: packet.records.length, productCount: 0 };
     const text = JSON.stringify(packet, null, 2);
     const bytes = getUtf8ByteLength(text);
-    if (bytes > (records.some(record => record.dataType === 'product-qualifications' && record.payload?.result?.assets?.length) ? 64 * 1024 * 1024 : MAX_AUTO_EXPORT_BYTES)) {
+    if (bytes > (records.some(record => ['product-qualifications', 'product-live-photos'].includes(record.dataType) && record.payload?.result?.assets?.length) ? 64 * 1024 * 1024 : MAX_AUTO_EXPORT_BYTES)) {
         const error = new Error("auto_export_too_large");
         error.bytes = bytes;
         throw error;
@@ -1461,6 +1477,10 @@ function detailQueueView(queue) {
         qualificationFailed: items.filter(item => item.qualificationStatus && item.qualificationStatus !== "complete").length,
         qualificationFailures: items.filter(item => item.qualificationStatus && item.qualificationStatus !== "complete")
             .slice(0, 20).map(item => ({ spuId: item.spuId, reason: item.qualificationReason || "资质未完整读取" })),
+        livePhotoComplete: items.filter(item => item.livePhotoStatus === 'complete').length,
+        livePhotoFailed: items.filter(item => item.livePhotoStatus && item.livePhotoStatus !== 'complete').length,
+        livePhotoFailures: items.filter(item => item.livePhotoStatus && item.livePhotoStatus !== 'complete')
+            .slice(0, 20).map(item => ({ spuId: item.spuId, reason: item.livePhotoReason || '实拍图未完整采集' })),
         stopReason: String(queue.stopReason || ""),
         failures: items.filter(item => item.status === "failed").slice(0, 20).map(item => ({ spuId: item.spuId, reason: item.reason })),
         current: current && current.status === "queued" ? {
@@ -1610,7 +1630,8 @@ async function advanceDetailSupplement(input, sender) {
         queue.finishedAt = new Date().toISOString();
     } else if (index + 1 >= queue.items.length) {
         queue.active = false;
-        queue.status = queue.items.some(entry => entry.status === "failed" || entry.qualificationStatus && entry.qualificationStatus !== "complete" || !entry.detailCapture || entry.detailCapture.completeness !== "complete") ? "partial" : "done";
+        queue.status = queue.items.some(entry => entry.status === "failed" || entry.qualificationStatus && entry.qualificationStatus !== "complete"
+            || entry.livePhotoStatus && entry.livePhotoStatus !== 'complete' || !entry.detailCapture || entry.detailCapture.completeness !== "complete") ? "partial" : "done";
         queue.finalizationPending = true;
         queue.finishedAt = new Date().toISOString();
     } else {
@@ -1715,6 +1736,8 @@ async function captureApiDetail(input, sender) {
     const event = { kind: "network-json", requestUrl: new URL("/visage-agent-seller/product/query", sender.tab.url).href, method: "POST", transport: "fetch", responseStatus: 200, payload: input.payload, apiRunId: queue.runId };
     // 独立快照不会进入 publicationData；旧客户端没有资质回执时保留“未读取”，不能宣称同步成功。
     const qualification = input.qualifications ? TemuQualificationReader.validateSnapshot(input.qualifications, item.spuId) : null;
+    const livePhotos = input.livePhotos ? TemuLivePhotoReader.validateSnapshot(input.livePhotos, item.spuId) : null;
+    if (livePhotos && qualification && livePhotos.mallId !== qualification.mallId) throw Error('实拍图与资质来源商城不一致');
     try {
         const result = await saveCapture(event, sender);
         await noteDetailCapture(tabId, event, result);
@@ -1731,6 +1754,20 @@ async function captureApiDetail(input, sender) {
             activeItem.qualificationReason = String(qualification.reason || "");
             await saveDetailQueue(tabId, activeQueue);
             await appendCaptureLog(makeCaptureLog(qualEvent, sender, qualResult, null));
+        }
+        // 网站暂未接入独立实拍图协议：原图和分类只留本地独立记录、完整下载包，不伪造证书条目。
+        if (livePhotos) {
+            const photoEvent = { kind: 'network-json', requestUrl: new URL(TemuLivePhotoReader.DETAIL_PATH, sender.tab.url).href,
+                method: 'POST', transport: 'fetch', responseStatus: 200, apiRunId: queue.runId, payload: { success: true, result: livePhotos } };
+            const photoResult = await saveCapture(photoEvent, sender);
+            const activeQueue = await noteDetailCapture(tabId, photoEvent, photoResult);
+            const activeItem = activeQueue?.items?.[activeQueue.currentIndex];
+            if (!activeQueue?.active || activeItem?.spuId !== item.spuId || !await isIngestPageActive(queue.pageBinding)) throw Error('stale_capture_round');
+            activeItem.livePhotoStatus = livePhotos.status;
+            activeItem.livePhotoReason = String(livePhotos.reason || '');
+            activeItem.livePhotoCount = livePhotos.groups.reduce((sum, group) => sum + group.images.length, 0);
+            await saveDetailQueue(tabId, activeQueue);
+            await appendCaptureLog(makeCaptureLog(photoEvent, sender, photoResult, null));
         }
         return { result, queue: await advanceDetailSupplement({ runId: queue.runId, spuId: item.spuId, status: "done",
             stopBatch: input.stopBatch === true, stopReason: input.stopReason || "", queryUncertain: input.queryUncertain }, sender) };
@@ -1927,7 +1964,7 @@ function stampPacketName(prefix) {
 let ingestPushQueue = Promise.resolve();
 
 /**
- * 把 IndexedDB 中的全部响应打成与下载文件相同的完整包，再一次性推到入库台。
+ * 把本次已支持的商品与证书响应一次性推到入库台；独立实拍图只保留本地，不进入旧站协议。
  * 不按接口实时上报，避免菜单、红点和配置接口把仓库打成碎片批次。
  */
 async function pushFullPacket(options = {}) {
@@ -1964,8 +2001,9 @@ async function pushFullPacketNow(options = {}) {
     const allowedSpuIds = Array.isArray(options.allowedSpuIds)
         ? options.allowedSpuIds.map(value => String(value || "").trim()).filter(Boolean)
         : null;
-    // 自动入库按本次任务 eventId 取子集；手动导出与手动推送仍保留“全部本地记录”的既有语义。
-    const records = requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords;
+    // 自动入库按本次eventId取子集；仅专用实拍图快照随包入库，原始旁路响应继续留在本地。
+    const records = (requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords)
+        .filter(record => !packetIsLocalPhotoRecord(record));
     if (!records.length) {
         return {
             skipped: true,
@@ -2396,6 +2434,7 @@ function summarizeTargetUploadTasks(tasks, storeId = "") {
             productId: String(task.productId || ''),
             productState: String(task.productState || ''),
             qualificationItems: Array.isArray(task.qualificationItems) ? task.qualificationItems : [],
+            livePhotoItems: Array.isArray(task.livePhotoItems) ? task.livePhotoItems : [],
             errorCode: String(task.errorCode || ""),
             errorStage: String(task.errorStage || ""),
             errorNoticeStatus: String(task.errorNoticeStatus || ''),
@@ -2433,8 +2472,8 @@ async function setTargetSessionValues(values) {
     const after = getUtf8ByteLength(JSON.stringify({ ...stored, ...values }));
     // 只比较不可变正文；原任务的进度、结果和执行代次属于控制信息，不占用新商品准入预算。
     const oldTasks = stored[TARGET_UPLOAD_TASKS_KEY] || [];
-    const taskControlFields = new Set(['executionRunId', 'directState', 'reason', 'status', 'errorCode', 'errorStage', 'errorNoticeStatus', 'reasonTruncated', 'offendingSkuCode', 'productId', 'productState', 'qualificationItems']);
-    const attemptControlFields = new Set(['stage', 'done', 'productId', 'businessError', 'qualificationItems']);
+    const taskControlFields = new Set(['executionRunId', 'directState', 'reason', 'status', 'errorCode', 'errorStage', 'errorNoticeStatus', 'reasonTruncated', 'offendingSkuCode', 'productId', 'productState', 'qualificationItems', 'livePhotoItems']);
+    const attemptControlFields = new Set(['stage', 'done', 'productId', 'businessError', 'qualificationItems', 'livePhotoItems', 'livePhotoState', 'livePhotoAttemptId']);
     const withoutFields = (value, fields) => JSON.stringify(Object.fromEntries(Object.entries(value).filter(([key]) => !fields.has(key))));
     const oldBodies = new Set(oldTasks.map(task => withoutFields(task, taskControlFields)));
     const controlOnly = Object.entries(values).every(([key, value]) => {
@@ -2602,6 +2641,11 @@ async function updateDirectTaskProgress(storeId, jobId, spuId, patch = {}, ident
                 qualificationItems: Array.isArray(patch.qualificationItems) ? patch.qualificationItems.slice(0, 200).map(item => ({
                     certType: Number(item.certType), name: String(item.name || '').slice(0, 160), state: String(item.state || ''), reason: String(item.reason || '').slice(0, 1000)
                 })) : task.qualificationItems || [],
+                // 实拍图槽位结果与证书类型分开保存，不把位置编号冒充 certType。
+                livePhotoItems: Array.isArray(patch.livePhotoItems) ? patch.livePhotoItems.slice(0, 200).map(item => ({
+                    key: String(item.key || '').slice(0, 100), name: String(item.name || '').slice(0, 160),
+                    state: String(item.state || ''), reason: String(item.reason || '').slice(0, 1000)
+                })) : task.livePhotoItems || [],
                 reason: String(Object.hasOwn(patch, 'reason') ? patch.reason : task.reason || "").slice(0, 2000),
                 // 平台明确给出的错误 SKU 才能展示；原因到达边界时保留截断事实，不猜测关联 SKU。
                 reasonTruncated: Object.hasOwn(patch, 'reason') ? Boolean(patch.reasonTruncated || String(patch.reason || '').length >= 2000) : Boolean(task.reasonTruncated),

@@ -141,6 +141,12 @@
 
     function emitJson(requestUrl, method, text, transport, requestStartedAt, responseStatus = 0, requestBody = null) {
         if (!text) return;
+        // 实拍图原始详情同时含主图、示例与实际上传槽；只能由专用采集器提取，不能走通用商品解析旁路。
+        if (/\/api\/flash\/(?:hq\/)?real_picture\//.test(String(requestUrl || ''))) {
+            if (interfaceDiagnosticEnabled) emitSkip(requestUrl, method, transport, 'live_photo_snapshot_only',
+                String(text).length, getUtf8ByteLength(text), requestStartedAt, responseStatus, requestBody);
+            return;
+        }
         const textLength = String(text).length;
         const responseBytes = getUtf8ByteLength(text);
         if (responseBytes > MAX_RESPONSE_BYTES) {

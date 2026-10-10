@@ -166,6 +166,14 @@ test('资质模板读取遇到登录失效时停止整店，不执行下一件',
     f.context.qualificationPage = async () => { reads++; throw Error('登录已失效'); };
     await f.receive(['1000000000', '1000000001'], f.identity, 'login-stop', '', 'qualification_upload');
     await withSourceCodes(f);
+    // 此用例必须有实际填写的来源材料，空列表按协议正常跳过，不会触发目标模板查询。
+    f.context.loginTasks = f.tasks().map(task => {
+        const snapshot = { ...task.snapshot, qualifications: { status: 'complete', items: [
+            { certType: 1421, status: 'complete', content: { certType: 1421, authCode: 'FIXTURE' } }
+        ] } };
+        return { ...task, snapshot, transferIntegrity: transferManifest(snapshot) };
+    });
+    await f.run('saveTargetUploadTasks(loginTasks)');
     await f.run('runDirectTasks(1,identity)');
     assert.equal(reads, 1);
     assert.equal(f.tasks()[1].directState, undefined);

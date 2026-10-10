@@ -9,6 +9,7 @@ import { jobRequestIdentity } from "./job-idempotency.mjs";
 import { supportsScheduling } from './scheduling.mjs';
 import { pluginVersionAtLeast } from './plugin-version.mjs';
 import { qualificationReferences, verifyQualificationBatchTransfer } from './product-qualifications.mjs';
+import { livePhotoReferences, legacyLivePhotoCompatibility } from './product-live-photos.mjs';
 
 function asText(value) {
     return String(value || "").trim();
@@ -139,6 +140,11 @@ export function canonicalProductSnapshot(product = {}) {
     if (product.publicationData) snapshot.publicationData = structuredClone(product.publicationData);
     // 资质静态材料随任务版本投递引用；附件字节仍由受认证归档接口读取，不占插件任务存储。
     if (product.qualifications) snapshot.qualifications = qualificationReferences(product.qualifications);
+    // 任务只保留独立图片引用，字节通过认证附件接口按需读取，不扩大4MiB任务上限。
+    if (product.livePhotos) snapshot.livePhotos = livePhotoReferences(product.livePhotos);
+    // 从本次投递的同源资质引用派生诊断并参与版本/清单哈希，不信任外部标记，也不回填可上传照片。
+    const compatibility = legacyLivePhotoCompatibility(snapshot);
+    if (compatibility) snapshot.livePhotoCompatibility = compatibility;
     return snapshot;
 }
 
@@ -241,6 +247,7 @@ function summarizeAgent(agent) {
         pageType: agent.pageType || "",
         pluginVersion: agent.pluginVersion || "",
         relayProtocol: agent.relayProtocol || 0,
+        livePhotoTransferVersion: agent.livePhotoTransferVersion === 1 ? 1 : 0,
         relaySessionId: agent.relaySessionId || "",
         lastSeenAt: agent.lastSeenAt,
         lastClaimedJobId: agent.lastClaimedJobId || "",
@@ -842,6 +849,8 @@ export function createJobQueue(rootDir, store, options = {}) {
                 pluginVersion: asText(input.pluginVersion) || (existing && existing.pluginVersion) || "",
                 // 中转页面只标识接收连接，不记录暂停、执行进度或平台结果；店铺身份核验保持原规则。
                 relayProtocol: input.relayProtocol === 1 ? 1 : 0,
+                // 可选能力按本次连接声明，不能继承旧实例能力使旧插件误收图片任务。
+                livePhotoTransferVersion: input.livePhotoTransferVersion === 1 ? 1 : 0,
                 relaySessionId: input.relayProtocol === 1 ? asText(input.relaySessionId).slice(0, 255) : "",
                 lastSeenAt: now,
                 lastClaimedJobId: pageChanged ? "" : (existing && existing.lastClaimedJobId || ""),

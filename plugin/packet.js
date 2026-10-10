@@ -8,6 +8,12 @@ function packetUnique(values) {
     return [...new Set((Array.isArray(values) ? values : []).map(packetText).filter(Boolean))];
 }
 
+/** 专用快照可进入新站；未经分类的历史旁路响应继续隔离，避免示例或主图绕过采集边界。 */
+function packetIsLocalPhotoRecord(record) {
+    return record?.dataType !== 'product-live-photos'
+        && /\/api\/flash\/(?:hq\/)?real_picture\//.test(String(record?.source?.requestUrl || ''));
+}
+
 /**
  * 从原始响应中按 SPU 提取两级货号：商品行/productSkcList.extCode 是商品货号，
  * productSkuList/productSkuSummaries.extCode 是 SKU 货号。两级必须分开保存，不能在包索引中拍平。
@@ -52,19 +58,19 @@ function packetCodesForSpu(root, spuId, depth = 0, result = null) {
 }
 
 /**
- * 生成入库台识别的完整采集包。插件下载、直推和网站上传必须使用同一份结构，
- * 否则仓库会把直推结果当成未知文件。
+ * 商品、证书和独立实拍图共用原始采集包，实拍图只由专用解析器处理；旁路原始响应仍留本地扩展区。
  */
 function makeFullCapturePacket(records, options = {}) {
     const allRecords = Array.isArray(records) ? records : [];
     const allowedSpuIds = Array.isArray(options.allowedSpuIds)
         ? new Set(options.allowedSpuIds.map(value => String(value || "").trim()).filter(Boolean))
         : null;
-    // records 仍保留本次任务指纹对应的原始响应；商品索引才按当前页 SPU 白名单裁剪。
-    const safeRecords = allRecords;
-    const firstSource = safeRecords.find(record => record && record.source) || {};
+    // 正式记录包含已分类实拍图，原始旁路响应只保留本地，不给服务端递归商品解析。
+    const localOnlyRecords = allRecords.filter(packetIsLocalPhotoRecord);
+    const safeRecords = allRecords.filter(record => !packetIsLocalPhotoRecord(record));
+    const firstSource = allRecords.find(record => record && record.source) || {};
     const products = new Map();
-    safeRecords.forEach(record => {
+    allRecords.forEach(record => {
         const identity = record && record.identity && typeof record.identity === "object" ? record.identity : {};
         const spuIds = Array.isArray(identity.productIds) ? identity.productIds : [];
         spuIds.forEach(spuId => {
@@ -112,6 +118,7 @@ function makeFullCapturePacket(records, options = {}) {
         counts: {
             capturedRecords: allRecords.length,
             records: safeRecords.length,
+            ...(localOnlyRecords.length ? { localOnlyRecords: localOnlyRecords.length } : {}),
             productRecords: safeRecords.filter(record => record && (record.dataType === "product-list" || record.dataType === "product-detail")).length,
             products: products.size
         },
@@ -123,6 +130,7 @@ function makeFullCapturePacket(records, options = {}) {
             skuIds: [...new Set(product.skuIds.filter(Boolean))],
             sources: [...new Set(product.sources)]
         })),
-        records: safeRecords
+        records: safeRecords,
+        ...(localOnlyRecords.length ? { localOnlyRecords } : {})
     };
 }

@@ -5,10 +5,12 @@ import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { parseQualificationRecord } from '../lib/product-qualifications.mjs';
 import { qualificationRecord } from './qualification-fixture.mjs';
+import { pluginVersionAtLeast } from '../lib/plugin-version.mjs';
 const base = process.env.TEMU_SMOKE_BASE;
 assert.match(base, /^(?:http:\/\/127\.0\.0\.1:\d+|https:\/\/www\.ruofei\.com\.cn)\/temu$/);
 const version = JSON.parse(await readFile(new URL('../../plugin/manifest.json', import.meta.url))).version;
-assert.match(version, /^11\.0\.(?:3|4)$/);
+// 安装包可独立升级，验收兼容能力门槛而不是把历史发布版本锁死为唯一版本。
+assert.match(version, /^11\.\d+\.\d+$/); assert.ok(pluginVersionAtLeast(version, [11, 0, 3]));
 const credentials = JSON.parse(await readFile(process.env.TEMU_CREDENTIALS));
 const headers = { authorization: `Bearer ${credentials.deviceToken}` };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');

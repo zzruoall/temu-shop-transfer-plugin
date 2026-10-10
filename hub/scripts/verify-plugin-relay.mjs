@@ -24,10 +24,12 @@ export async function fixture({ notices = false } = {}) {
     const round = await readFile(new URL('../../plugin/execution-round.js', import.meta.url), 'utf8');
     const integrity = await readFile(new URL('../../plugin/transfer-integrity.js', import.meta.url), 'utf8');
     const qualification = await readFile(new URL('../../plugin/qualification-executor.js', import.meta.url), 'utf8');
+    const photoExecutor = await readFile(new URL('../../plugin/live-photo-executor.js', import.meta.url), 'utf8');
+    const qualificationTransfer = await readFile(new URL('../../plugin/qualification-transfer.js', import.meta.url), 'utf8');
     const privateQueue = bg.slice(bg.indexOf('const BOUND_STORE_KEY'), bg.indexOf('function hubApiUrl'));
     const reception = bg.slice(bg.indexOf('let directPauseControlQueue'), bg.indexOf('chrome.runtime.onMessage.addListener'));
     const identityHelpers = bg.slice(bg.indexOf('async function getPluginInstanceId'), bg.indexOf('let directPauseControlQueue'));
-    vm.runInContext(integrity + '\n' + executor + '\n' + qualification + '\n' + round + '\n' + privateQueue + '\n' + identityHelpers + '\n' + reception, context);
+    vm.runInContext(integrity + '\n' + executor + '\n' + qualificationTransfer + '\n' + photoExecutor + '\n' + qualification + '\n' + round + '\n' + privateQueue + '\n' + identityHelpers + '\n' + reception, context);
     if (notices) vm.runInContext(await readFile(new URL('../../plugin/error-notice.js', import.meta.url), 'utf8'), context);
     context.sender = { tab: { id: 1, url: 'https://agentseller.temu.com/goods/list' }, documentId: 'doc-1' };
     context.base = { storeId: 'temu:222', mallId: '222', identityMatched: true, pageStoreName: '验证店', executionMode: 'plugin-api' };

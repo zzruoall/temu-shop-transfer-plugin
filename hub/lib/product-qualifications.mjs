@@ -21,7 +21,7 @@ export function qualificationReferences(value) {
 }
 
 /** 校验客户端字节声明和规范编码，先限制编码长度，避免伪造 bytes 绕过内存上限。 */
-function decodeAsset(asset) {
+export function decodeAsset(asset) {
     if (!asset || typeof asset !== 'object' || Array.isArray(asset)
         || Object.keys(asset).some(key => !['url', 'name', 'mimeType', 'sha256', 'bytes', 'dataBase64'].includes(key))
         || typeof asset.url !== 'string' || !qualificationFileUrl(asset.url) || qualificationFileUrl(asset.url) !== asset.url
@@ -249,7 +249,7 @@ export async function readQualificationAsset(store, { spuId, sha256, sourceStore
  * 普通商品仍用原仓库核验器，归档商品另外核对资质投影，避免索引正文与附件引用错配。
  */
 export async function verifyQualificationBatchTransfer(store, batch, products, options = {}) {
-    const archived = products.some(product => array(product.qualifications?.items)
+    const archived = products.some(product => product.livePhotos || array(product.qualifications?.items)
         .some(item => array(item.files).some(file => file.asset?.sha256)));
     if (!archived) return store.verifyBatchTransfer(batch, products, options);
     // 延迟加载既有解析器以复用商品重建规则，避免资质模块初始化时与解析器形成循环依赖。
@@ -286,7 +286,8 @@ export async function verifyQualificationBatchTransfer(store, batch, products, o
                 continue;
             }
             if (transferHash(assertCapturedSource(original)) !== transferHash(assertCapturedSource(product))
-                || transferHash(original.qualifications || null) !== transferHash(qualificationReferences(product.qualifications) || null)) {
+                || transferHash(original.qualifications || null) !== transferHash(qualificationReferences(product.qualifications) || null)
+                || transferHash(original.livePhotos || null) !== transferHash(qualificationReferences(product.livePhotos) || null)) {
                 throw invalid(`SPU ${product.spuId} 的下发资料或资质引用与来源原包不一致，请重新采集`);
             }
             verified.push(product);

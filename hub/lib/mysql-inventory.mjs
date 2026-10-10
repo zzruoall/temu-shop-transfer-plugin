@@ -63,9 +63,9 @@ function canonical(value) {
     return value;
 }
 
-/** 列表不携带资质/发布大正文；完整压缩资料仍由商品详情读取，避免采集资质后每页列表占用成倍增加。 */
+/** 列表不携带资质、实拍图及发布正文；完整压缩资料仅由详情读取，避免列表变慢。 */
 export function inventoryListSummary(product) {
-    const { publicationData, detail, qualificationCaptures, qualifications, ...summary } = product;
+    const { publicationData, detail, qualificationCaptures, qualifications, livePhotos, livePhotoCaptures, ...summary } = product;
     if (publicationData) summary.publicationData = { sourceBatchId: publicationData.sourceBatchId };
     return summary;
 }
@@ -161,13 +161,14 @@ export function createMysqlInventory(database, { removeFile } = {}) {
         });
     }
 
-    /** 商品归属查询只读关联索引；删除和解红据此挑选来源店，不读其他来源 payload。 */
-    async function storesForSpus(ids, includeBlocked = false) {
+    /** 商品归属查询只读关联索引；归属锁内操作复用传入连接，避免小连接池嵌套等待。 */
+    async function storesForSpus(ids, includeBlocked = false, connection = null) {
         if (!ids.length) return [];
-        const [rows] = await query(`SELECT DISTINCT b.store_id FROM hub_batches b JOIN hub_batch_products p ON p.batch_id=b.id WHERE p.spu_id IN (?)`, [ids]);
+        const lookup = connection ? (sql, params) => connection.query(sql, params) : query;
+        const [rows] = await lookup(`SELECT DISTINCT b.store_id FROM hub_batches b JOIN hub_batch_products p ON p.batch_id=b.id WHERE p.spu_id IN (?)`, [ids]);
         const stores = new Set(rows.map(row => row.store_id));
         if (includeBlocked) {
-            const [meta] = await query("SELECT store_id,body FROM hub_inventory_store_meta");
+            const [meta] = await lookup("SELECT store_id,body FROM hub_inventory_store_meta");
             for (const row of meta) if (Object.keys(parse(row.body).blockedProducts || {}).some(key => ids.includes(key.split("\u0000")[1]))) stores.add(row.store_id);
         }
         return [...stores];

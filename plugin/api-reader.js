@@ -130,8 +130,9 @@
             // 附件由源页面下载，不经过扩展后台导出登录状态；独立取消不设置 queryUncertain。
             const archiveController = typeof AbortController === "function" ? new AbortController() : null;
             if (archiveController) activeArchive = { controller: archiveController, requestId: message.requestId, runId: message.runId, spuId: message.spuId };
-            const qualifications = await TemuQualificationReader.readSnapshot(client, {
+            const captureContext = {
                 spuId: message.spuId, mallId: sourceSession.mallId, pageOrigin: location.origin,
+                sourceProduct: product,
                 post: (url, input, timeoutMs) => boundedPost(client, url, input, timeoutMs),
                 fetch: typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
                 signal: archiveController?.signal,
@@ -140,9 +141,23 @@
                         throw Object.assign(new Error("资质查询期间切换了店铺或页面，已停止"), { stopBatch: true });
                     }
                 }
+            };
+            const qualifications = await TemuQualificationReader.readSnapshot(client, captureContext);
+            // 实拍图使用独立合规入口；证书查询已停止整批时，不再向失效上下文发下一类请求。
+            const livePhotos = qualifications.stopBatch ? null : await TemuLivePhotoReader.readSnapshot(client, {
+                ...captureContext, assetBudgetBytes: Math.max(0, 32 * 1024 * 1024
+                    - qualifications.snapshot.assets.reduce((sum, asset) => sum + asset.bytes, 0))
             });
+            // 图片元数据也计入跨世界消息；极大快照明确失败，不能让新增图片导致原商品与证书回执一起丢失。
+            if (livePhotos && new TextEncoder().encode(JSON.stringify({ product, qualifications: qualifications.snapshot,
+                livePhotos: livePhotos.snapshot })).byteLength > 60 * 1024 * 1024) {
+                Object.assign(livePhotos.snapshot, { status: 'failed', captureState: 'failed', groups: [], skus: [], assets: [],
+                    reason: '商品与证书回执已接近浏览器大小限制，实拍图未保存',
+                    archive: { status: 'failed', errors: [{ url: '', name: '', reason: '实拍图回执超过本次消息剩余大小预算' }] } });
+            }
             if (String(await client.mallIdClient.getMallIdAsync()) !== session.mallId || session.url !== location.href) throw new Error("查询期间切换了店铺或页面，未保存");
-            reply({ payload: { success: true, result: product }, qualifications: qualifications.snapshot, stopBatch: qualifications.stopBatch, stopReason: qualifications.stopReason });
+            reply({ payload: { success: true, result: product }, qualifications: qualifications.snapshot, livePhotos: livePhotos?.snapshot,
+                stopBatch: qualifications.stopBatch || livePhotos?.stopBatch === true, stopReason: qualifications.stopReason || livePhotos?.stopReason || '' });
         } catch (error) {
             reply({ error: String(error?.message || "网站拒绝详情查询，请检查登录状态后重试").slice(0, 180) });
         } finally {

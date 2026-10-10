@@ -18,7 +18,12 @@ function harness(post, readSnapshot = async () => ({ snapshot: { status: 'comple
     const location = { hostname: 'agentseller.temu.com', pathname: '/goods/list', origin: 'https://agentseller.temu.com', href: 'https://agentseller.temu.com/goods/list' };
     const window = { chunkLoadingGlobal_temu_sca_goods: chunks, addEventListener: (_, fn) => { listener = fn; }, postMessage: value => replies.push(value) };
     vm.runInNewContext(source, { window, location, crypto: webcrypto, TextEncoder,
-        TemuQualificationReader: { readSnapshot },
+        // 本夹具只检验详情/证书时钟；提供新实拍图阶段的空成功回执，避免未安装读图器掩盖计时器断言。
+        TemuQualificationReader: { readSnapshot: async (...args) => {
+            const result = await readSnapshot(...args);
+            return { ...result, snapshot: { assets: [], ...result.snapshot } };
+        } },
+        TemuLivePhotoReader: { readSnapshot: async () => ({ snapshot: { status: 'complete', assets: [] }, stopBatch: false }) },
         setTimeout: (fn, delay) => { const id = ++sequence; timers.set(id, { fn, at: now + delay }); return id; }, clearTimeout: id => timers.delete(id) });
     return { calls, replies, timers,
         query: (spuId = '8044560175') => listener({ source: window, origin: location.origin,

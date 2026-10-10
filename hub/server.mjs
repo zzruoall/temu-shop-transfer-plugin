@@ -26,6 +26,7 @@ import { assertMysqlReady } from "./lib/mysql-schema.mjs";
 import { createTransferManager } from "./lib/transfer-manager.mjs";
 import { createJobQueue, canonicalProductSnapshot } from "./lib/job-queue.mjs";
 import { qualificationReferences, readQualificationAsset, verifyQualificationBatchTransfer } from './lib/product-qualifications.mjs';
+import { livePhotoReferences, readLivePhotoAsset } from './lib/product-live-photos.mjs';
 import { createOneShotRelay } from "./lib/one-shot-relay.mjs";
 import { installWebsocketRelay } from "./lib/websocket-relay.mjs";
 import { hasRelayPlugin, pluginVersionAtLeast } from './lib/plugin-version.mjs';
@@ -261,7 +262,7 @@ function stampFileName(prefix) {
 const transferManager = createTransferManager(dataRoot, store);
 // 店铺归属表继续用于商品、批次和目录权限，不因删除上架状态而改变认领关系。
 const ownership = createStoreOwnership(dataRoot, { database });
-// 启动前完成一次性账户分类迁移；监听请求前冻结店铺数据分类，避免分类一半时被读取。
+// 启动前完成一次性账户分类迁移，避免请求读取到半迁移状态；之后重新认领可随新账户更新分类。
 await ownership.initializeAccountTypes(cloudAuth.users, async () => {
     if (store.inventoryVersions) return [...(await store.inventoryVersions()).stores.keys()];
     return [...new Set((await store.listOverview()).batches.map(batch => batch.sourceStoreId).filter(Boolean))];
@@ -406,13 +407,13 @@ async function liveSnapshot(req) {
     const visibleAgents = (await jobQueue.listAgents({ scope: await targetStoreScope(req) })).agents;
     const allAgents = (await jobQueue.listAgents()).agents;
     const domains = await ownership.listDataDomains();
-    const inDirectory = id => req.temuLocalMode || req.temuDeviceBearer || !domains[id] || domains[id] === requestAccountType(req);
+    const inDirectory = id => directoryStoreVisible(req, id, assignments, domains);
     const agentVersion = agents => agents.map(a => [a.storeId, a.pluginInstanceId, a.online, a.identityMatched, a.canReceiveUploads, a.storeName, a.pluginVersion]);
     return {
         inventory,
         claims: liveDigest(owned),
         agents: liveDigest(agentVersion(visibleAgents)),
-        // 认领目录仍显示未分类的新店，但另一分类的在线状态和归属不参与当前摘要。
+        // 未认领店的状态必须参与摘要，释放测试归属后正式账户无需手动刷新即可重新看到该店。
         directory: liveDigest([agentVersion(allAgents.filter(a => inDirectory(a.storeId))), Object.entries(assignments).filter(([id]) => inDirectory(id))])
     };
 }
@@ -433,11 +434,28 @@ async function visibleStoreScope(req) {
     return await ownership.ownedStoreIds(req.temuUser.id);
 }
 
+/** 破坏性操作不沿用先前查询的范围，锁内读取最新归属/分类；管理员仍受当前所选分类限制。 */
+function withInventoryWriteScope(req, fn) {
+    const unrestricted = req.temuLocalMode === true || req.temuDeviceBearer === true;
+    return ownership.withWriteScope({
+        type: unrestricted ? null : requestAccountType(req),
+        ownerId: unrestricted || req.temuIsAdmin ? null : req.temuUser?.id
+    }, fn);
+}
+
 /** 分类由会话决定；只有管理员管理页能显式选择正式/测试范围，不接受普通用户伪造分类。 */
 function requestAccountType(req) {
     const url = new URL(req.url, 'http://local');
     const requested = url.searchParams.get('accountType');
     return req.temuIsAdmin && ['production', 'test', 'unclassified'].includes(requested) ? requested : (req.temuUser?.accountType || 'production');
+}
+/** 店铺目录按当前认领关系隔离；已释放店铺始终可见，重新认领后历史商品随新归属分类。 */
+function directoryStoreVisible(req, storeId, assignments, domains) {
+    if (req.temuLocalMode || req.temuDeviceBearer) return true;
+    const category = requestAccountType(req);
+    // 管理员的待归类入口仍只列历史未分类店，避免普通待认领店淹没管理范围。
+    if (category === 'unclassified') return domains[storeId] === category;
+    return !assignments[storeId] || !domains[storeId] || domains[storeId] === category;
 }
 async function categoryStoreScope(req) {
     if (req.temuLocalMode || req.temuDeviceBearer) return null;
@@ -540,7 +558,7 @@ async function authenticateQualificationRequest(req, res) {
     const requestUrl = req.url;
     const url = new URL(requestUrl, 'http://local');
     const pathname = stripRequestBasePath(req, url.pathname);
-    const assetRead = req.method === 'GET' && /^\/api\/qualification-assets\/\d{6,20}\/[a-f0-9]{64}$/.test(pathname);
+    const assetRead = req.method === 'GET' && /^\/api\/(?:qualification|live-photo)-assets\/\d{6,20}\/[a-f0-9]{64}$/.test(pathname);
     try {
         if (assetRead && readBearerToken(req).startsWith('pt_')) {
             const prefix = resolveRequestBasePath(req, url.pathname);
@@ -903,7 +921,7 @@ const server = http.createServer(async (req, res) => {
              * 店铺页数据源，分两类：
              *   online —— 非本人认领的店铺（供认领，别人已认领的也可见但不可再认领）；
              *   mine   —— 我已认领的店铺（含当前离线的，用于解除认领）。
-             * 两份数据合并自"插件心跳表"与"归属表"：归属表保证认领过的店永不消失，
+             * 两份数据合并自"插件心跳表"与"归属表"：归属表保留当前认领但没有心跳的店，
              * 心跳表保证只看插件连过一次就被记住，即使它之后再没上线。
              */
             if (!requireUserAccess(req, res)) return;
@@ -928,7 +946,7 @@ const server = http.createServer(async (req, res) => {
                 current.online = current.online || Boolean(agent.online);
                 byStore.set(storeId, current);
             }
-            // 归属表里的店铺即使心跳记录已被轮换掉，也必须继续显示——认领过就永久保留。
+            // 当前认领店即使没有心跳也继续显示；无心跳且已解除归属的店不在这两份目录中。
             for (const [storeId, entry] of Object.entries(assignments)) {
                 if (byStore.has(storeId)) continue;
                 byStore.set(storeId, { storeId, storeName: entry.storeName || storeId, online: false, lastSeenAt: "", pluginVersion: "", pageStoreName: "" });
@@ -938,12 +956,12 @@ const server = http.createServer(async (req, res) => {
                 if (type === 'unclassified' && !byStore.has(storeId)) byStore.set(storeId, { storeId, storeName: storeId, online: false });
             }
             const maskPhone = cloudAuth.users.maskPhone || ((value) => value);
-            const stores = [...byStore.values()].filter(item => req.temuLocalMode || req.temuDeviceBearer
-                || (category === 'unclassified' ? domains[item.storeId] === category : !domains[item.storeId] || domains[item.storeId] === category)).map((store) => {
+            const stores = [...byStore.values()].filter(item => directoryStoreVisible(req, item.storeId, assignments, domains)).map((store) => {
                 const owner = assignments[store.storeId] || null;
                 return {
                     ...store,
-                    accountType: domains[store.storeId] || '',
+                    // 普通目录的未认领店不展示历史分类；管理员待归类入口仍需该分类来呈现归类操作。
+                    accountType: owner || category === 'unclassified' ? (domains[store.storeId] || '') : '',
                     // 三态：unclaimed 待认领、mine 我认领的、others 他人认领（可见但不可再认领）
                     claimState: !owner ? "unclaimed" : (owner.ownerId === meId ? "mine" : "others"),
                     // 页面要显示"谁认领的"，但完整手机号只对本人与管理员可见，其余一律脱敏。
@@ -1276,7 +1294,8 @@ const server = http.createServer(async (req, res) => {
             const targetScope = await targetStoreScope(req);
             const sourceStoreId = String(input.sourceStoreId || ""), targetStoreId = String(input.targetStoreId || "");
             if ((scope && !scope.has(sourceStoreId)) || (targetScope && !targetScope.has(targetStoreId))) return send(res, 403, { error: "store_not_claimed" });
-            const deliveryOwners = await ownership.snapshotDeliveryOwners([...new Set([sourceStoreId, targetStoreId])], targetStoreId, targetScope ? req.temuUser?.id : null);
+            const deliveryOwners = await ownership.snapshotDeliveryOwners([...new Set([sourceStoreId, targetStoreId])], targetStoreId,
+                targetScope ? req.temuUser?.id : null, scope ? requestAccountType(req) : null);
             const abort = new AbortController();
             const cancel = () => abort.abort();
             req.once("aborted", cancel); res.once("close", cancel);
@@ -1314,7 +1333,12 @@ const server = http.createServer(async (req, res) => {
                 const claimed = verified.map(product => {
                     const snapshot = canonicalProductSnapshot(product);
                     // 商品任务不携带资质，旧页面请求也只能得到商品任务；补全资质保留静态归档引用。
-                    if (actionType === 'product_create') delete snapshot.qualifications;
+                    if (actionType === 'product_create') { delete snapshot.qualifications; delete snapshot.livePhotos; delete snapshot.livePhotoCompatibility; }
+                    // 旧插件仍处理原有证书流程；包含实拍图的新任务必须明确能力，不能静默漏图报成功。
+                    if (snapshot.livePhotos?.groups?.some(group => group.images?.length) && target.livePhotoTransferVersion !== 1) {
+                        throw Object.assign(Error('目标插件尚不支持独立实拍图补传，请使用已对接实拍图的插件；商品上架和原有资质任务不受影响'), { status: 409 });
+                    }
+                    if (target.livePhotoTransferVersion !== 1) delete snapshot.livePhotos;
                     const sourceNoticeRef = refs.get(String(product.spuId));
                     return { jobId, spuId: String(product.spuId), title: product.title, snapshot,
                         // 同次点击可以包含多个来源的同SPU；来源身份只是无状态任务隔离，不记录运行情况。
@@ -1398,11 +1422,13 @@ const server = http.createServer(async (req, res) => {
             let body;
             try { body = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8')); }
             catch (error) { if (error.status) throw error; return send(res, 400, { error: 'error_unblock_invalid' }); }
-            const scope = await visibleStoreScope(req);
-            if (!body?.sourceStoreId || (scope && !scope.has(body.sourceStoreId))) return send(res, 403, { error: 'store_not_claimed' });
-            const owner = await ownership.findOwner(body.sourceStoreId);
-            const result = await ownership.withStableOwners({ [body.sourceStoreId]: { ownerId: owner?.ownerId || '', claimId: owner?.claimId || '' } },
-                connection => store.unblockErrorProducts(body, connection));
+            // 解除新禁传也须锁内核验调用者，而非先鉴权后捕获可能已经转移给别人的新归属。
+            const result = await withInventoryWriteScope(req, (scope, connection) => {
+                if (!body?.sourceStoreId || (scope && !scope.has(body.sourceStoreId))) {
+                    throw Object.assign(Error('store_not_claimed'), { status: 403 });
+                }
+                return store.unblockErrorProducts(body, connection);
+            });
             liveEvents.notify();
             return send(res, 200, { ok: true, ...result });
         }
@@ -1463,12 +1489,16 @@ const server = http.createServer(async (req, res) => {
             send(res, 200, { ...product, product: { ...product.product,
                 canDelete: canDeleteCatalogProduct(product.product, await visibleStoreScope(req)),
                 ...(product.product.qualifications ? { qualifications: qualificationReferences(product.product.qualifications) } : {}),
-                ...(product.product.qualificationCaptures ? { qualificationCaptures: qualificationReferences(product.product.qualificationCaptures) } : {}) } });
+                ...(product.product.qualificationCaptures ? { qualificationCaptures: qualificationReferences(product.product.qualificationCaptures) } : {}),
+                ...(product.product.livePhotos ? { livePhotos: livePhotoReferences(product.product.livePhotos) } : {}),
+                ...(product.product.livePhotoCaptures ? { livePhotoCaptures: livePhotoReferences(product.product.livePhotoCaptures) } : {}) } });
             return;
         }
-        if (req.method === 'GET' && url.pathname.startsWith('/api/qualification-assets/')) {
+        // 两种附件共用既有账户/测试库/插件实例权限，但分别按各自的原包引用读取，不能串用路由。
+        if (req.method === 'GET' && /^\/api\/(?:qualification|live-photo)-assets\//.test(url.pathname)) {
             if (!isPluginScopedRequest(req) && !requireUserAccess(req, res)) return;
-            const match = url.pathname.match(/^\/api\/qualification-assets\/(\d{6,20})\/([a-f0-9]{64})$/);
+            const match = url.pathname.match(/^\/api\/(?:qualification|live-photo)-assets\/(\d{6,20})\/([a-f0-9]{64})$/);
+            const photo = url.pathname.startsWith('/api/live-photo-assets/');
             const sourceStoreId = String(url.searchParams.get('sourceStoreId') || '').trim();
             // 不接受客户端 URL 或磁盘路径；来源店是必填消歧字段，不允许通过省略来源读取另一个库。
             if (!match || !sourceStoreId || sourceStoreId.length > 255
@@ -1478,13 +1508,16 @@ const server = http.createServer(async (req, res) => {
             const scope = await qualificationAssetScope(req, sourceStoreId);
             if (scope && !scope.has(sourceStoreId)) return send(res, 403, { error: 'store_not_claimed' });
             if (await deletedStores.isDeleted(sourceStoreId)) return notFound(res);
-            const asset = await readQualificationAsset(store, { spuId: match[1], sha256: match[2], sourceStoreId, scope });
+            const asset = await (photo ? readLivePhotoAsset : readQualificationAsset)(store, { spuId: match[1], sha256: match[2], sourceStoreId, scope });
             if (!asset) return notFound(res);
             // 归属可在磁盘读取期间变化；发送字节前再次检查目标认领与来源读取范围。
             const currentScope = await qualificationAssetScope(req, sourceStoreId);
             if (currentScope && !currentScope.has(sourceStoreId)) return send(res, 403, { error: 'store_not_claimed' });
+            // 来源店可能在读取原包期间被删除，取得字节并不代表发送时仍有有效来源。
+            if (await deletedStores.isDeleted(sourceStoreId)) return notFound(res);
             return send(res, 200, asset.data, { 'content-type': asset.mimeType, 'content-length': String(asset.bytes),
                 'content-disposition': `attachment; filename="qualification-${asset.sha256.slice(0, 16)}.bin"; filename*=UTF-8''${encodeURIComponent(Buffer.from(asset.name).toString('utf8'))}`,
+                'cache-control': 'private, no-store',
                 'x-content-type-options': 'nosniff', 'content-security-policy': "sandbox; default-src 'none'" });
         }
         if (req.method === "GET" && url.pathname.startsWith("/api/files/")) {
@@ -1570,7 +1603,7 @@ const server = http.createServer(async (req, res) => {
                 return send(res, 400, { error: "解除标红请求不是合法 JSON" });
             }
             // 只允许解除自己店铺的标红：否则任何登录用户都能解除别人的红标，绕过"标红禁止再传"。
-            const result = await store.unblockProducts(body && body.spuIds, await visibleStoreScope(req));
+            const result = await withInventoryWriteScope(req, (scope, connection) => store.unblockProducts(body && body.spuIds, scope, connection));
             send(res, 200, { ok: true, ...result });
             return;
         }
@@ -1593,9 +1626,11 @@ const server = http.createServer(async (req, res) => {
              * 管理站按店铺分组删除时必须带上该组的 storeId，否则会把其他店那份一起删掉。
              * 服务端会把它与调用方的权限范围求交，越权部分忽略。
              */
-            const result = await store.deleteProducts(body && body.spuIds, await visibleStoreScope(req), {
-                storeIds: Array.isArray(body?.storeIds) ? body.storeIds : null
-            });
+            const result = await withInventoryWriteScope(req, (scope, connection) => store.deleteProducts(body && body.spuIds, scope, {
+                storeIds: Array.isArray(body?.storeIds) ? body.storeIds : null, connection
+            }));
+            // 外部事务提交后才可清理文件；失败保留待清理记录，不回滚已经完成的商品删除。
+            await store.cleanupInventory?.().catch(() => {});
             send(res, 200, { ok: true, ...result });
             return;
         }

@@ -66,7 +66,7 @@ test('云端会话的全部店铺与本人店铺隔离，保留目标权限及�
         await ownership.release(fixtures.available.storeId, alice.id);
         const productionIds = ['aliceLive', 'aliceOffline', 'bobLive', 'bobOffline', 'available', 'neutral']
             .map(key => fixtures[key].storeId);
-        const testIds = ['testLive', 'testOffline', 'peerLive', 'peerOffline', 'neutral']
+        const testIds = ['testLive', 'testOffline', 'peerLive', 'peerOffline', 'available', 'neutral']
             .map(key => fixtures[key].storeId);
 
         // 清除继承的业务及 Node 注入配置，云端认证、文件存储和插件令牌全部指向本次临时目录。
@@ -132,6 +132,21 @@ test('云端会话的全部店铺与本人店铺隔离，保留目标权限及�
             assert.equal(result.status, 200, JSON.stringify(result.body));
             assertPageLists(result.body);
             return result.body;
+        }
+
+        /** 仅通过服务端接口恢复待认领 fixture 的分类，避免父进程与服务端各自的文件队列并发写入。 */
+        async function restoreReleasedFixture(fixture, user) {
+            const current = await ownership.findOwner(fixture.storeId);
+            if (current) {
+                const owner = [alice, bob, tester, testPeer].find(item => item.id === current.ownerId);
+                assert.ok(owner, '清理只能释放本次测试账号的归属');
+                assert.equal((await api('/api/stores/release', owner, { storeId: fixture.storeId })).status, 200);
+            }
+            const restored = await api('/api/stores/claim', user, { storeId: fixture.storeId });
+            assert.equal(restored.status, 200, JSON.stringify(restored.body));
+            assert.equal((await ownership.listDataDomains())[fixture.storeId], user.accountType);
+            assert.equal((await api('/api/stores/release', user, { storeId: fixture.storeId })).status, 200);
+            assert.equal(await ownership.findOwner(fixture.storeId), null);
         }
 
         /** 按商城命名空间登记能力完整的虚拟接收端，只写本地心跳，不创建或投递任何平台任务。 */
@@ -312,7 +327,7 @@ test('云端会话的全部店铺与本人店铺隔离，保留目标权限及�
             assert.equal((await api('/api/agents/register', alice, agentFor(fixtures.available))).status, 403);
         });
 
-        await t.test('正式测试分类不因展示过滤、查询伪造或释放认领而串库', async () => {
+        await t.test('已有归属隔离，释放保留分类，跨类重新认领同步转移分类和目标权限', async () => {
             for (const user of [alice, bob]) {
                 for (const view of ['all', 'online', 'mine']) {
                     const normal = await stores(user, { view });
@@ -323,31 +338,158 @@ test('云端会话的全部店铺与本人店铺隔离，保留目标权限及�
                     assert.ok(forged.stores.every(item => item.accountType !== 'test'));
                     assert.equal((await stores(user, { view, q: fixtures.testLive.storeId })).total, 0);
                 }
-                assert.equal((await api('/api/stores/claim', user, { storeId: fixtures.testLive.storeId })).status, 409);
+                const denied = await api('/api/stores/claim', user, { storeId: fixtures.testLive.storeId });
+                assert.equal(denied.status, 409, '已认领的测试店仍不能由正式账户认领');
+                assert.ok(!JSON.stringify(denied.body).includes(tester.username), '跨分类拒绝不能泄露店主账号');
             }
             const testAll = await stores(tester, { view: 'all' });
             assertStoreIds(testAll.stores, testIds);
-            assert.equal(testAll.total, 5);
-            assert.deepEqual(testAll.counts, { unclaimed: 1, mine: 2, others: 2, online: 3, offline: 2 });
+            assert.equal(testAll.total, 6);
+            assert.deepEqual(testAll.counts, { unclaimed: 2, mine: 2, others: 2, online: 4, offline: 2 });
             const testOnline = await stores(tester, { view: 'online', accountType: 'production' });
-            assertStoreIds(testOnline.stores, [fixtures.peerLive.storeId, fixtures.peerOffline.storeId, fixtures.neutral.storeId]);
-            assert.equal(testOnline.total, 3);
-            assert.deepEqual(testOnline.counts, { unclaimed: 1, mine: 2, others: 2, online: 2, offline: 1 });
+            assertStoreIds(testOnline.stores, [fixtures.peerLive.storeId, fixtures.peerOffline.storeId, fixtures.available.storeId, fixtures.neutral.storeId]);
+            assert.equal(testOnline.total, 4);
+            assert.deepEqual(testOnline.counts, { unclaimed: 2, mine: 2, others: 2, online: 3, offline: 1 });
             const testMine = await stores(tester, { view: 'mine' });
             assertStoreIds(testMine.stores, [fixtures.testLive.storeId, fixtures.testOffline.storeId]);
             assert.deepEqual(testMine.counts, { unclaimed: 0, mine: 2, others: 0, online: 1, offline: 1 });
             assertStoreIds((await api('/api/agents', tester)).body.agents, [fixtures.testLive.storeId]);
-            assert.equal((await api('/api/stores/claim', tester, { storeId: fixtures.available.storeId })).status, 409,
-                '正式店已释放但永久分类仍不允许测试账号认领');
+            // 释放后的正式店可以归入测试账户；随后恢复正式待认领状态，保持后续目录计数独立。
+            try {
+                const crossClaim = await api('/api/stores/claim', tester, { storeId: fixtures.available.storeId });
+                assert.equal(crossClaim.status, 200, JSON.stringify(crossClaim.body));
+                assert.equal(crossClaim.body.claim.ownerId, tester.id);
+                assert.equal((await ownership.listDataDomains())[fixtures.available.storeId], 'test');
+                assert.equal((await api('/api/stores/claim', alice, { storeId: fixtures.available.storeId })).status, 409,
+                    '跨类成功后的独占归属仍禁止另一类型账户认领');
+            } finally {
+                await restoreReleasedFixture(fixtures.available, alice);
+            }
+            const liveBefore = await api('/api/live', alice);
+            assert.equal(liveBefore.status, 200);
             assert.equal((await api('/api/stores/release', tester, { storeId: fixtures.testLive.storeId })).status, 200);
+            const liveReleased = await api('/api/live', alice);
+            assert.equal(liveReleased.status, 200);
+            assert.notEqual(liveReleased.body.directory, liveBefore.body.directory, '释放测试店要唤醒正式账户的目录刷新');
+            assert.equal(liveReleased.body.inventory, liveBefore.body.inventory, '目录释放不能开放历史测试商品');
             const releasedTest = await stores(tester, { view: 'online' });
             assert.equal(releasedTest.stores.find(item => item.storeId === fixtures.testLive.storeId).claimState, 'unclaimed');
-            assert.equal(releasedTest.total, 4);
-            assert.deepEqual(releasedTest.counts, { unclaimed: 2, mine: 1, others: 2, online: 3, offline: 1 });
+            assert.equal(releasedTest.total, 5);
+            assert.deepEqual(releasedTest.counts, { unclaimed: 3, mine: 1, others: 2, online: 4, offline: 1 });
+            assert.equal((await ownership.listDataDomains())[fixtures.testLive.storeId], 'test', '目录开放不能改变历史商品的数据分类');
             for (const user of [alice, bob]) {
-                assertStoreIds((await stores(user, { view: 'all' })).stores, productionIds);
-                assert.equal((await api('/api/stores/claim', user, { storeId: fixtures.testLive.storeId })).status, 409,
-                    '释放测试归属不能让正式账号看到或认领测试店');
+                assertStoreIds((await stores(user, { view: 'all' })).stores, [...productionIds, fixtures.testLive.storeId]);
+                const found = await stores(user, { view: 'online', q: fixtures.testLive.storeId });
+                assert.equal(found.total, 1, '释放测试店后正式账户可在全部店铺搜索到它');
+                assert.equal(found.stores[0].claimState, 'unclaimed');
+                assert.equal(found.stores[0].accountType, '', '未认领店不继续显示历史测试身份');
+                assert.equal(found.stores[0].ownerName, '');
+                assert.ok(!found.unclaimableStoreIds.includes(fixtures.testLive.storeId));
+                // 每个正式账户都验证跨类认领，再恢复测试待认领状态，不能依赖前一轮修改后的分类。
+                try {
+                    const crossClaim = await api('/api/stores/claim', user, { storeId: fixtures.testLive.storeId });
+                    assert.equal(crossClaim.status, 200, JSON.stringify(crossClaim.body));
+                    assert.equal(crossClaim.body.claim.ownerId, user.id);
+                    assert.equal((await ownership.listDataDomains())[fixtures.testLive.storeId], 'production');
+                    assert.equal((await api('/api/stores/claim', tester, { storeId: fixtures.testLive.storeId })).status, 409);
+                    assert.ok((await api('/api/agents', user)).body.agents.some(item => item.storeId === fixtures.testLive.storeId),
+                        '重新认领后的目标权限归入新账户');
+                    assert.ok(!(await api('/api/agents', tester)).body.agents.some(item => item.storeId === fixtures.testLive.storeId));
+                } finally {
+                    await restoreReleasedFixture(fixtures.testLive, tester);
+                }
+            }
+            assertStoreIds((await api('/api/agents', tester)).body.agents, [], '释放后不能保留目标投递权限');
+            // 无归属店重新上线或换插件版本仍触发可见目录更新，不把历史测试分类当作隐藏条件。
+            const renewed = await api('/api/agents/register', 'device', { ...agentFor(fixtures.testLive), pluginVersion: '11.0.8' });
+            assert.equal(renewed.status, 200);
+            const liveRenewed = await api('/api/live', alice);
+            assert.notEqual(liveRenewed.body.directory, liveReleased.body.directory);
+            assert.equal((await api('/api/stores/claim', tester, { storeId: fixtures.testLive.storeId })).status, 200);
+            assert.equal((await stores(alice, { view: 'online', q: fixtures.testLive.storeId })).total, 0,
+                '重新归属测试账户后正式目录再次隐藏该店');
+            assert.notEqual((await api('/api/live', alice)).body.directory, liveRenewed.body.directory,
+                '重新归属测试账户同样触发正式目录隐藏更新');
+        });
+
+        await t.test('批量认领遇到独占冲突时，跨类店和新店的归属及分类全部回滚', async () => {
+            try {
+                await restoreReleasedFixture(fixtures.available, tester);
+                const assignmentsBefore = await ownership.listAssignments();
+                const domainsBefore = await ownership.listDataDomains();
+                assert.equal(domainsBefore[fixtures.available.storeId], 'test');
+                assert.equal(domainsBefore[fixtures.neutral.storeId], undefined);
+                const result = await api('/api/stores/claim', alice, { stores: [
+                    { storeId: fixtures.available.storeId },
+                    { storeId: fixtures.neutral.storeId },
+                    { storeId: fixtures.bobLive.storeId }
+                ] });
+                assert.equal(result.status, 409);
+                assert.deepEqual(await ownership.listAssignments(), assignmentsBefore,
+                    '前两家可认领也不能留下半批归属');
+                assert.deepEqual(await ownership.listDataDomains(), domainsBefore,
+                    '拒绝批量请求不能改写历史分类或为新店写入分类');
+            } finally {
+                await restoreReleasedFixture(fixtures.available, alice);
+            }
+        });
+
+        await t.test('正式和测试账户并发争抢同一待认领店只有一个赢家', async () => {
+            try {
+                const contenders = [alice, tester];
+                const results = await Promise.all(contenders.map(user =>
+                    api('/api/stores/claim', user, { storeId: fixtures.available.storeId })));
+                assert.deepEqual(results.map(result => result.status).sort(), [200, 409]);
+                const winnerIndex = results.findIndex(result => result.status === 200);
+                const winner = contenders[winnerIndex], claimed = results[winnerIndex].body.claim;
+                assert.equal(claimed.ownerId, winner.id);
+                assert.equal(results[winnerIndex].body.claimedCount, 1);
+                const current = await ownership.findOwner(fixtures.available.storeId);
+                assert.equal(current.ownerId, winner.id);
+                assert.equal(current.claimId, claimed.claimId);
+                assert.equal((await ownership.listDataDomains())[fixtures.available.storeId], winner.accountType,
+                    '落盘分类必须属于唯一赢家，不能被失败请求覆盖');
+                assert.ok(!JSON.stringify(results[1 - winnerIndex].body).includes(winner.username),
+                    '跨分类争抢失败不能泄露赢家账号');
+            } finally {
+                await restoreReleasedFixture(fixtures.available, alice);
+            }
+        });
+
+        await t.test('跨类认领和同账号重新认领均使旧 claimId 授权失效', async () => {
+            const id = fixtures.available.storeId;
+            // 在 HTTP 写入完成后读取快照；最终校验复用真实归属实现，但绝不向平台投递任务。
+            async function assertStale(snapshot) {
+                let executed = false;
+                await assert.rejects(ownership.withStableOwners(snapshot, () => { executed = true; }),
+                    error => error.status === 409 && error.message === 'failure_source_changed');
+                assert.equal(executed, false, '旧归属代次必须在业务回调执行前被拒绝');
+            }
+            try {
+                const original = await api('/api/stores/claim', alice, { storeId: id });
+                assert.equal(original.status, 200);
+                const originalSnapshot = await ownership.snapshotDeliveryOwners([id], id, alice.id);
+                assert.equal(originalSnapshot[id].claimId, original.body.claim.claimId);
+                assert.equal((await api('/api/stores/release', alice, { storeId: id })).status, 200);
+                await assertStale(originalSnapshot);
+                const transferred = await api('/api/stores/claim', tester, { storeId: id });
+                assert.equal(transferred.status, 200);
+                assert.notEqual(transferred.body.claim.claimId, original.body.claim.claimId);
+                await assertStale(originalSnapshot);
+                const transferredSnapshot = await ownership.snapshotDeliveryOwners([id], id, tester.id);
+                assert.equal((await api('/api/stores/release', tester, { storeId: id })).status, 200);
+                const reclaimed = await api('/api/stores/claim', alice, { storeId: id });
+                assert.equal(reclaimed.status, 200);
+                assert.notEqual(reclaimed.body.claim.claimId, original.body.claim.claimId,
+                    '原账号取回同一店铺也不能复活第一次认领的授权');
+                assert.notEqual(reclaimed.body.claim.claimId, transferred.body.claim.claimId);
+                await assertStale(originalSnapshot);
+                await assertStale(transferredSnapshot);
+                const currentSnapshot = await ownership.snapshotDeliveryOwners([id], id, alice.id);
+                assert.equal(await ownership.withStableOwners(currentSnapshot, () => 'current'), 'current',
+                    '当前代次应可执行，不能靠拒绝全部快照让失效测试通过');
+            } finally {
+                await restoreReleasedFixture(fixtures.available, alice);
             }
         });
     } finally {

@@ -12,6 +12,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'E:/project/chajian/node
 const pluginDir=fileURLToPath(new URL('../../plugin/',import.meta.url));
 // 慢双件模式复现用户日志：单次资质请求未超时，但两次累计超过旧详情计时器期限。
 const slowMulti=process.argv.includes('--slow-multi');
+const livePhotos=process.argv.includes('--live-photos');
 const fixtures=[structuredClone(sourceProduct)];
 if(slowMulti){
     const second=structuredClone(sourceProduct);second.productId=String(BigInt(spuId)+1n);
@@ -25,7 +26,9 @@ let context;
 try{
     context=await chromium.launchPersistentContext(profile,{channel:'chromium',headless:true,proxy:{server:'http://127.0.0.1:9'},
         args:[`--disable-extensions-except=${pluginDir}`,`--load-extension=${pluginDir}`,'--no-first-run','--no-default-browser-check']});
-    await context.route('**/*',route=>route.request().url()==='https://agentseller.temu.com/goods/list'
+    await context.route('**/*',route=>livePhotos&&route.request().url().startsWith('https://pos.file.temu.com/flash-tag/')
+        ?route.fulfill({contentType:'image/png',headers:{'access-control-allow-origin':'*'},body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7aYAAAAASUVORK5CYII=','base64')})
+        :route.request().url()==='https://agentseller.temu.com/goods/list'
         ?route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><html lang="zh"><meta charset="utf-8"><title>离线商品列表</title><body><table><tbody>${fixtures.map(product=>`<tr><td><input type="checkbox"></td><td>SPU ID：${product.productId} SKC ID：${product.productSkcList[0].productSkcId}</td></tr>`).join('')}</tbody></table></body></html>`})
         :route.abort());
     const worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker');
@@ -34,13 +37,26 @@ try{
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto('https://agentseller.temu.com/goods/list');
     await page.waitForSelector('[data-plugin-version]');
-    await page.evaluate(({products,snapshot,slow})=>{
+    await page.evaluate(({products,snapshot,slow,photos})=>{
         function factory(){return '.postWithoutMallId= .mallIdClient= getMallIdAsync';}
         window.__qualificationFixtureCalls=[];
-        const runtime=()=>({mallIdClient:{getMallIdAsync:async()=>'fixture-mall'},post:async(url,input)=>{
+        const runtime=()=>({mallIdClient:{getMallIdAsync:async()=>'634418214794015'},post:async(url,input)=>{
             window.__qualificationFixtureCalls.push({url,input});
             if(url==='/visage-agent-seller/product/skc/pageQuery')return {pageItems:products.map(product=>({productId:product.productId,productSkcId:product.productSkcList[0].productSkcId,removeStatus:0}))};
             if(url==='/visage-agent-seller/product/query')return products.find(product=>product.productId===input.productId);
+            // 证书回归夹具明确声明来源没有独立实拍图，新增查询不能被误当成平台写入。
+            if(url==='/api/flash/real_picture/list')return photos
+                ?{total:1,items:[{spu_id:input.spu_id_list[0],goods_id:'607030089729277'}],is_semi_managed_mall:false}
+                :{total:0,items:[],is_semi_managed_mall:false};
+            // 只读实拍图完整链夹具；两个位置和四类视角均保留，不借用资质模板里的图片。
+            if(url==='/api/flash/real_picture/detail'){
+                const sku=products.find(p=>p.productId===input.spu_id).productSkcList[0].productSkuList[0].productSkuId;
+                return {spu_id:input.spu_id,goods_id:input.goods_id,sku_info:[{sku_id:sku}],position_detail:[1,2].map(position=>({
+                    position,is_same_sku:true,sku_info:[{sku_id:sku}],sku_photo_info_list:[{sku_id:0,image_list:[0,1,2,3].map(position_type=>({
+                        position_type,image_url:`https://pos.file.temu.com/flash-tag/${input.spu_id}-${position}-${position_type}.png`}))}]}))};
+            }
+            if(url==='/api/flash/real_picture/query_upload_param')return {position_info_list:[1,2].map(position=>({position,
+                desc:position===1?'商品主体实拍图':'商品外包装实拍图',position_type_info:['正视图','侧视图','标签图','其他'].map((desc,type)=>({desc,type}))}))};
             if(slow&&window.__qualificationFixtureCalls.filter(call=>call.url==='/visage-agent-seller/product/query').length===1
                 &&url.startsWith('/mms/arbok/product_cert/query/'))await new Promise(resolve=>setTimeout(resolve,9000));
             if(url==='/mms/arbok/product_cert/query/list')return {if_semi_managed:false,total:1,product_with_cert_list:[{product_base_info:{product_id:input.product_ids[0]},product_cert_info_list:[snapshot.items[0].summary]}]};
@@ -48,7 +64,7 @@ try{
             throw Error('出现非只读接口：'+url);
         }});
         runtime.m={12345:factory};const chunks=[];chunks.push=entry=>entry[2](runtime);window.chunkLoadingGlobal_temu_sca_goods=chunks;
-    },{products:fixtures,snapshot:qualificationSnapshot(),slow:slowMulti});
+    },{products:fixtures,snapshot:qualificationSnapshot(),slow:slowMulti,photos:livePhotos});
     for(const checkbox of await page.locator('tbody input').all())await checkbox.check();
     await page.waitForFunction(count=>document.querySelector('[data-plugin-version]')?.getAttribute('data-selected-count')===String(count),fixtures.length);
     // 面板使用关闭的 Shadow DOM；CDP 只负责点击真正按钮，不调用后台方法代替用户启动流程。
@@ -64,17 +80,25 @@ try{
     const {queue,packet}=await worker.evaluate(async()=>{
         const values=await chrome.storage.session.get(null),queue=Object.entries(values).find(([key])=>key.startsWith('detailSupplementTab:'))?.[1];
         const records=await getAllRecords();
-        return {queue,packet:makeFullCapturePacket(records,{sourceStoreId:'offline-source-store',allowedSpuIds:queue.items.map(item=>item.spuId)})};
+        return {queue,packet:makeFullCapturePacket(records,{sourceStoreId:'temu:634418214794015',allowedSpuIds:queue.items.map(item=>item.spuId)})};
     });
     assert.equal(queue.active,false);assert.ok(queue.items.every(item=>item.qualificationStatus==='complete'));assert.equal(queue.finalization.ingest.status,'skipped');
     assert.equal(packet.records.filter(record=>record.dataType==='product-qualifications').length,fixtures.length);
     assert.equal(packet.records.filter(record=>record.dataType==='product-detail').length,fixtures.length);
+    // 使用真实协议格式的合成来源身份，必须验到实拍图进入可下发包，而不是仅落进本地隔离区。
+    assert.equal(packet.records.filter(record=>record.dataType==='product-live-photos').length,fixtures.length);
+    assert.equal(packet.localOnlyRecords?.length||0,0);
+    if(livePhotos)assert.ok(packet.records.filter(record=>record.dataType==='product-live-photos').every(record=>record.payload.result.assets.length===8));
     const products=parseImportedFiles([{originalName:'temu-full-capture-plugin-test.json',payload:packet}]).products;
     assert.equal(products.length,fixtures.length);assert.equal(products[0].qualifications.items[0].files.length,4);
     assert.equal(products[0].qualifications.items[0].content.authCode,'TEST-CERT-2026');
+    assert.equal(products[0].livePhotos.captureState,livePhotos?'captured':'not-found');
+    if(livePhotos)assert.equal(products[0].livePhotos.assets.length,8);
     assert.equal(products[0].images.some(url=>/report|cert|example|history/.test(url)),false);
     const calls=await page.evaluate(()=>window.__qualificationFixtureCalls);
-    assert.equal(calls.length,1+fixtures.length*3);assert.ok(calls.every(call=>/query|pageQuery/.test(call.url)));
+    assert.equal(calls.length,1+fixtures.length*(livePhotos?6:4));
+    assert.ok(calls.every(call=>/query|pageQuery/.test(call.url)||['/api/flash/real_picture/list','/api/flash/real_picture/detail'].includes(call.url)));
+    assert.ok(queue.items.every(item=>item.livePhotoStatus==='complete'));
     assert.deepEqual(errors,[]);
     console.log(`真实插件资质闭环通过：${fixtures.length}件商品，${calls.length}次模拟只读查询，慢资质模式=${slowMulti}；选择采集、落库、资料包和解析均通过，真实平台/服务器调用0`);
 }finally{

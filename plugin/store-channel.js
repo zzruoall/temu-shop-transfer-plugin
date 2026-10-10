@@ -127,7 +127,8 @@ async function openStoreChannel(record) {
                 socket.send(JSON.stringify({ type: 'authenticate', token: settings.token,
                     pluginInstanceId: await getPluginInstanceId(), identity: { storeId, mallId, storeName, pageStoreName, relaySessionId,
                         pageUrl: 'https://agentseller.temu.com/goods/list', pluginVersion: chrome.runtime.getManifest().version,
-                        relayProtocol: 1, executionMode: 'plugin-api', identityMatched: true } }));
+                        // 不靠版本号猜测能力，未发布的同版本开发包也必须显式声明独立实拍图协议。
+                        relayProtocol: 1, livePhotoTransferVersion: 1, executionMode: 'plugin-api', identityMatched: true } }));
             } catch { socket.close(); }
         };
         socket.onmessage = event => {

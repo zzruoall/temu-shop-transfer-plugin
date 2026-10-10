@@ -113,6 +113,8 @@ async function writeDirectAttempt(task, key, record) {
         const previous = (await chrome.storage.session.get(key))[key];
         // 商品已存在时没有新增尝试编号；资质编号同样只能接收本会话已发出请求的结果，不能放行下一次写入。
         const qualificationResult = record.productId && record.productId === previous?.productId && record.mallId === previous?.mallId
+            && JSON.stringify([record.livePhotoAttemptId, record.livePhotoState, record.livePhotoItems])
+                === JSON.stringify([previous?.livePhotoAttemptId, previous?.livePhotoState, previous?.livePhotoItems])
             && (record.qualificationItems || []).every(item => (previous?.qualificationItems || []).some(old => old.certType === item.certType
                 && (JSON.stringify(item) === JSON.stringify(old) || item.attemptId === old.attemptId
                     && ['submitted', 'failed', 'unknown'].includes(item.state) && ['submitting', 'submitted', 'failed', 'unknown'].includes(old.state))))
@@ -121,7 +123,13 @@ async function writeDirectAttempt(task, key, record) {
             && (previous?.qualificationItems || []).some(old => old.certType === item.certType
                 && old.attemptId === item.attemptId && ['submitting', 'submitted', 'failed', 'unknown'].includes(old.state)));
         // 暂停保留同一请求的真实结果；结束或新投递换会话后仍拒绝所有迟到结果。
-        const knownResult = qualificationResult || (record.attemptId && previous?.attemptId === record.attemptId
+        // 独立实拍图同样只接收已经发出的同一次结果；停用/换批不能允许产生新的照片提交编号。
+        const livePhotoResult = record.productId === previous?.productId && record.mallId === previous?.mallId
+            && JSON.stringify(record.qualificationItems || []) === JSON.stringify(previous?.qualificationItems || [])
+            && record.livePhotoAttemptId && record.livePhotoAttemptId === previous?.livePhotoAttemptId
+            && ['submitting', 'submitted', 'unknown'].includes(previous?.livePhotoState)
+            && ['submitted', 'unknown', 'settled'].includes(record.livePhotoState);
+        const knownResult = qualificationResult || livePhotoResult || (record.attemptId && previous?.attemptId === record.attemptId
             && ['verifying', 'created', 'unknown', 'rejected', 'qualifying', 'qualification_complete', 'qualification_failed', 'qualification_unknown'].includes(record.stage));
         if (!live || (!knownResult && (live.executionRunId !== task.executionRunId || revokedExecutionRuns.has(task.executionRunId)))) throw Error('本地执行轮次已结束，丢弃迟到结果');
         await pruneDirectAttempts();
@@ -129,6 +137,7 @@ async function writeDirectAttempt(task, key, record) {
             await saveTargetUploadTasks(tasks.map(item => item !== live ? item : { ...item, directState: record.stage,
                 ...(record.productId ? { productId: String(record.productId), productState: 'complete' } : {}),
                 ...(record.qualificationItems ? { qualificationItems: record.qualificationItems } : {}),
+                ...(record.livePhotoItems ? { livePhotoItems: record.livePhotoItems } : {}),
                 ...(record.businessError ? { reason: record.businessError }
                     : record.productId && directActionType(task) === 'product_create'
                         ? { reason: `平台已返回商品 ${record.productId}；仅商品内容已创建，不代表审核上架` } : {}) }), { [key]: record });

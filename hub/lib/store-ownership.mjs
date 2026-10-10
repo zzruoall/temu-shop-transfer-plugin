@@ -1,8 +1,8 @@
 /**
  * 店铺归属表：storeId → 所属用户。
  *
- * 商品按来源店记录；个人管理权限随归属转移，共享读取按永久的数据分类隔离。
- * 解绑不删除分类，同类账户才能认领或改派，避免测试数据进入正式环境。
+ * 商品按来源店记录；个人管理权限和商品分类随重新认领转移。
+ * 解除本身保留历史分类；无归属店重新认领时，历史商品整体归入新账户类型，不删除或复制原文件。
  *
  * 认领语义（按业务约定）：
  * - 一个店铺只能被一个用户认领，认领后独占，他人可见但不能再认领；
@@ -107,7 +107,7 @@ export function createStoreOwnership(rootDir, options = {}) {
     function saveDomain(state, id, type) {
         state.assignments[domainKey(id)] = { kind: 'data-domain', storeId: id, accountType: type };
     }
-    /** 初始化只运行一次，指定的三个账户保留原角色和口令；分类冻结后不会随解绑或删用户改变。 */
+    /** 初始化只运行一次，指定的三个账户保留原角色和口令；解除归属本身不会改写历史分类。 */
     async function initializeAccountTypes(users, knownStores = async () => []) {
         // 库存目录读取发生在归属事务外；小连接池不能在持锁时嵌套读取库存。
         if ((await readState()).assignments[migrationKey]) return;
@@ -127,7 +127,7 @@ export function createStoreOwnership(rootDir, options = {}) {
             await writeState(state);
         });
     }
-    /** 未认领的历史数据不自动归入任何分类；新认领会在同一事务里固定其分类。 */
+    /** 未认领店保留上次分类；重新认领时与新归属同事务更新，商品及附件按来源店一起转移可见范围。 */
     async function listDataDomains() {
         const state = await readState();
         return Object.fromEntries(Object.values(state.assignments)
@@ -147,15 +147,34 @@ export function createStoreOwnership(rootDir, options = {}) {
         return assignments[text(storeId)] || null;
     }
     /** 一次锁内核验目标权限并捕获归属代次，防止等待准入时店铺改派后仍向他人的店发送。 */
-    async function snapshotDeliveryOwners(storeIds, targetStoreId, userId = null) {
+    async function snapshotDeliveryOwners(storeIds, targetStoreId, userId = null, requiredType = null) {
         return withLock(async () => {
             const state = await readState();
+            // 分类授权和归属快照不可分开读取，否则跨类重新认领可使旧请求捕获新代次并继续发送。
+            if (requiredType && storeIds.some(id => state.assignments[domainKey(id)]?.accountType !== requiredType)) {
+                throw Object.assign(Error('store_not_claimed'), { status: 403 });
+            }
             const target = normalize(state.assignments[targetStoreId]);
             if (userId && target?.ownerId !== userId) throw Object.assign(Error('目标店铺已不属于当前账户'), { status: 403 });
             return Object.fromEntries(storeIds.map(id => {
                 const owner = normalize(state.assignments[id]);
                 return [id, { ownerId: owner?.ownerId || '', claimId: owner?.claimId || '' }];
             }));
+        });
+    }
+
+    /** 删除和解红在归属锁内取得当前写范围并完成库存操作；SQL 复用同一连接，避免转移后的旧请求继续改写。 */
+    async function withWriteScope({ ownerId = null, type = null } = {}, fn) {
+        return withLock(async connection => {
+            const state = await readState();
+            let scope = null;
+            if (type) scope = new Set(Object.values(state.assignments)
+                .filter(entry => entry?.kind === 'data-domain' && entry.accountType === type).map(entry => entry.storeId));
+            if (ownerId) {
+                const owned = Object.entries(state.assignments).filter(([, entry]) => normalize(entry)?.ownerId === ownerId).map(([id]) => id);
+                scope = new Set(owned.filter(id => !scope || scope.has(id)));
+            }
+            return fn(scope, connection);
         });
     }
     /** 异常标记必须与归属改派互斥；SQL 下把同一连接交给库存写入，不嵌套申请连接。 */
@@ -193,10 +212,13 @@ export function createStoreOwnership(rootDir, options = {}) {
             const state = await readState();
             const conflicts = [];
             for (const [storeId] of unique) {
-                checkDomain(state, storeId, user);
                 const existing = normalize(state.assignments[storeId]);
+                const type = state.assignments[domainKey(storeId)]?.accountType;
+                // 已有归属先核验分类，避免跨分类冲突提示泄露店主；已释放店允许历史商品随新账户归并。
+                if (existing || !['test', 'production'].includes(type)) checkDomain(state, storeId, user);
                 if (existing && existing.ownerId !== ownerId) {
                     conflicts.push(`${existing.storeName || storeId}（${existing.ownerName || "其他账号"}）`);
+                    continue;
                 }
             }
             if (conflicts.length) {
@@ -351,5 +373,5 @@ export function createStoreOwnership(rootDir, options = {}) {
         return createHash("sha256").update(stablePayload).digest("base64url");
     }
 
-    return { initializeAccountTypes, listDataDomains, listAssignments, ownedStoreIds, findOwner, snapshotDeliveryOwners, withStableOwners, claim, claimMany, release, reassign, forceRelease, releaseByOwner, restoreAssignment, liveSignature };
+    return { initializeAccountTypes, listDataDomains, listAssignments, ownedStoreIds, findOwner, snapshotDeliveryOwners, withWriteScope, withStableOwners, claim, claimMany, release, reassign, forceRelease, releaseByOwner, restoreAssignment, liveSignature };
 }

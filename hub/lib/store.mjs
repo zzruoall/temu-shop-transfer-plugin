@@ -13,6 +13,7 @@ import { noticeStateKey, noticeRawSources, refreshNoticeStates, noticeRef, notic
 import path from "node:path";
 import {skuFingerprint} from "./sku-dedup.mjs";
 import { mergeQualificationCapture, qualificationContentHash } from './product-qualifications.mjs';
+import { mergeLivePhotoCapture, livePhotoContentHash } from './product-live-photos.mjs';
 import { sourceStoreNameCandidate } from './source-store-display.mjs';
 import { createHash, randomUUID } from "node:crypto";
 import { createSingleProductCapture, detectFileKind, getProductCompleteness, hasRealProductDetail, isProductReadyForTransfer, makeBatchId, parseImportedFiles, redactSensitive } from "./parse-capture.mjs";
@@ -366,7 +367,14 @@ export function createStore(rootDir, options = {}) {
         };
         // 同货号可能归并多个原始 SPU，资质仍按来源店及原始 SPU 分别保存，禁止提升为整行审核状态。
         const qualificationScopes = new Map();
+        const livePhotoScopes = new Map();
         for (const { product, batch, groupProduct = product } of row.source) {
+            // 同货号合并只合并展示行；图片原始SKU及来源SPU必须独立保留，旧包无字段不能覆盖。
+            if (product.livePhotos) {
+                const scope = JSON.stringify([batch.sourceStoreId || `batch:${batch.id}`, product.spuId]);
+                const capture = { ...product.livePhotos, sourceStoreId: batch.sourceStoreId || '' };
+                livePhotoScopes.set(scope, mergeLivePhotoCapture(livePhotoScopes.get(scope), capture));
+            }
             if (product.qualifications) {
                 const scope = JSON.stringify([batch.sourceStoreId || `batch:${batch.id}`, product.spuId]);
                 const capture = { ...product.qualifications, sourceStoreId: batch.sourceStoreId || '', spuId: String(product.spuId) };
@@ -408,6 +416,7 @@ export function createStore(rootDir, options = {}) {
             if (batch.sourceStoreId) current.sourceStoreIds = [...new Set((current.sourceStoreIds || []).concat(String(batch.sourceStoreId)))];
         }
         if (qualificationScopes.size) current.qualificationCaptures = [...qualificationScopes.values()];
+        if (livePhotoScopes.size) current.livePhotoCaptures = [...livePhotoScopes.values()];
         // SPU 取“带完整发布资料的那一条”：上传任务按 (来源批次, SPU) 取快照，
         // 两者必须来自同一次采集，错位会取不到商品。没有发布资料时退回第一条 SPU。
         // 优先选带 sourceProduct 的那条：插件按 sourceProduct.productId 取来源资料，
@@ -691,13 +700,15 @@ export function createStore(rootDir, options = {}) {
             // 业务去重会忽略时间字段，但来源原对象一旦变化就必须保留新采集，不能用旧资料冒充本次传输。
             const duplicate=hash&&old.find(b=>b.products.some(p=>skuFingerprint(p,b.sourceStoreId)===hash
                 && transferHash(p.publicationData || null) === transferHash(product.publicationData || null)
-                && qualificationContentHash(p.qualifications) === qualificationContentHash(product.qualifications)));
+                && qualificationContentHash(p.qualifications) === qualificationContentHash(product.qualifications)
+                && livePhotoContentHash(p.livePhotos) === livePhotoContentHash(product.livePhotos)));
             if(duplicate)reusedBatch=duplicate;else kept.push(product);
         }
         // 整包复用必须由同一批次覆盖本次全部商品，不能只返回最后一件命中的批次。
         if(parsed.products.length&&!kept.length&&reusedBatch && parsed.products.every(product => reusedBatch.products.some(old => old.spuId === product.spuId
             && transferHash(old.publicationData || null) === transferHash(product.publicationData || null)
-            && qualificationContentHash(old.qualifications) === qualificationContentHash(product.qualifications)))) {
+            && qualificationContentHash(old.qualifications) === qualificationContentHash(product.qualifications)
+            && livePhotoContentHash(old.livePhotos) === livePhotoContentHash(product.livePhotos)))) {
             const restoredFiles = await restoreMissingFiles(reusedBatch);
             // 这条提前返回同样要给旧批次补齐文件事实：它是"整包复用"的主路径，
             // 漏掉它会出现"补了另一条复用路径、这条仍带空引用"的半修状态。
@@ -1594,14 +1605,15 @@ export function createStore(rootDir, options = {}) {
         api.markProductBlocked = (input, connection = null) => sql.runMutation(() => markProductBlocked(input), [String(input?.storeId || "").trim()], [], connection);
         api.clearProductBlocked = (id, ids) => sql.runMutation(() => clearProductBlocked(id, ids), [String(id || "").trim()]);
         api.deleteStoreData = (id, options) => sql.runMutation(() => deleteStoreData(id, options), [String(id || "").trim()]);
-        api.unblockProducts = async (ids, scope = null) => {
-            const stores = (await sql.storesForSpus(lookupIds(ids), true)).filter(id => !scope || scope.has(id));
-            return sql.runMutation(() => unblockProducts(ids, scope), stores);
+        // 归属锁注入的连接使权限核验、库存修改共同提交，不在锁内再申请连接。
+        api.unblockProducts = async (ids, scope = null, connection = null) => {
+            const stores = (await sql.storesForSpus(lookupIds(ids), true, connection)).filter(id => !scope || scope.has(id));
+            return sql.runMutation(() => unblockProducts(ids, scope), stores, [], connection);
         };
         api.deleteProducts = async (ids, scope = null, options = {}) => {
             const explicit = Array.isArray(options.storeIds) ? new Set(options.storeIds.length ? options.storeIds.map(id => String(id).trim()) : [""]) : null;
-            const stores = (await sql.storesForSpus(lookupIds(ids))).filter(id => (!scope || scope.has(id)) && (!explicit || explicit.has(id)));
-            return sql.runMutation(() => deleteProducts(ids, scope, options), stores);
+            const stores = (await sql.storesForSpus(lookupIds(ids), false, options.connection)).filter(id => (!scope || scope.has(id)) && (!explicit || explicit.has(id)));
+            return sql.runMutation(() => deleteProducts(ids, scope, options), stores, [], options.connection);
         };
         api.listOverviewPage = sql.page;
         api.inventoryVersions = sql.versions;

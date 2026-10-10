@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "店铺中转插件",
-    "version": "11.0.4",
+    "version": "11.0.10",
     "minimum_chrome_version": "116",
     "description": "同步采集商品和资质资料上传云仓；商品上架与资质补全独立投递，目标店按货号及SKU匹配，仅错误通知，成功和正常进度不回传。",
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzPbLlK4UTx7OdOi0b/1YbfNi603gI7AlqqY7tHcIxS4DSFNsVjr5zofuFiwXHEPDeVrhYY9Ri9+ttgnYryAm+dahrH8y+DA/XOvHObTW4MFVMUukxriWlTIg+tdMl+or7s/sVPTz5JdFrbbPIJzxl4fa8Qp2hCM4Jy8URrjvbpS56PDFBYx9JwI5Z5Bl4fYWE7vj6NTDYPCT/drfI2ucLC0KPnhCKdkcxtwKUbIBuzsi27opps0ehwxDzjwuUyPEVaVwhDZaPEpWEJoys9A0CJhrtWTtEw+YcVO/gp/bNoqOsNx4j2SWcP/t9X1vdevFeHxyNY88S9ep16lFQxSVdQIDAQAB",
@@ -21,6 +21,7 @@
             "js": [
                 "page-hook.js",
                 "qualification-reader.js",
+                "live-photo-reader.js",
                 "api-reader.js"
             ],
             "matches": [

@@ -230,7 +230,7 @@ async function bindExecutionIdentity(sender, identity, controlLocked = false) {
     executionActiveTabs.set(state.tabId, state);
     return { ...identity, storeName: pageName || String(state.storeName || ''),
         pageStoreName: pageName || String(state.pageStoreName || ''), tabId: state.tabId, documentId: state.documentId, relayProtocol: 1,
-        relaySessionId: state.relaySessionId, executionRunId: state.executionRunId };
+        livePhotoTransferVersion: 1, relaySessionId: state.relaySessionId, executionRunId: state.executionRunId };
 }
 /** 页面内最后一道门禁独立于网络，离开页面立即禁止尚未发出的新增。 */
 async function installLocalExecutionRound(state) {

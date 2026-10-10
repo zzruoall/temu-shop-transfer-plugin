@@ -1710,6 +1710,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .detail-section { padding: 24px 0; border-bottom: 1px solid #dce7f0; }
 .detail-section:last-child { border-bottom: 0; }
 .detail-section > h2 { font-size: 17px; line-height: 1.5; letter-spacing: 0; margin: 0 0 16px; color: #173c56; }
+/* 可选长内容默认折叠；保留原模块标题层级和原生可访问的展开指示。 */
+.detail-collapsible > summary { cursor: pointer; color: #173c56; }
+.detail-collapsible > summary h2 { display: inline; margin: 0; font-size: 17px; line-height: 1.5; letter-spacing: 0; }
+.detail-collapsible > summary:focus-visible { outline: 2px solid #1677ff; outline-offset: 4px; }
+.detail-collapsible[open] > summary { margin-bottom: 16px; }
+.detail-live-photo { display: inline-block; vertical-align: top; width: min(240px, 100%); margin: 0 16px 16px 0; }
+.detail-live-photo a { display: block; overflow-wrap: anywhere; }
+.detail-live-photo img { display: block; width: 100%; height: 240px; object-fit: contain; background: #f4f8fa; margin-bottom: 6px; }
 .detail-field { display: grid; grid-template-columns: 120px minmax(0, 1fr); column-gap: 24px; padding: 10px 0; }
 .detail-label { min-width: 0; overflow-wrap: anywhere; color: #536b7f; font-size: 13px; line-height: 1.8; }
 .detail-value { min-width: 0; color: #1d3447; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }

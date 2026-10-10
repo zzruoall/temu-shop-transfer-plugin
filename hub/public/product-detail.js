@@ -39,6 +39,43 @@ window.ProductDetailView = (() => {
 
     function valueRow(label, value) { return row(label, text(value) ? `<p>${escape(value)}</p>` : ''); }
     function section(title, content) { return content ? `<section class="detail-section" aria-label="${escape(title)}"><h2>${escape(title)}</h2>${content}</section>` : ''; }
+    /** 图文及实拍图采用原生折叠，默认不展开；内容保留，键盘可独立展开每个模块。 */
+    function collapsedSection(title, content) {
+        return content ? `<details class="detail-section detail-collapsible"><summary><h2>${escape(title)}</h2></summary><div class="qualification-body">${content}</div></details>` : '';
+    }
+
+    /** 实拍图只展示专用归档，不使用商品主图或证书图片补位；下载仍由服务端核验来源权限。 */
+    function livePhotos(product) {
+        const captures = array(product.livePhotoCaptures).length ? product.livePhotoCaptures : product.livePhotos ? [product.livePhotos] : [];
+        return captures.map(capture => {
+            const sourceStoreId = text(capture.sourceStoreId || product.sourceStoreIds?.[0]);
+            const productId = text(capture.productId);
+            const skus = new Map(array(capture.skus).map(sku => [text(sku.skuId), text(sku.skuExtCode)]));
+            const status = capture.status === 'complete' ? '读取完成' : capture.status === 'partial' ? '部分读取' : '读取失败';
+            const archived = capture.archive?.status === 'complete' ? '原图已归档' : '原图未完整归档';
+            const groups = array(capture.groups).map(group => {
+                const photos = array(group.images).map(image => {
+                    const asset = array(capture.assets).find(asset => asset.url === image.url);
+                    const label = `${text(image.typeLabel) || `视角 ${image.positionType}`} · ${image.skuId === '0' ? '共用' : skus.get(image.skuId) || image.skuId}`;
+                    if (!asset || !/^[a-f0-9]{64}$/.test(asset.sha256) || !/^\d{6,20}$/.test(productId) || !sourceStoreId) return `<p>${escape(label)} · 未归档</p>`;
+                    const params = new URLSearchParams({ sourceStoreId });
+                    // 保留当前个人/共享库读取约束，链接只能指向本站已认证的归档接口。
+                    if (typeof location !== 'undefined') {
+                        const query = location.hash.split('?')[1] || '';
+                        const library = new URLSearchParams(query).get('library');
+                        if (library) params.set('library', library);
+                        const accountType = new URLSearchParams(query).get('accountType') || new URLSearchParams(location.search || '').get('accountType');
+                        if (['production', 'test', 'unclassified'].includes(accountType)) params.set('accountType', accountType);
+                    }
+                    const href = `./api/live-photo-assets/${productId}/${asset.sha256}?${params}`;
+                    return `<div class="detail-live-photo"><a href="${escape(href)}" target="_blank" rel="noopener noreferrer"><img src="${escape(href)}" alt="${escape(label)}" loading="lazy"><span>${escape(label)} · ${escape(asset.name || image.name || '实拍图')} · 已归档</span></a></div>`;
+                }).join('');
+                return photos ? `<details class="detail-qualification"><summary class="qualification-summary"><h4>${escape(group.label || `位置 ${group.position}`)}</h4></summary><div class="qualification-body">${photos}</div></details>` : '';
+            }).join('');
+            const reason = capture.lastAttempt?.reason || capture.reason;
+            return `<div class="qualification-scope"><h3>来源店 ${escape(sourceStoreId)} · SPU ${escape(productId)}</h3><p class="qualification-meta">${status} · ${archived}</p>${reason ? `<p class="qualification-warning">${escape(reason)}</p>` : ''}${groups || '<p>本次未返回商品实拍图</p>'}</div>`;
+        }).join('');
+    }
 
     /** 动态表只显示至少一行有值的列；空数据用短横线，不把 0 当作缺失。 */
     function table(rows, columns, label) {
@@ -275,7 +312,7 @@ window.ProductDetailView = (() => {
             return url ? `<a class="detail-file-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(first(file.fileName, file.name, '说明书'))}</a>` : '';
         }).join('');
         const body = hasSource ? [source.goodsLayerDecorationVOList, source.goodsLayerDecorationCustomizeI18nVOList, source.decoration] : product.detail;
-        return `<div class="product-detail">${section('商品素材', material)}${section('基本信息', basic)}${section('商品属性', attributes(product, source, hasSource))}${section('商品规格', specification)}${section('尺码表', images(source.sizeChartImages, '尺码表'))}${section('商品包装信息', packaging)}${section('敏感属性与体积重量', hasLogistics ? logistics : '')}${section('SKU 信息', skuInfo)}${section('货号', valueRow('货号', codes.join(' / ')))}${section('化妆品成分', cosmetics(source, rows))}${section('详情视频', row('详情视频', videos(source.detailVideoVOList)))}${section('电子说明书', row('说明书文件', guideLinks))}${section('详情图文', description(body))}${section('商品资质', qualifications(product))}</div>`;
+        return `<div class="product-detail">${section('商品素材', material)}${section('基本信息', basic)}${section('商品属性', attributes(product, source, hasSource))}${section('商品规格', specification)}${section('尺码表', images(source.sizeChartImages, '尺码表'))}${section('商品包装信息', packaging)}${section('敏感属性与体积重量', hasLogistics ? logistics : '')}${section('SKU 信息', skuInfo)}${section('货号', valueRow('货号', codes.join(' / ')))}${section('化妆品成分', cosmetics(source, rows))}${section('详情视频', row('详情视频', videos(source.detailVideoVOList)))}${section('电子说明书', row('说明书文件', guideLinks))}${collapsedSection('详情图文', description(body))}${section('商品资质', qualifications(product))}${collapsedSection('商品实拍图', livePhotos(product))}</div>`;
     }
     return { render };
 })();

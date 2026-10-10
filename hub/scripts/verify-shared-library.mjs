@@ -6,11 +6,12 @@ import { once } from 'node:events';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { createUsers } from '../lib/users.mjs';
 import { createStoreOwnership } from '../lib/store-ownership.mjs';
 import { createStore } from '../lib/store.mjs';
 import { canDeleteCatalogProduct, projectCatalogPermissions } from '../lib/catalog-permissions.mjs';
+import { qualificationSnapshot, qualificationRecord } from './qualification-fixture.mjs';
 
 test('删除权限逐来源投影，不接受未知来源或共享阅读范围冒充写权限', () => {
     const scope = new Set(['mine']);
@@ -60,12 +61,23 @@ test('共享来源、个人范围、测试正式隔离、目标店权限与迁�
     const cookies = Object.fromEntries(await Promise.all([a, b, t, t2, testAdmin].map(async user => [user.id, `temu_session=${(await users.signSession(user.id)).value}`])));
     const spuId = '1234567890';
     const batches = [];
+    // 历史测试商品携带真实合成附件，核验归并不只改变列表，文件权限和原始字节也必须一起保留。
+    const certBytes = Buffer.from('%PDF-1.7\nreclaim-fixture\n');
+    const certHash = createHash('sha256').update(certBytes).digest('hex');
     for (const [index, sourceStoreId] of ids.entries()) {
         const productId = String(Number(spuId) + index);
         const packet = { kind: 'full-capture-packet', schemaVersion: 5, source: { sourceStoreId }, products: [{ spuId: productId }],
             records: [{ dataType: 'product-detail', identity: { productIds: [productId] },
                 source: { pageProductId: productId, requestUrl: 'https://example.invalid/visage-agent-seller/product/query' },
                 payload: { success: true, result: { productId, productName: `分类商品${index}`, extCode: 'SAME-CODE' } } }] };
+        if (index === 2) {
+            const snapshot = qualificationSnapshot({ id: productId });
+            snapshot.items[0].detail = { certType: 1421, productCertFiles: [{ fileUrl: 'https://bstatic.kwcdn.com/cert.pdf', fileName: '证书.pdf' }] };
+            snapshot.assets = [{ url: 'https://bstatic.kwcdn.com/cert.pdf', name: '证书.pdf', mimeType: 'application/pdf',
+                bytes: certBytes.length, sha256: certHash, dataBase64: certBytes.toString('base64') }];
+            snapshot.archive = { status: 'complete', errors: [] };
+            packet.records.push(qualificationRecord(snapshot));
+        }
         batches.push((await inventory.importFiles([{ originalName: `packet-${index}.json`, payload: packet }], { sourceStoreId })).batch);
     }
     await inventory.importFiles([{ originalName: 'legacy-unclaimed.json', payload: { kind: 'full-capture-packet', source: { sourceStoreId: 'temu:105' },
@@ -177,9 +189,45 @@ test('共享来源、个人范围、测试正式隔离、目标店权限与迁�
         checkpoint('ownership generation');
         const liveShared = await api('/api/live'), liveMine = await api('/api/live?library=personal');
         assert.notEqual(liveShared.body.inventory, liveMine.body.inventory);
+        const historicalRaw = await inventory.readStoredFile(batches[2].files[0].storedName);
+        const oldGrant = await ownership.snapshotDeliveryOwners([ids[2], 'temu:202'], 'temu:202', t2.id, 'test');
         assert.equal((await api('/api/stores/release', t, { storeId: ids[2] })).status, 200);
-        assert.equal((await api('/api/stores/claim', b, { storeId: ids[2] })).status, 409, '解绑不能将测试店转成正式店');
-        assert.equal((await api('/api/overview', t2)).body.productCount, 2, '解绑后测试数据仍留在测试共享库');
+        assert.equal((await api('/api/overview', t2)).body.productCount, 2, '释放本身保留历史分类');
+        assert.equal((await api('/api/stores/claim', b, { storeId: ids[2] })).status, 200, '重新认领允许历史测试商品归入正式账户');
+        assert.equal((await ownership.listDataDomains())[ids[2]], 'production');
+        assert.equal((await api('/api/overview')).body.productCount, 3);
+        assert.equal((await api('/api/overview?library=personal')).body.productCount, 2);
+        assert.equal((await api('/api/overview', t2)).body.productCount, 1);
+        assert.notEqual((await api('/api/live')).body.inventory, liveShared.body.inventory, '库存版本不变时分类范围变化仍刷新');
+        const detailUrl = `/api/products/${Number(spuId) + 2}?sourceStoreId=${ids[2]}`;
+        assert.equal((await api(detailUrl)).status, 200);
+        assert.equal((await api(detailUrl, t2)).status, 404);
+        assert.equal((await api(`/api/batches/${batches[2].id}`)).status, 200);
+        assert.equal((await api(`/api/batches/${batches[2].id}`, t2)).status, 403);
+        assert.equal((await api(`/api/files/${batches[2].files[0].storedName}`)).status, 200);
+        assert.equal((await api(`/api/files/${batches[2].files[0].storedName}`, t2)).status, 403);
+        const certUrl = `${origin}/api/qualification-assets/${Number(spuId) + 2}/${certHash}?sourceStoreId=${encodeURIComponent(ids[2])}`;
+        const certResponse = await fetch(certUrl, { headers: { cookie: cookies[b.id] } });
+        assert.equal(certResponse.status, 200);
+        assert.deepEqual(Buffer.from(await certResponse.arrayBuffer()), certBytes);
+        assert.equal((await fetch(certUrl, { headers: { cookie: cookies[t2.id] } })).status, 403);
+        assert.deepEqual((await inventory.readStoredFile(batches[2].files[0].storedName)).json, historicalRaw.json, '原始商品和资质包不被归并重写');
+        await assert.rejects(ownership.withStableOwners(oldGrant, () => { throw Error('旧凭证不应被接受'); }), { status: 409 });
+        await assert.rejects(ownership.snapshotDeliveryOwners([ids[2], 'temu:202'], 'temu:202', t2.id, 'test'), { status: 403 }, '旧分类不能在转移后捕获新归属授权');
+        const writeScope = await ownership.withWriteScope({ type: 'test' }, scope => scope);
+        assert.equal(writeScope.has(ids[2]), false, '旧测试管理员的写范围不包含归并后的商品');
+        assert.equal((await api('/api/products?accountType=test', testAdmin,
+            { spuIds: [String(Number(spuId) + 2)], storeIds: [ids[2]] }, 'DELETE')).status, 403, '旧分类管理员不能删除已归并商品');
+        assert.equal((await api(detailUrl)).status, 200, '拒绝旧分类删除后新账户商品仍完整');
+        assert.equal((await api('/api/products/error-unblock?accountType=test', testAdmin,
+            { sourceStoreId: ids[2], spuIds: [String(Number(spuId) + 2)] })).status, 403, '解除禁传也不能用旧分类操作已归并商品');
+        // 双向归并仍保留全部附件；还原夹具后继续验证原有管理功能。
+        assert.equal((await api('/api/stores/release', b, { storeId: ids[2] })).status, 200);
+        assert.equal((await api('/api/stores/claim', t, { storeId: ids[2] })).status, 200);
+        assert.equal((await fetch(certUrl, { headers: { cookie: cookies[b.id] } })).status, 403);
+        assert.equal((await fetch(certUrl, { headers: { cookie: cookies[t2.id] } })).status, 200);
+        assert.equal((await api('/api/overview')).body.productCount, 2);
+        assert.equal((await api('/api/overview', t2)).body.productCount, 2);
         checkpoint('released categories');
         assert.equal((await api('/api/admin/stores/reassign', a, { storeId: ids[2], userId: b.id })).status, 409);
         assert.equal((await api('/api/overview?accountType=unclassified', a)).body.productCount, 1);
@@ -189,7 +237,9 @@ test('共享来源、个人范围、测试正式隔离、目标店权限与迁�
         assert.equal((await api('/api/overview')).body.productCount, 2);
         assert.equal((await api('/api/admin/users/delete', a, { userId: t2.id, mode: 'keep' })).status, 200);
         assert.equal((await api('/api/overview', t)).body.productCount, 3, '删测试账户不把保留资料转入正式库');
-        assert.equal((await api('/api/stores/claim', b, { storeId: ids[3] })).status, 409);
+        assert.equal((await api('/api/stores/claim', b, { storeId: ids[3] })).status, 200, '删除旧账号保留的历史商品可归并到新账号');
+        assert.equal((await api('/api/overview?library=personal')).body.productCount, 2);
+        assert.equal((await api('/api/overview', t)).body.productCount, 2);
         checkpoint('deleted user');
         const fixed = createStoreOwnership(root, { database });
         assert.equal((await fixed.listDataDomains())[ids[2]], 'test');

@@ -1,8 +1,8 @@
 # Temu 商品转移上架插件
 
-- 网站服务版本：`v57`（2026-10-10 线上源码快照）
-- 插件版本：`11.0.4`
-- 插件版本以 `plugin/manifest.json` 为准；v57 将本人认领店铺从“全部店铺”隐藏，仍保留在“我的店铺”和投递目标中，沿用 11.0.4 插件及安装包。上方直接选择本账户绑定的在线店铺，下方分别点击“上架商品”或“补全资质”，不再展示两段说明。
+- 网站源码：以线上 `v60` 为基线，合入本次资质和历史实拍图修复；本次 GitHub 同步不部署服务器
+- 插件版本：`11.0.10`
+- 插件版本以 `plugin/manifest.json` 为准。商品创建和资质补全仍独立投递；目标已有资质或图片跳过，不覆盖。缺失项目按实际模板和采集位置处理，不根据 Small Business 名称推断主体声明。旧图片缺视角、SKU 归属时明确要求重新采集，不猜上传槽。
 - 扩展 ID：`efojbbfhfniieifmppafmigfmndbledc`
 - 用途：采集 Temu 商品及资质，通过中转仓向自己的目标店分别投递商品创建或资质补全任务
 
@@ -11,15 +11,15 @@
 - `plugin/`：Chrome Manifest V3 扩展源码
 - `hub/`：商品接收入库、定向传输、在线与认领目录服务源码
 - `worker/`：本机紫鸟工人，用于核验目标店页面身份与插件状态
-- `hub/public/downloads/temu-transfer-plugin-11.0.4.crx`：当前已签名插件
-- `hub/public/downloads/temu-transfer-plugin-11.0.4.zip`：同版本插件源码安装包
-- `docs/release-v57.md`：本次网站调整、验证与限制
-- `docs/release-v57-sha256.json`：当前正式源码和安装包的 SHA-256 摘要
+- `hub/public/downloads/temu-transfer-plugin-11.0.10.crx`：当前已签名插件
+- `hub/public/downloads/temu-transfer-plugin-11.0.10.zip`：同版本插件源码安装包
+- `docs/qualification-photo-11.0.10.md`：本次修复、审查和未完成的真实平台验收
+- `docs/qualification-photo-11.0.10-sha256.json`：本次网站源码、插件和安装包 SHA-256 摘要
 - 根目录的 `temu-shop-transfer-10.10.47.crx` 是历史文件，不是当前版本
 
 ## 安装插件
 
-下载 [11.0.4 CRX](hub/public/downloads/temu-transfer-plugin-11.0.4.crx) 或 [11.0.4 ZIP](hub/public/downloads/temu-transfer-plugin-11.0.4.zip)。在 Chrome 或 Edge 的扩展管理页面开启“开发者模式”，将 CRX 文件拖入页面；浏览器不允许直接安装时，解压 ZIP 并选择“加载已解压的扩展程序”。安装后刷新店铺商品列表页，旧插件不能作为拆分任务的投递目标。
+下载 [11.0.10 CRX](hub/public/downloads/temu-transfer-plugin-11.0.10.crx) 或 [11.0.10 ZIP](hub/public/downloads/temu-transfer-plugin-11.0.10.zip)。在 Chrome 或 Edge 的扩展管理页面开启“开发者模式”，将 CRX 文件拖入页面；浏览器不允许直接安装时，解压 ZIP 并选择“加载已解压的扩展程序”。来源店和目标店都需要升级并刷新商品列表页；旧图片没有完整分类时直接重新采集原商品，不需要删除。
 
 ## 运行中转仓
 

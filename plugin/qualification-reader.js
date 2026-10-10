@@ -136,23 +136,28 @@ var TemuQualificationReader = (() => {
     }
 
     /** 附件网络有独立可取消预算，超时不标记平台查询不明；实际流量（含失败文件）也计入累计预算。 */
-    async function archiveAssets(snapshot, context, snapshotDeadline) {
+    async function archiveAssets(snapshot, context, snapshotDeadline, materialFiles = null, limits = {}) {
         snapshot.assets = [];
         snapshot.archive = { status: "metadata-only", errors: [] };
         if (typeof context.fetch !== "function") return;
         const errors = snapshot.archive.errors;
-        const deadline = Math.min(snapshotDeadline, Date.now() + 15000);
+        const maxAssets = limits.maxAssets || MAX_ASSETS;
+        // 同一次页面回执中的证书和实拍图共用正文预算，避免两套附件叠加超过浏览器消息大小。
+        const maxTotalBytes = Number.isSafeInteger(limits.maxTotalAssetBytes) && limits.maxTotalAssetBytes >= 0
+            ? Math.min(MAX_TOTAL_ASSET_BYTES, limits.maxTotalAssetBytes) : MAX_TOTAL_ASSET_BYTES;
+        const deadline = Math.min(snapshotDeadline, Date.now() + (limits.archiveMs || 15000));
         let totalRead = 0;
         const archiveFailure = reason => Object.assign(new Error(reason), { archiveReason: true });
         let files;
-        try { files = filesFromDetails(snapshot.items); }
+        try { files = materialFiles || filesFromDetails(snapshot.items); }
         catch { errors.push({ url: "", name: "", reason: "资质附件结构过深，无法完整归档" }); files = []; }
-        for (const file of files.slice(0, MAX_ASSETS)) {
+        for (const file of files.slice(0, maxAssets)) {
             const sourceUrl = publicAssetUrl(file.url);
             const report = reason => errors.push({ url: sourceUrl, name: file.name, reason });
             if (!file.url) { report("附件不是可信平台 HTTPS 地址"); continue; }
-            if (context.signal?.aborted || Date.now() >= deadline || totalRead >= MAX_TOTAL_ASSET_BYTES) {
-                report(context.signal?.aborted ? "附件归档已取消" : totalRead >= MAX_TOTAL_ASSET_BYTES ? "附件累计超过 32MiB 限制" : "附件归档超过时间预算");
+            if (context.signal?.aborted || Date.now() >= deadline || totalRead >= maxTotalBytes) {
+                report(context.signal?.aborted ? "附件归档已取消" : totalRead >= maxTotalBytes
+                    ? maxTotalBytes === MAX_TOTAL_ASSET_BYTES ? "附件累计超过 32MiB 限制" : "实拍图超过本次商品的剩余归档预算" : "附件归档超过时间预算");
                 continue;
             }
             const controller = new AbortController();
@@ -182,7 +187,7 @@ var TemuQualificationReader = (() => {
                         throw archiveFailure(`${privateAsset ? "私有附件" : "附件"}下载失败（${status}）${[401, 403].includes(response.status) ? "，请确认来源店铺登录和文件权限" : ""}`);
                     }
                     const length = response.headers.get("content-length");
-                    if (length && (!/^\d+$/.test(length) || Number(length) > MAX_ASSET_BYTES || Number(length) > MAX_TOTAL_ASSET_BYTES - totalRead)) throw archiveFailure("附件声明大小超过限制或无效");
+                    if (length && (!/^\d+$/.test(length) || Number(length) > MAX_ASSET_BYTES || Number(length) > maxTotalBytes - totalRead)) throw archiveFailure("附件声明大小超过限制或无效");
                     if (!response.body || typeof response.body.getReader !== "function") throw archiveFailure("附件响应不支持受限流读取");
                     stream = response.body.getReader();
                     const chunks = [];
@@ -192,7 +197,8 @@ var TemuQualificationReader = (() => {
                         if (controller.signal.aborted) throw archiveFailure("附件归档已取消");
                         if (part.done) break;
                         size += part.value.byteLength; totalRead += part.value.byteLength;
-                        if (size > MAX_ASSET_BYTES || totalRead > MAX_TOTAL_ASSET_BYTES) throw archiveFailure("附件流超过单件 10MiB 或累计 32MiB 限制");
+                        if (size > MAX_ASSET_BYTES || totalRead > maxTotalBytes) throw archiveFailure(maxTotalBytes === MAX_TOTAL_ASSET_BYTES
+                            ? "附件流超过单件 10MiB 或累计 32MiB 限制" : "实拍图流超过单件或本次商品剩余归档预算");
                         chunks.push(part.value);
                     }
                     const bytes = new Uint8Array(size);
@@ -223,7 +229,7 @@ var TemuQualificationReader = (() => {
                 else if (response?.body) { void response.body.cancel().catch(() => {}); }
             }
         }
-        if (files.length > MAX_ASSETS) errors.push({ url: "", name: "", reason: "附件超过 40 件，未完整归档" });
+        if (files.length > maxAssets) errors.push({ url: "", name: "", reason: `附件超过 ${maxAssets} 件，未完整归档` });
         if (snapshot.status !== "complete") errors.push({ url: "", name: "", reason: "资质元数据未完整读取，附件范围不完整" });
         snapshot.archive.status = errors.length ? (snapshot.assets.length ? "partial" : "failed") : "complete";
     }
@@ -310,9 +316,21 @@ var TemuQualificationReader = (() => {
                 if (!root.productWithCertList.length) throw failure("资质分页提前结束，未完整读取");
             }
             if (!listComplete) throw failure("资质分页超过安全上限，未完整读取");
-            snapshot.items = [...summaries].map(([certType, summary]) => ({ certType, summary, detail: null, status: "failed", reason: "尚未读取资质详情" }));
+            // 仅上传侧需要区分“清单完整但某项详情失败”，以便其它资质继续；采集全量结构不增加此控制字段。
+            if (context.certTypes != null) snapshot.selectionComplete = true;
+            // 上传预检只读取本次实际补传的类型；采集未指定筛选时仍读取完整清单，不能把筛选结果冒充采集全量。
+            const requestedTypes = context.certTypes == null ? null : new Set(context.certTypes);
+            if (requestedTypes && [...requestedTypes].some(type => !Number.isSafeInteger(type) || type <= 0)) throw failure("资质详情筛选类型无效");
+            snapshot.items = [...summaries].filter(([certType]) => !requestedTypes || requestedTypes.has(certType))
+                .map(([certType, summary]) => ({ certType, summary, detail: null, status: "failed", reason: "尚未读取资质详情" }));
             for (const item of snapshot.items) {
                 const certType = item.certType;
+                // 仅目标补传预检可依据已核验清单跳过已有项；来源采集仍读取全文，不能丢失已提交材料。
+                if (context.certTypes != null && context.skipExistingDetails === true && [2, 4].includes(Number(item.summary.uploadStatus))) {
+                    item.status = "complete";
+                    item.reason = "目标已有已提交资质，未读取模板或附件";
+                    continue;
+                }
                 try {
                     const root = await request(DETAIL_PATH, { product_id: id, cert_type: certType });
                     const detail = root.productCertInfo;
@@ -373,12 +391,18 @@ var TemuQualificationReader = (() => {
         }
         if (value.status === "complete" && value.items.some(item => item.status !== "complete")) throw new Error("资质快照完整状态与条目不一致");
         if (metadataBytes(value) > MAX_BYTES) throw new Error("资质快照超过大小限制");
+        validateArchive(value, () => filesFromDetails(value.items));
+        return value;
+    }
+
+    /** 证书和独立实拍图共用字节校验；引用清单由各自采集器明确提供，不能递归把示例图片算成材料。 */
+    function validateArchive(value, readFiles, maxAssets = MAX_ASSETS) {
         // 旧快照仍可读取；新快照必须同时带归档状态和正文清单，不允许通过只声明字节数逃逸预算。
         if (value.assets !== undefined || value.archive !== undefined) {
-            if (!Array.isArray(value.assets) || value.assets.length > MAX_ASSETS || !value.archive
+            if (!Array.isArray(value.assets) || value.assets.length > maxAssets || !value.archive
                 || !["metadata-only", "complete", "partial", "failed"].includes(value.archive.status)
-                || !Array.isArray(value.archive.errors) || value.archive.errors.length > MAX_ASSETS + 2) throw new Error("附件归档结构无效");
-            const files = value.archive.status === "metadata-only" ? [] : filesFromDetails(value.items);
+                || !Array.isArray(value.archive.errors) || value.archive.errors.length > maxAssets + 2) throw new Error("附件归档结构无效");
+            const files = value.archive.status === "metadata-only" ? [] : readFiles();
             const sources = new Set(files.map(file => publicAssetUrl(file.url)).filter(Boolean));
             const urls = new Set();
             let total = 0;
@@ -404,13 +428,14 @@ var TemuQualificationReader = (() => {
             }
             const status = value.archive.status, hasErrors = value.archive.errors.length > 0;
             if (status === "metadata-only" && (value.assets.length || hasErrors)
-                || status === "complete" && (hasErrors || value.status !== "complete" || files.length > MAX_ASSETS || files.some(file => !file.url) || sources.size !== urls.size)
+                || status === "complete" && (hasErrors || value.status !== "complete" || files.length > maxAssets || files.some(file => !file.url) || sources.size !== urls.size)
                 || status === "partial" && (!hasErrors || !value.assets.length)
                 || status === "failed" && (!hasErrors || value.assets.length)) throw new Error("附件归档状态与正文不一致");
         }
         return value;
     }
-    const api = { readSnapshot, normalizeKeys, validateSnapshot, productId, LIST_PATH, DETAIL_PATH };
+    const api = { readSnapshot, normalizeKeys, validateSnapshot, productId, LIST_PATH, DETAIL_PATH,
+        archiveAssets, validateArchive, assetUrl, publicAssetUrl, scrubMetadata, metadataBytes };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     return api;
 })();

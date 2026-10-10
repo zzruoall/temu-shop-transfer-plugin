@@ -198,7 +198,9 @@ test('主世界消息集成同件资质回执；超时后禁止继续查询', as
     const location = { hostname:'agentseller.temu.com',pathname:'/goods/list',origin:'https://agentseller.temu.com',href:'https://agentseller.temu.com/goods/list' };
     const window = { chunkLoadingGlobal_temu_sca_goods:chunks,addEventListener:(_,fn)=>{listener=fn;},postMessage:v=>replies.push(v) };
     const ctx = vm.createContext({ window,location,crypto:webcrypto,TextEncoder,URL,setTimeout:(fn,ms)=>setTimeout(fn, ms===15000?30:ms),clearTimeout });
-    vm.runInContext(helper,ctx); vm.runInContext(code,ctx);
+    vm.runInContext(helper,ctx);
+    vm.runInContext(await readFile(new URL('../../plugin/live-photo-reader.js', import.meta.url), 'utf8'),ctx);
+    vm.runInContext(code,ctx);
     const query = () => listener({source:window,origin:location.origin,data:{source:'temu-shop-transfer-api-v1',kind:'query',requestId:webcrypto.randomUUID(),runId:'run-1',spuId}});
     await query(); assert.equal(replies.at(-1).qualifications.status, 'complete');
     stalled = true; await query(); assert.equal(replies.at(-1).stopBatch, true); assert.equal(replies.at(-1).qualifications.status, 'failed');

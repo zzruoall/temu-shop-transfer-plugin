@@ -4,6 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { parseQualificationRecord, mergeQualificationCapture } from './product-qualifications.mjs';
+import { parseLivePhotoRecord, mergeLivePhotoCapture } from './product-live-photos.mjs';
 
 const SENSITIVE_KEY = /(?:access|refresh|auth|csrf)?token|cookie|authorization|password|passwd|secret|session(?:id)?|credential|api[-_]?key/i;
 
@@ -113,6 +114,8 @@ function upsertProduct(map, partial) {
     if (partial.publicationData) current.publicationData = partial.publicationData;
     // 资质只按本对象的 SPU 合并，不能并入商品图文或发布请求。
     if (partial.qualifications) current.qualifications = mergeQualificationCapture(current.qualifications, partial.qualifications);
+    // 旧插件缺少实拍图字段时不清空已有数据；专用图片按本 SPU 合并，不进入主图或图文。
+    if (partial.livePhotos) current.livePhotos = mergeLivePhotoCapture(current.livePhotos, partial.livePhotos);
     // 仅原始详情响应解析器生成该证据；源正文为空与尚未查询详情是不同状态。
     if (partial.captureEvidence?.primaryDetail === true) current.captureEvidence = { primaryDetail: true, source: "product-query", descriptionState: partial.captureEvidence.descriptionState || "unknown" };
     // 详情接口通常拆成“基础信息/图文/合规”多次返回；不能只保留第一段，否则后到的正文会丢失。
@@ -619,6 +622,10 @@ function readDetailFields(object, depth = 0, output = {}, allowGenericBody = fal
  * 避免把仅有 goodsId/SKC/SKU 的附加对象串到邻近商品；原始响应仍完整保留在 records 中。
  */
 function extractProductsFromRecord(record) {
+    const livePhoto = parseLivePhotoRecord(record);
+    if (livePhoto) return [livePhoto];
+    // 原始实拍图接口含示例、SKU主图和素材，必须拒绝通用递归扫描。
+    if (/\/api\/flash\/(?:hq\/)?real_picture\//.test(String(record?.source?.requestUrl || ''))) return [];
     const qualification = parseQualificationRecord(record);
     if (qualification) return [qualification];
     // 真实平台资质原始响应不属于通用商品资料；只有专用快照带完整归属时才能进入资质模块。
@@ -736,6 +743,26 @@ function extractProductsFromRecord(record) {
 
 // SKU 归属只采信列表接口 pageItems[i].productSkuSummaries，不从无 SPU 的附加行猜测。
 
+/** 图片SKU货号取自同批商品详情；跨次或错商城的快照不能借相同SPU混入可下发资料。 */
+function assertLivePhotoSource(product, sourceStoreId) {
+    const snapshot = product.livePhotos;
+    if (!snapshot) return;
+    if (sourceStoreId && sourceStoreId !== `temu:${snapshot.mallId}`) throw Error('实拍图商城与采集包来源店不一致');
+    const source = product.publicationData?.sourceProduct;
+    if (!source) return;
+    const skus = new Map();
+    for (const skc of Array.isArray(source.productSkcList) ? source.productSkcList : []) {
+        for (const sku of [...(Array.isArray(skc.productSkuList) ? skc.productSkuList : []), ...Object.values(skc.productSkuMap || {})]) {
+            const id = String(sku?.productSkuId ?? sku?.skuId ?? '');
+            const codes = { sku: String(sku?.extCode || sku?.skuExtCode || '').trim(), product: String(skc.extCode || skc.skcExtCode || '').trim() };
+            if (skus.has(id) && JSON.stringify(skus.get(id)) !== JSON.stringify(codes)) throw Error('实拍图来源详情SKU货号冲突');
+            skus.set(id, codes);
+        }
+    }
+    if (snapshot.skus.some(sku => !skus.has(sku.skuId) || skus.get(sku.skuId).sku !== sku.skuExtCode
+        || skus.get(sku.skuId).product !== sku.productExtCode)) throw Error('实拍图SKU货号与同批商品详情不一致');
+}
+
 /** 单商品流式聚合沿用批量解析器的合并语义，避免为账户worker另写一套货号/详情规则。 */
 export function createSingleProductCapture(metadata, spuId) {
     const products = new Map();
@@ -745,11 +772,12 @@ export function createSingleProductCapture(metadata, spuId) {
         if (Buffer.byteLength(JSON.stringify(product)) > 8 * 1024 * 1024) throw Error('capture_product_workset_exceeded');
     };
     return {
-        seed: item => add({ ...item, qualifications: undefined, qualificationCaptures: undefined, captureEvidence: null, publicationData: undefined, sources: ['full-packet'] }),
+        seed: item => add({ ...item, qualifications: undefined, qualificationCaptures: undefined, livePhotos: undefined, livePhotoCaptures: undefined, captureEvidence: null, publicationData: undefined, sources: ['full-packet'] }),
         record: record => extractProductsFromRecord(record).forEach(add),
         finish() {
             const product = products.get(asText(spuId));
             if (!product) throw Error('capture_assigned_product_missing');
+            assertLivePhotoSource(product, metadata.source?.sourceStoreId);
             mergePublicationProperties(product);
             const completeness = getProductCompleteness(product);
             const final = { ...product, completeness, ready: isProductReadyForTransfer(completeness) };
@@ -875,6 +903,8 @@ export function parseImportedFiles(files) {
                     publicationData: undefined,
                     qualifications: undefined,
                     qualificationCaptures: undefined,
+                    livePhotos: undefined,
+                    livePhotoCaptures: undefined,
                     sources: ["full-packet"]
                 });
             });
@@ -901,6 +931,7 @@ export function parseImportedFiles(files) {
     }
 
     const list = [...products.values()].map((product) => {
+        assertLivePhotoSource(product, sourceStoreId);
         mergePublicationProperties(product);
         const completeness = getProductCompleteness(product);
         return {

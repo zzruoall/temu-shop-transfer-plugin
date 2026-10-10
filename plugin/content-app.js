@@ -1135,6 +1135,7 @@
         const ingest = finalization.ingest || {};
         const notes = [];
         if (Number(queue.qualificationComplete) || Number(queue.qualificationFailed)) notes.push(`资质读取完成 ${Number(queue.qualificationComplete) || 0}，未完整 ${Number(queue.qualificationFailed) || 0}`);
+        if (Number(queue.livePhotoComplete) || Number(queue.livePhotoFailed)) notes.push(`实拍图采集完成 ${Number(queue.livePhotoComplete) || 0}，未完整 ${Number(queue.livePhotoFailed) || 0}`);
         if (queue.qualificationFailures?.length) notes.push(queue.qualificationFailures.map(item => `SPU ${item.spuId}：${item.reason}`).join("；"));
         if (queue.stopReason) notes.push(queue.stopReason);
         if (download.status === "done") notes.push("完整包已下载");
@@ -1257,7 +1258,8 @@
                 if (value.error) reject(Object.assign(new Error(value.error), { queryUncertain: value.queryUncertain })); else resolve(value);
             };
             // 页面桥没有回执时底层结果仍未知；有回执的业务失败则使用桥返回的结构化标记。
-            const timer = setTimeout(() => { cleanup(); reject(Object.assign(new Error("商品与资质查询超时无回执，请刷新后重新采集"), { queryUncertain: true })); }, 90000);
+            // 商品、证书和实拍图各有独立预算；外层只等本次回执，不因新增采集步骤误报在途超时。
+            const timer = setTimeout(() => { cleanup(); reject(Object.assign(new Error("商品、资质与实拍图查询超时无回执，请刷新后重新采集"), { queryUncertain: true })); }, 150000);
             const cleanup = () => { clearTimeout(timer); window.removeEventListener("message", onMessage); };
             window.addEventListener("message", onMessage);
             window.postMessage({ source, kind: "query", requestId, runId: queue.runId, spuId: queue.current.spuId }, location.origin);
@@ -1287,7 +1289,8 @@
                     let response;
                     try { response = await send("captureApiDetail", { input: {
                         runId: queue.runId, spuId: queue.current.spuId, payload: query.payload,
-                        qualifications: query.qualifications, stopBatch: query.stopBatch === true, stopReason: query.stopReason || "", queryUncertain: query.queryUncertain
+                        qualifications: query.qualifications, livePhotos: query.livePhotos,
+                        stopBatch: query.stopBatch === true, stopReason: query.stopReason || "", queryUncertain: query.queryUncertain
                     } }); }
                     finally { state.pendingWrites = Math.max(0, state.pendingWrites - 1); }
                     if (!state.enabled || generation !== state.runGeneration) break;
@@ -1663,7 +1666,7 @@
             verifying: "正在读取提交结果",
             created: "商品内容已创建",
             qualifying: "正在处理资质",
-            qualification_complete: "资质已补全或已提交",
+            qualification_complete: "本次资质补传完成",
             qualification_not_found: "没有匹配到内容",
             qualification_failed: "资质未完成",
             qualification_unknown: "资质待核对",
@@ -1822,7 +1825,7 @@
                 qualifying: "资质处理中",
                 qualification_failed: "资质未完成",
                 qualification_unknown: "资质待核对",
-                qualification_complete: "资质已补全",
+                qualification_complete: "本次资质补传完成",
                 qualification_not_found: "没有匹配到内容",
                 unknown: "结果待核对",
                 preflight_failed: "预检失败",
@@ -2980,7 +2983,7 @@
         return `已处理 ${progress.finished}/${progress.total} · 成功 ${progress.success}，未完成 ${progress.failed}，跳过 ${progress.skipped}，待核对 ${progress.unknown}${detail ? '\n' + detail : ''}`;
     }
 
-    /** 仅汇总本店当前页异常；同一投递的重复进度只显示一次，查重等待与结果未知不冒充创建失败。 */
+    /** 仅汇总本店当前页异常；来源空项正常跳过不列入错误，同一投递的重复进度只显示一次。 */
     function directErrorEntries(tasks = currentStoreTransferTasks()) {
         const kinds = { rejected: '平台拒绝', preflight_failed: '预检失败', unknown: '结果待核对', duplicate_wait: '查重等待',
             qualification_failed: '资质未完成', qualification_unknown: '资质待核对', qualification_not_found: '没有匹配到内容' };
@@ -2996,7 +2999,7 @@
                 errorCode: String(task.errorCode || String(task.reason || '').match(/错误码\s*[:：]?\s*([\w-]+)/)?.[1] || ''),
                 stage: String(task.errorStage || (task.directState === 'duplicate_wait' ? '查重' : task.directState === 'preflight_failed' ? '预检' : '提交')),
                 reason: String(task.reason || '未提供具体错误，请导出操作日志核对')
-                    + (task.directState.startsWith('qualification_') ? '\n' + (task.qualificationItems || []).filter(item => !['submitted', 'existing'].includes(item.state))
+                    + (task.directState.startsWith('qualification_') ? '\n' + (task.qualificationItems || []).filter(item => ['failed', 'unknown', 'submitting'].includes(item.state))
                         .map(item => `${item.name || item.certType}：${item.reason || '未完成'}`).join('\n') + '\n请在目标店核对后，从网站重新人工投递；不会再次创建已有商品。' : ''),
                 noticeStatus: String(task.errorNoticeStatus || ''),
                 offendingSkuCode: String(task.offendingSkuCode || ''), reasonTruncated: Boolean(task.reasonTruncated)
@@ -3269,6 +3272,9 @@
                 // 绿色完成度只由当前页主列表 SPU 证明；详情/编辑任务响应仍保存，但不能把单个详情当成列表已覆盖。
                 matchProductIds(productIds, primaryProductList);
                 matchPendingProductIds();
+            } else if (result?.ok && result.skipped) {
+                // 专用实拍图旁路响应被明确忽略，不是商品采集失败，也不能进入本次商品完成度。
+                return;
             } else {
                 state.failed += 1;
                 // 只有当前页主列表保存失败会阻断列表覆盖；编辑任务等旁路商品接口失败留在“本页失败”中提示。

@@ -23,4 +23,5 @@ const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8')
 assert.match(server, /async function targetStoreScope\(req\)/);
 assert.match(server, /ownership\.ownedStoreIds\(req\.temuUser\?\.id\)/);
 console.log(JSON.stringify({ storeFirstDialog: true, ownBoundStores: true, directCommands: ['product_create', 'qualification_upload'],
-    sourceAssetsMatched: true, pluginUnchanged: '11.0.4', productionWrites: 0, realPlatformCalls: 0 }));
+    sourceAssetsMatched: true, pluginVersion: JSON.parse(await readFile(new URL('../../plugin/manifest.json', import.meta.url))).version,
+    productionWrites: 0, realPlatformCalls: 0 }));

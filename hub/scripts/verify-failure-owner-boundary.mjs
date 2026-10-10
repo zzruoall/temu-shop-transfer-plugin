@@ -39,3 +39,37 @@ test('标记关键区与改派互斥，归属回到旧账号后旧认领代次�
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test('跨类归并与库存写关键区互斥，转移后重新核验分类而非复用旧范围', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'temu-reclaim-owner-'));
+    try {
+        const ownership = createStoreOwnership(root);
+        const tester = { id: 'tester', username: '测试', accountType: 'test' };
+        const production = { id: 'production', username: '正式', accountType: 'production' };
+        await ownership.claim('source', tester);
+        await ownership.claim('target', tester);
+        const snapshot = await ownership.snapshotDeliveryOwners(['source', 'target'], 'target', tester.id, 'test');
+        await ownership.release('source', tester.id);
+        let enter, proceed;
+        const started = new Promise(resolve => { enter = resolve; });
+        const gate = new Promise(resolve => { proceed = resolve; });
+        // 已准入写操作完成前，重新认领必须等待；反过来转移先完成则旧分类不再取得写范围。
+        const writing = ownership.withWriteScope({ type: 'test' }, async scope => {
+            assert.equal(scope.has('source'), true); enter(); await gate;
+        });
+        await started;
+        let changed = false;
+        const claiming = ownership.claim('source', production).then(() => { changed = true; });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(changed, false);
+        proceed(); await writing; await claiming;
+        assert.equal((await ownership.withWriteScope({ type: 'test' }, scope => scope)).has('source'), false);
+        assert.equal((await ownership.withWriteScope({ type: 'production', ownerId: production.id }, scope => scope)).has('source'), true);
+        await assert.rejects(ownership.snapshotDeliveryOwners(['source', 'target'], 'target', tester.id, 'test'), { status: 403 });
+        await assert.rejects(ownership.withStableOwners(snapshot, () => assert.fail('旧授权被接受')), { status: 409 });
+    } finally {
+        // 清理只接受本测试生成的临时子目录，不读取或修改线上归属记录。
+        assert.equal(path.dirname(root), path.resolve(tmpdir()));
+        await rm(root, { recursive: true, force: true });
+    }
+});
