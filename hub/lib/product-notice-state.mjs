@@ -174,11 +174,12 @@ export function applyNoticeViews(products, states) {
 
 /** 状态读取不暴露正文或新实例；删除、权限丢失及来源换版统一让旧选择失效。 */
 export function productStatusResponse(requested, products) {
-    const current = new Map(products.map(product => [String(product.spuId), product]));
+    // 共享库允许同 SPU 的多个来源同时存在，按来源商品键匹配，不能由最后一行覆盖第一行。
+    const current = new Map(products.map(product => [product.productKey, product]));
     const result = { products: [], staleIds: [] };
     for (const ref of requested) {
-        const product = current.get(ref.spuId);
-        if (!product || !product.sourceIdentity || product.sourceIdentity !== ref.sourceIdentity || product.productKey !== ref.productKey) {
+        const product = current.get(ref.productKey);
+        if (!product || String(product.spuId) !== ref.spuId || !product.sourceIdentity || product.sourceIdentity !== ref.sourceIdentity || product.productKey !== ref.productKey) {
             result.staleIds.push(ref.spuId);
             continue;
         }

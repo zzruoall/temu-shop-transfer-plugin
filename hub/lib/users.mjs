@@ -107,6 +107,8 @@ export function createUsers(rootDir) {
             salt: text(user && user.salt),
             passwordHash: text(user && user.passwordHash),
             role: text(user && user.role) === "admin" ? "admin" : "user",
+            // 旧账户和未知类型按生产账户处理；读取时不得按用户名自动划为测试账户。
+            accountType: user && user.accountType === "test" ? "test" : "production",
             disabled: Boolean(user && user.disabled),
             createdAt: text(user && user.createdAt),
             passwordChangedAt: text(user && user.passwordChangedAt)
@@ -135,7 +137,7 @@ export function createUsers(rootDir) {
         return name;
     }
 
-    /** 对外结构一律带脱敏手机号：页面显示归属账号时用 maskedUsername，绝不返回完整号码。 */
+    /** 对外结构保留账户类型并提供脱敏展示名；口令材料和会话密钥不得向调用方暴露。 */
     function publicUser(user) {
         return {
             id: user.id,
@@ -143,16 +145,18 @@ export function createUsers(rootDir) {
             maskedUsername: maskPhone(user.username),
             isPhone: isPhone(user.username),
             role: user.role,
+            accountType: user.accountType === "test" ? "test" : "production",
             disabled: user.disabled,
             createdAt: user.createdAt
         };
     }
 
-    async function register({ username, password } = {}) {
+    /** 两个创建入口共用手机号校验和写锁；账户类型只接受内部入口指定，不读取请求字段。 */
+    async function createUser({ username, password } = {}, accountType) {
         const { name, password: secret } = validateRegistration(username, password);
         return withLock(async () => {
             const state = await readState();
-            if (!state.registrationOpen) throw Object.assign(new Error("管理员已关闭注册，请联系管理员开通账号"), { status: 403 });
+            if (accountType === "production" && !state.registrationOpen) throw Object.assign(new Error("管理员已关闭注册，请联系管理员开通账号"), { status: 403 });
             if (state.users.some((user) => user.username.toLowerCase() === name.toLowerCase())) {
                 throw Object.assign(new Error("该手机号已被注册"), { status: 409 });
             }
@@ -162,8 +166,9 @@ export function createUsers(rootDir) {
                 username: name,
                 salt,
                 passwordHash: hashPassword(secret, salt),
-                // 自助注册一律普通用户；管理员只能由既有管理员在用户管理里指派。
+                // 两种创建入口都只能生成普通用户；管理员角色仍须由既有管理员指派。
                 role: "user",
+                accountType,
                 disabled: false,
                 createdAt: new Date().toISOString(),
                 passwordChangedAt: ""
@@ -171,6 +176,37 @@ export function createUsers(rootDir) {
             state.users.push(user);
             await writeState(state);
             return publicUser(user);
+        });
+    }
+
+    /** 自助注册固定创建生产账户，忽略请求中的账户类型和角色，防止自行进入测试范围或提权。 */
+    async function register(input = {}) {
+        return createUser(input, "production");
+    }
+
+    /** 管理端专用：可绕过自助注册开关创建测试普通用户；调用方必须先校验管理员权限。 */
+    async function createTestUser(input = {}) {
+        return createUser(input, "test");
+    }
+
+    /**
+     * 显式迁移指定的初始测试账户，返回匹配账户的对外结构；缺失账户不创建。
+     * 仅调整账户类型，保留口令、角色和会话密钥；重复调用不写盘，也不挂到读取路径。
+     */
+    async function assignInitialTestUsers(names = ["admin", "13800000002", "13800000003"]) {
+        if (!Array.isArray(names)) throw Object.assign(new Error("测试账户名单必须是数组"), { status: 400 });
+        const selected = new Set(names.map((name) => text(name).toLowerCase()).filter(Boolean));
+        return withLock(async () => {
+            const state = await readState();
+            const matched = state.users.filter((user) => selected.has(user.username.toLowerCase()));
+            let changed = false;
+            for (const user of matched) {
+                if (user.accountType === "test") continue;
+                user.accountType = "test";
+                changed = true;
+            }
+            if (changed) await writeState(state);
+            return matched.map(publicUser);
         });
     }
 
@@ -216,6 +252,7 @@ export function createUsers(rootDir) {
             salt: text(legacy.salt),
             passwordHash: text(legacy.passwordHash),
             role: "admin",
+            accountType: "production",
             disabled: false,
             createdAt: new Date().toISOString(),
             passwordChangedAt: ""
@@ -362,7 +399,10 @@ export function createUsers(rootDir) {
 
     async function registrationStatus() {
         const state = await readState();
-        return { registrationOpen: state.registrationOpen, userCount: state.users.length };
+        // 公开注册只属于正式范围，测试账户不混入正式账户总量；管理员可分别显示两类数量。
+        return { registrationOpen: state.registrationOpen,
+            userCount: state.users.filter(user => user.accountType !== 'test').length,
+            testUserCount: state.users.filter(user => user.accountType === 'test').length };
     }
 
     /**
@@ -390,7 +430,7 @@ export function createUsers(rootDir) {
     }
 
     return {
-        listUsers, getState, findById, register, verify, changePassword, setDisabled, setRole, removeUser,
+        listUsers, getState, findById, register, createTestUser, assignInitialTestUsers, verify, changePassword, setDisabled, setRole, removeUser,
         setRegistrationOpen, registrationStatus, signSession, verifySession, publicUser, maskPhone
     };
 }

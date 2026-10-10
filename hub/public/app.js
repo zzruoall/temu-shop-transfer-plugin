@@ -23,6 +23,21 @@ let catalogSelectedProducts = new Map();
 let catalogSelectedBatches = new Map();
 // 输入草稿不参与请求，只有提交搜索后才更新查询条件，翻页和自动刷新沿用已提交条件。
 const catalogFilters = { q: "", draft: "", sourceStoreId: "", blocked: "" };
+// 两个库共享呈现逻辑，但请求、选择和实时订阅必须具有不同的范围。
+const isCatalogRoute = hash => hash === '#/products' || hash === '#/products/mine';
+let catalogLibrary = location.hash === '#/products/mine' ? 'personal' : 'shared';
+function libraryParams() { return catalogLibrary === 'personal' ? 'library=personal' : 'library=shared'; }
+/** 同 SPU 在多个来源店是不同商品行，选择和发送必须按来源商品键识别。 */
+function catalogKey(product) { return String(product?.productKey || JSON.stringify([product?.sourceStoreIds || [], product?.spuId])); }
+function catalogRowProduct(products, row) { return products.find(product => catalogKey(product) === row?.dataset.productKey); }
+/** 详情链接携带来源与库范围；同 SPU 的不同来源不能靠服务端默认顺序决定。 */
+function productDetailLink(product) {
+    return `#/product/${encodeURIComponent(product.spuId)}?${new URLSearchParams({ sourceStoreId: product.sourceStoreIds?.[0] || '', library: catalogLibrary })}`;
+}
+/** 管理入口只控制展示，写权限仍由服务端归属与分类检查决定。 */
+function canManageCatalog() { return catalogLibrary === 'personal' || currentAccount?.isAdmin || currentAccount?.localMode; }
+/** 删除只认可当前响应的写权限，不用共享/个人页面或管理员标签代替来源店权限。 */
+function canDeleteProduct(product) { return product?.canDelete === true; }
 const storeViews = {
     online: { page: 1, size: 20, q: "", draft: "", online: "", claimState: "" },
     mine: { page: 1, size: 20, q: "", draft: "", online: "", claimState: "" }
@@ -46,6 +61,7 @@ for (const type of ["pointerdown", "keydown", "input", "change"]) {
 /** 商品请求始终使用已提交的条件，避免未点击搜索的草稿被翻页带入。 */
 function catalogPageUrl(page = catalogProductPage) {
     const params = new URLSearchParams({ productLimit: String(catalogProductPageSize), productOffset: String((page - 1) * catalogProductPageSize) });
+    params.set('library', catalogLibrary);
     if (catalogFilters.q) params.set("productQ", catalogFilters.q);
     if (catalogFilters.sourceStoreId) params.set("sourceStoreId", catalogFilters.sourceStoreId);
     if (catalogFilters.blocked) params.set("blocked", catalogFilters.blocked);
@@ -177,12 +193,12 @@ function renderProductRows(products, selectable = false, transferStores = [], so
         // 合并行只对外暴露一个 SPU，同货号的其他 SPU 仍要能被搜到，否则运营按旧 SPU 查不到商品。
         const searchText = [product.title, product.spuId, ...(product.spuIds || []), product.goodsId, product.articleNo, product.category, identifierText(product.skcIds), identifierText(product.skuIds), ...productCodes, ...skuCodes].filter(Boolean).join(" ").toLocaleLowerCase();
         return `
-            <article class="product-row${product.blocked || product.sendBlocked ? " product-row-blocked" : ""}" data-product-row data-search="${escapeHtml(searchText)}" data-source-stores="${escapeHtml(sourceStoreIds.join(","))}" data-blocked="${product.blocked || product.sendBlocked ? "1" : "0"}" data-spu="${escapeHtml(product.spuId)}">
+            <article class="product-row${product.blocked || product.sendBlocked ? " product-row-blocked" : ""}" data-product-row data-search="${escapeHtml(searchText)}" data-source-stores="${escapeHtml(sourceStoreIds.join(","))}" data-blocked="${product.blocked || product.sendBlocked ? "1" : "0"}" data-spu="${escapeHtml(product.spuId)}" data-product-key="${escapeHtml(catalogKey(product))}">
                 ${selectable ? `<label class="row-select" aria-label="选择 SPU ${escapeHtml(product.spuId)}"><input type="checkbox" class="product-checkbox" value="${escapeHtml(product.spuId)}"><span></span></label>` : ""}
-                <a class="product-thumb" href="#/product/${encodeURIComponent(product.spuId)}" aria-label="查看 ${escapeHtml(product.title || product.spuId)}">
+                <a class="product-thumb" href="${productDetailLink(product)}" aria-label="查看 ${escapeHtml(product.title || product.spuId)}">
                     ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy">` : `<span>无图</span>`}
                 </a>
-                <a class="product-row-main" href="#/product/${encodeURIComponent(product.spuId)}">
+                <a class="product-row-main" href="${productDetailLink(product)}">
                     <strong>${escapeHtml(product.title || "标题未从页面行还原")}</strong>
                     <span class="product-article">货号 ${escapeHtml(productCodes.join(" / ") || "—")}</span>
                     <span class="product-category">${escapeHtml(product.category || "类目未还原")}</span>
@@ -194,7 +210,7 @@ function renderProductRows(products, selectable = false, transferStores = [], so
                     <span><b>SKU</b><em class="num">${escapeHtml(skuCodes.join(" / ") || identifierText(product.skuIds) || "—")}</em></span>
                 </div>
                 <div data-product-status>${TemuProductErrorUI.statusMarkup(product, escapeHtml)}</div>
-                ${selectable ? `<div class="row-actions"><button type="button" class="row-send" data-transfer-spu="${escapeHtml(product.spuId)}" aria-label="上传 SPU ${escapeHtml(product.spuId)}" ${!product.sendBlocked && !product.blocked && transferStores.length && productBatches.length ? "" : "disabled"} title="${product.sendBlocked || product.blocked ? "商品已标红，解除标记后才能发送" : transferStores.length && productBatches.length ? "选择目标店铺后上传" : (productBatches.length ? "等待在线目标店铺插件" : "缺少可追溯的来源批次")}">上传</button><a href="#/product/${encodeURIComponent(product.spuId)}" class="row-detail">详情</a><button type="button" class="row-delete" data-delete-spu="${escapeHtml(product.spuId)}" aria-label="删除 SPU ${escapeHtml(product.spuId)}">删除</button></div>` : ""}
+                ${selectable ? `<div class="row-actions"><button type="button" class="row-send" data-transfer-spu="${escapeHtml(product.spuId)}" aria-label="上传 SPU ${escapeHtml(product.spuId)}" ${!product.sendBlocked && !product.blocked && productBatches.length ? "" : "disabled"} title="${product.sendBlocked || product.blocked ? "商品已标红，解除标记后才能发送" : productBatches.length ? "选择任务类型和目标店铺" : "缺少可追溯的来源批次"}">上传</button><a href="${productDetailLink(product)}" class="row-detail">详情</a><button type="button" class="row-delete" ${canDeleteProduct(product) ? "" : "hidden"} data-delete-spu="${escapeHtml(product.spuId)}" aria-label="删除 SPU ${escapeHtml(product.spuId)}">删除</button></div>` : ""}
             </article>`;
     }).join("");
 }
@@ -206,6 +222,13 @@ function setNav(name) {
     });
 }
 
+/** 在线/绑定不改变，只在拆分任务的目标选择中排除无法识别新动作协议的旧插件。 */
+function canReceiveSplitUpload(agent) {
+    const version = /^11\.(\d+)\.(\d+)$/.exec(String(agent?.pluginVersion || ''));
+    return Boolean(version && (Number(version[1]) > 0 || Number(version[2]) >= 4)
+        && agent.online && agent.pluginDetected && agent.identityMatched && agent.canReceiveUploads && agent.storeId);
+}
+
 /**
  * 商品库只列出近期在线、店名已核验且支持接收快照的目标插件。
  * 不能根据紫鸟店铺列表直接假定插件在线，否则“发送”会变成没有接收方的假成功。
@@ -214,7 +237,7 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
     setNav("products");
     const productTotal = Math.max(0, Number(overview.productTotal ?? overview.productCount) || 0);
     const loadedProductCount = Array.isArray(overview.products) ? overview.products.length : 0;
-    const targetStores = (agentResult.agents || []).filter(agent => agent.online && agent.pluginDetected && agent.identityMatched && agent.canReceiveUploads && agent.storeId)
+    const targetStores = (agentResult.agents || []).filter(canReceiveSplitUpload)
         .map(agent => ({ storeId: agent.storeId, storeName: agent.storeName || agent.pageStoreName || agent.storeId }));
     const targetStoreTotal = Math.max(targetStores.length, Number(agentResult.total) || 0);
     const targetStoresHaveMore = Boolean(agentResult.hasMore);
@@ -224,7 +247,7 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
     app.innerHTML = `
         <div class="top catalog-top">
             <div class="top-copy">
-                <div class="catalog-title-line"><h1>商品库</h1></div>
+                <div class="catalog-title-line"><h1 class="visually-hidden">${catalogLibrary === 'personal' ? '个人商品库' : '商品库'}</h1><nav class="catalog-library-tabs" aria-label="商品库范围"><a href="#/products" ${catalogLibrary === 'shared' ? 'aria-current="page"' : ''}>商品库</a><a href="#/products/mine" ${catalogLibrary === 'personal' ? 'aria-current="page"' : ''}>个人商品库</a></nav></div>
                 <p class="lede">先核对已入库资料，再批量上传到目标店插件。商品是否重复由目标店插件在店铺会话内判断。</p>
             </div>
             <div class="catalog-top-stats"><span><b id="catalog-product-total">${overview.productCount}</b> 个商品</span><span><b id="product-target-store-total">${targetStoreTotal}</b> 个目标店在线</span></div>
@@ -232,11 +255,10 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
         <div class="catalog-filter-bar" aria-label="商品筛选和搜索">
             <label class="catalog-filter"><span>来源店铺</span><select id="source-store-filter"><option value="">全部来源店铺</option>${sourceStores.map(([id, name]) => `<option value="${escapeHtml(id)}">${escapeHtml(name)}</option>`).join("")}</select></label>
             <label class="catalog-filter"><span>标红状态</span><select id="blocked-filter"><option value="">全部商品</option><option value="blocked">仅看标红（处理异常）</option><option value="normal">仅看未标红</option></select></label>
-            <label class="catalog-filter"><span>查看方式</span><select id="product-view-mode"><option value="list">平铺列表</option><option value="group">按店铺分组</option></select></label>
             <form class="catalog-search-form" id="product-search-form" role="search"><label class="catalog-search"><span class="visually-hidden">搜索商品</span><input id="product-search" type="search" placeholder="名称、货号、SPU、SKU" title="搜索名称、货号、SPU、SKU、Goods ID" autocomplete="off" value="${escapeHtml(catalogFilters.draft)}"></label><button class="toolbar-button" type="submit">搜索</button><span class="visually-hidden" id="search-count" aria-live="polite">本页 ${loadedProductCount} / 共 ${productTotal} 个</span></form>
         </div>
         <div class="catalog-action-row" aria-label="商品操作">
-            <div class="catalog-action-left"><label class="select-all"><input id="select-all-products" type="checkbox"><span></span>全选本页</label><button type="button" class="toolbar-button" id="clear-product-selection" disabled>清除选择</button><button type="button" class="toolbar-button danger" id="delete-selected" disabled>删除</button><button type="button" class="toolbar-button" id="unblock-selected" disabled>解除标红</button><button type="button" class="toolbar-button" id="batch-target-trigger" ${targetStores.length ? "" : "disabled"}>选择目标店铺</button><button type="button" class="toolbar-button" id="catalog-upload-button">导入资料</button><span id="catalog-live-pending" class="muted" role="status" hidden>有商品更新</span><input class="visually-hidden" id="catalog-files" type="file" accept="application/json,.json" multiple></div>
+            <div class="catalog-action-left"><label class="select-all"><input id="select-all-products" type="checkbox"><span></span>全选本页</label><button type="button" class="toolbar-button" id="clear-product-selection" disabled>清除选择</button><button type="button" class="toolbar-button danger" id="delete-selected" disabled>删除</button><button type="button" class="toolbar-button" id="unblock-selected" disabled>解除标红</button><button type="button" class="toolbar-button" id="batch-target-trigger" ${targetStores.length ? "" : "disabled"}>选择目标店铺</button><span id="catalog-live-pending" class="muted" role="status" hidden>有商品更新</span></div>
             <div class="catalog-action-right"><span class="selection-count" id="selection-count">已选择 0 个</span>${renderInlinePagination("product", catalogProductPage, catalogProductPageSize, productTotal, "商品")}</div>
         </div>
         <div class="catalog-connection-row" aria-label="连接店铺状态"><span class="connection-pulse" aria-hidden="true"></span><strong id="product-target-store-connection">${targetStoreTotal} 个目标店铺已连接</strong><span class="muted">在线插件可接收批量上传任务</span><span class="connection-stores" id="product-target-store-names">${targetStores.map(store => escapeHtml(store.storeName || store.storeId)).join("、") || "暂无在线店铺"}</span></div>
@@ -257,12 +279,20 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
         </dialog>
         <dialog id="single-target-dialog" class="batch-target-dialog" aria-labelledby="single-target-dialog-title">
             <form method="dialog">
-                <div class="batch-dialog-head"><div><h2 id="single-target-dialog-title">选择上传店铺</h2><p>为 <strong id="single-target-spu">当前商品</strong> 选择一个或多个已连接店铺。点击“确定上传”即表示确认该商品符合适用要求，并同意平台《商品合规声明》V2.0；重复检索由目标店插件完成。</p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+                <div class="upload-dialog-body">
+                <div class="batch-dialog-head"><div><h2 id="single-target-dialog-title">选择上传任务</h2><p>本次商品：<strong id="single-target-spu">当前商品</strong></p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+                <fieldset class="upload-action-types"><legend>任务类型</legend><label><input type="radio" name="upload-action-type" value="product_create"><span>上架商品</span></label><label><input type="radio" name="upload-action-type" value="qualification_upload"><span>补全资质</span></label></fieldset>
+                <p class="upload-task-notice" id="upload-task-notice" aria-live="polite">请选择任务类型。</p>
+                <p class="upload-task-notice" id="upload-product-compliance" hidden>点击“确定上传”即表示确认本次商品符合适用要求，并同意平台《商品合规声明》V2.0；目标店插件检查重复商品，创建不等于审核上架。</p>
+                <fieldset class="upload-target-fields" id="upload-target-fields" hidden disabled><legend>自己的在线店铺</legend>
                 <label class="batch-dialog-search"><span class="search-symbol" aria-hidden="true"></span><span class="visually-hidden">搜索上传店铺</span><input id="single-target-search" type="search" placeholder="搜索店铺名称或 ID" autocomplete="off"></label>
                 <label class="batch-dialog-select-all"><input id="single-target-select-all" type="checkbox"><span></span>全选当前店铺</label>
                 <div class="batch-target-options" id="single-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml(`${store.storeName || store.storeId} ${store.storeId}`.toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)} · 在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无在线目标店铺。</p>`}</div>
                 <div class="task-load-more" id="single-target-load-more-wrap" ${targetStoresHaveMore ? "" : "hidden"}><button type="button" class="toolbar-button" id="single-target-load-more">加载更多目标店铺</button><span id="single-target-load-more-status">已显示 ${targetStores.length} / ${targetStoreTotal} 家</span></div>
-                <div class="batch-dialog-footer"><span id="single-target-count" aria-live="polite">已选择 0 家店铺</span><div class="single-target-dialog-actions"><button type="submit" value="cancel" class="toolbar-button">取消</button><button type="submit" value="apply" class="toolbar-button primary">确定上传</button></div></div>
+                </fieldset>
+                <p class="upload-task-notice">任务发出不代表执行成功。离开本页将停止剩余发送，已发内容不撤回。</p>
+                </div>
+                <div class="batch-dialog-footer"><span id="single-target-count" aria-live="polite">已选择 0 家店铺</span><div class="single-target-dialog-actions"><button type="submit" value="cancel" class="toolbar-button">取消</button><button type="submit" value="apply" class="toolbar-button primary" disabled>确定上传</button></div></div>
             </form>
         </dialog>
         <section class="catalog-workspace" aria-label="商品台账">
@@ -273,6 +303,8 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
         </section>
     `;
     bindProductInventory(overview, targetStores, agentResult);
+    // 解除标红沿用原入口范围；删除独立按来源权限展示，自己的商品在共享库也能管理。
+    if (!canManageCatalog()) document.getElementById('unblock-selected').hidden = true;
 }
 
 /** 区分仓库为空和筛选无结果；两种状态需要不同的下一步，不能都提示重新入库。 */
@@ -313,7 +345,9 @@ function prepareBulkSelection(products, sourceBatchForProduct) {
 }
 
 /** 店铺间最多两条当前传输，同店分段有序；离页停止未发出的分段，不撤回已交付商品、不自动重试。 */
-async function submitBulkManifest(groups, targets, { canSend = () => true, productForId = null } = {}) {
+async function submitBulkManifest(groups, targets, { canSend = () => true, productForId = null, actionType = 'product_create' } = {}) {
+    // 任务类型贯穿所有店铺及分段，补全资质不得回落为商品创建。
+    if (!['product_create', 'qualification_upload'].includes(actionType)) throw Error('请选择有效的上传任务类型。');
     let sent = 0;
     const errors = [];
     const skippedBlocked = [];
@@ -329,7 +363,7 @@ async function submitBulkManifest(groups, targets, { canSend = () => true, produ
                 // 分段开始前重读网页已同步的资格；只过滤未交付部分，不取消或重放已发送请求。
                 const spuIds = group.spuIds.slice(offset, offset + 10).filter(spuId => {
                     if (!productForId) return true;
-                    const product = productForId(spuId);
+                    const product = productForId(spuId, group);
                     if (!product || product.statusStale) { skippedStale.push(spuId); return false; }
                     if (product?.blocked || product?.sendBlocked) {
                         skippedBlocked.push({ spuId, productCodes: productExtCodes(product) });
@@ -340,7 +374,7 @@ async function submitBulkManifest(groups, targets, { canSend = () => true, produ
                 if (!spuIds.length) continue;
                 try {
                     const result = await api('/temu/api/relay/send', { method: 'POST', headers: { 'content-type': 'application/json' },
-                        body: JSON.stringify({ ...group, spuIds, manualSendId, targetStoreId: target.storeId, sameStoreConfirmed: true }) });
+                        body: JSON.stringify({ ...group, spuIds, manualSendId, actionType, targetStoreId: target.storeId, sameStoreConfirmed: true }) });
                     sent += Number(result.sent) || 0;
                     skippedBlocked.push(...(result.skippedBlocked || []));
                 } catch (error) {
@@ -372,8 +406,16 @@ function transferResultText(result) {
     return `实际发出 ${result.sent} 份。${blockedTransferText(result)}${result.skippedStale?.length ? `已跳过来源变化 ${result.skippedStale.length} 份：${[...new Set(result.skippedStale)].join('、')}。` : ''}${result.stopped ? '已停止剩余发送，已发内容未撤回。' : ''}`;
 }
 
-/** 单商品与批量商品共用传输入口；发出不代表插件收妥或平台已创建。 */
-async function submitSingleProduct({ product, sourceBatch, targets, button, toast }) {
+/** 能力响应必须明确支持所选任务；旧服务未声明拆分协议时禁止误按创建发送资质。 */
+function assertUploadCapability(capability, actionType) {
+    if (!['product_create', 'qualification_upload'].includes(actionType)
+        || !Array.isArray(capability?.actionTypes) || !capability.actionTypes.includes(actionType)) {
+        throw Error('后台尚未启用所选上传任务类型，请联系管理员更新发送服务及目标店插件（最低 11.0.4）。');
+    }
+}
+
+/** 单商品与批量共用传输及禁传校验；资质补全只交付任务，不代表上架。 */
+async function submitSingleProduct({ product, sourceBatch, targets, button, toast, actionType }) {
     const spuId = String(product?.spuId || "");
     const routeVersion = routeRequestId;
     const routeHash = location.hash;
@@ -381,11 +423,11 @@ async function submitSingleProduct({ product, sourceBatch, targets, button, toas
     if (product?.statusStale) throw Error('商品来源已变化，请刷新列表后重新选择。');
     if (product?.sendBlocked || product?.blocked) throw Error('该商品因资料错误已停止分发，请先核对具体原因并解除标记。');
     // 发送资格由原始来源关联及服务端传输校验决定，不由类目模板字段决定。
-    if (!sourceBatch) throw new Error("该商品尚无可追溯的完整来源资料，请重新导入完整采集包并确认来源店铺。");
+    if (!sourceBatch) throw new Error("该商品尚无可追溯的完整来源资料，请使用插件重新采集并上传，确认来源店铺。");
     const capability = await api("/temu/api/direct-create-capability");
     // 等待资格响应期间已离开商品页时，不在新页面补弹确认窗。
     if (!canSend()) return;
-    if (!capability?.directCreate) throw new Error("后台尚未启用接口创建，请重启本地网站及连接器后再试。");
+    assertUploadCapability(capability, actionType);
     if (!targets.length) throw new Error("请至少选择一个在线且身份已匹配的目标店插件。");
     if (!await confirmSourceStoreTargets([sourceBatch], targets)) {
         if (toast) toast.innerHTML = `<div class="toast">已取消发送，未创建任务。</div>`;
@@ -396,12 +438,12 @@ async function submitSingleProduct({ product, sourceBatch, targets, button, toas
     if (button) {
         button.disabled = true;
         button.dataset.sending = '1';
-        button.textContent = "上传中…";
+        button.textContent = "发送中…";
     }
-    if (toast) toast.innerHTML = `<div class="toast">正在向 ${escapeHtml(String(targets.length))} 家目标店上传 SPU ${escapeHtml(spuId)}…</div>`;
+    if (toast) toast.innerHTML = `<div class="toast">正在向 ${escapeHtml(String(targets.length))} 家目标店发送${actionType === 'qualification_upload' ? '补全资质' : '上传商品'}任务，SPU ${escapeHtml(spuId)}…</div>`;
     try {
         const result = await submitBulkManifest([{ sourceStoreId: sourceBatch.sourceStoreId, sourceBatchId: sourceBatch.id, spuIds: [spuId] }], targets,
-            { canSend, productForId: () => product });
+            { canSend, productForId: () => product, actionType });
         if (toast && canSend()) toast.innerHTML = `<div class="toast success">${escapeHtml(transferResultText(result))}</div>`;
     } finally {
         if (button) {
@@ -424,8 +466,6 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const deleteSelected = document.getElementById("delete-selected");
     const selectionCount = document.getElementById("selection-count");
     const searchCount = document.getElementById("search-count");
-    const uploadButton = document.getElementById("catalog-upload-button");
-    const files = document.getElementById("catalog-files");
     const batchTargetStores = document.getElementById("batch-target-stores");
     const batchDirectCreate = document.getElementById("batch-direct-create");
     const batchTargetTrigger = document.getElementById("batch-target-trigger");
@@ -441,7 +481,11 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const singleTargetSelectAll = document.getElementById("single-target-select-all");
     let singleTargetOptions = [...document.querySelectorAll("#single-target-options .batch-target-option")];
     const singleTargetCount = document.getElementById("single-target-count");
-    const viewMode = document.getElementById("product-view-mode");
+    const uploadActionInputs = [...singleTargetDialog.querySelectorAll('[name="upload-action-type"]')];
+    const uploadTargetFields = document.getElementById("upload-target-fields");
+    const uploadTaskNotice = document.getElementById("upload-task-notice");
+    const uploadProductCompliance = document.getElementById("upload-product-compliance");
+    const uploadConfirmButton = singleTargetDialog.querySelector('button[value="apply"]');
     const productList = document.querySelector(".catalog-workspace .product-list");
     const productPageSizeSelect = document.getElementById("product-page-size");
     const productPagePrev = document.getElementById("product-page-prev");
@@ -473,9 +517,9 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             if (productBatchIds.has(String(batch.id))) catalogSelectedBatches.set(String(batch.id), batch);
         }
     };
-    /** 商品选择以 SPU 为键跨页保存完整快照；取消选择只移除商品，共享批次缓存不做误删。 */
+    /** 商品选择按来源商品键跨页保存快照，同 SPU 的他人来源不能覆盖已选中的记录。 */
     const setProductSelected = (product, selected) => {
-        const spuId = String(product?.spuId || "").trim();
+        const spuId = catalogKey(product);
         if (!spuId) return;
         if (selected) {
             catalogSelectedProducts.set(spuId, product);
@@ -519,16 +563,16 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             hint.classList.toggle("ready", Boolean(targetStores.length));
             hint.textContent = targetStores.length ? `已检测到 ${targetStores.length} 个可接收上传任务的目标店插件。` : "未检测到可接收上传任务的目标店插件。请先打开目标店并等待插件身份匹配。";
         }
-        // 在线状态只影响上传入口，不替换商品行，避免图片重载及分页、焦点丢失。
+        // 在线状态只更新目标店选择；无在线店仍可打开任务弹窗，不替换商品行或分页焦点。
         for (const row of rows) {
-            const product = overview.products.find((item) => String(item.spuId) === String(row.dataset.spu));
+            const product = catalogRowProduct(overview.products, row);
             const button = row.querySelector("[data-transfer-spu]");
             if (!button || !product) continue;
             const hasBatch = (overview.batches || []).some((batch) => (product.batchIds || []).includes(batch.id) && batch.sourceStoreId);
             // 在线目录更新不能覆盖商品禁传或当前发送互斥，否则旧红标按钮会被心跳重新启用。
             const blocked = product.statusStale || product.sendBlocked || product.blocked;
-            button.disabled = Boolean(blocked || !targetStores.length || !hasBatch || singleUploadBusy || batchUploadBusy || button.dataset.sending);
-            button.title = product.statusStale ? "来源已变化，请刷新列表后重新选择" : blocked ? "商品已标红，解除标记后才能发送" : !hasBatch ? "缺少可追溯的来源批次" : targetStores.length ? "选择目标店铺后上传" : "等待在线目标店铺插件";
+            button.disabled = Boolean(blocked || !hasBatch || singleUploadBusy || batchUploadBusy || button.dataset.sending);
+            button.title = product.statusStale ? "来源已变化，请刷新列表后重新选择" : blocked ? "商品已标红，解除标记后才能发送" : !hasBatch ? "缺少可追溯的来源批次" : "选择任务类型和目标店铺";
         }
     };
     const syncDialogCount = () => {
@@ -565,6 +609,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const bindBatchTargetOption = (option) => option.querySelector("input")?.addEventListener("change", syncDialogCount);
     batchTargetOptions.forEach(bindBatchTargetOption);
     batchTargetDialog?.addEventListener("close", () => { if (batchTargetDialog.returnValue === "apply") applyDialogSelection(); else syncDialogFromSelect(); });
+    /** 共用弹窗只形成选择草稿；两种模式和任务类型都必须实时重算禁传资格。 */
     const syncSingleDialogCount = () => {
         const visibleOptions = singleTargetOptions.filter(option => !option.hidden);
         const checkedVisible = visibleOptions.filter(option => option.querySelector("input")?.checked).length;
@@ -572,17 +617,51 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             singleTargetSelectAll.checked = Boolean(visibleOptions.length) && checkedVisible === visibleOptions.length;
             singleTargetSelectAll.indeterminate = checkedVisible > 0 && checkedVisible < visibleOptions.length;
         }
-        if (singleTargetCount) singleTargetCount.textContent = `已选择 ${singleTargetOptions.filter(option => option.querySelector("input")?.checked).length} 家店铺`;
+        const targetCount = singleTargetOptions.filter(option => option.querySelector("input")?.checked).length;
+        if (singleTargetCount) singleTargetCount.textContent = `已选择 ${targetCount} 家店铺`;
+        const actionType = uploadActionInputs.find(input => input.checked)?.value || '';
+        const products = singleTargetDialog.dataset.mode === 'batch' ? [...catalogSelectedProducts.values()]
+            : overview.products.filter(product => catalogKey(product) === singleTargetDialog.dataset.productKey);
+        const selection = prepareBulkSelection(products, sourceBatchForProduct);
+        if (singleTargetSpu) singleTargetSpu.textContent = singleTargetDialog.dataset.mode === 'batch'
+            ? `已选择 ${products.length} 个，可发送 ${selection.eligible} 个，标红跳过 ${selection.blocked.length} 个，缺少来源 ${selection.missing.length} 个。`
+            : singleTargetDialog.dataset.spu || '当前商品';
+        uploadTargetFields.hidden = !actionType;
+        uploadTargetFields.disabled = !actionType;
+        uploadProductCompliance.hidden = actionType !== 'product_create';
+        uploadTaskNotice.textContent = !actionType ? '请选择任务类型。' : actionType === 'qualification_upload'
+            ? '向目标店已有商品补全资质，不创建商品，也不表示商品已上架。'
+            : '向目标店发送商品创建任务。';
+        uploadConfirmButton.textContent = actionType === 'qualification_upload' ? '确定补全' : '确定上传';
+        uploadConfirmButton.disabled = !actionType || !targetCount || !selection.eligible || singleUploadBusy || batchUploadBusy;
     };
     const resetSingleDialog = () => {
         if (singleTargetSearch) singleTargetSearch.value = "";
         singleTargetOptions.forEach(option => {
             option.hidden = false;
             const checkbox = option.querySelector("input");
-            if (checkbox) checkbox.checked = false;
+            if (checkbox) checkbox.checked = selectedTargetOptions().some(option => String(option.value) === String(checkbox.value));
         });
+        uploadActionInputs.forEach(input => { input.checked = false; });
         syncSingleDialogCount();
     };
+    /** 单商品和批量仅切换上下文，不嵌套确认窗；预选店铺带入后仍可调整。 */
+    const openUploadDialog = (mode, product = null) => {
+        singleTargetDialog.dataset.mode = mode;
+        singleTargetDialog.dataset.spu = String(product?.spuId || '');
+        singleTargetDialog.dataset.productKey = product ? catalogKey(product) : '';
+        singleTargetDialog.returnValue = '';
+        resetSingleDialog();
+        singleTargetDialog.showModal();
+        uploadActionInputs[0]?.focus();
+    };
+    uploadActionInputs.forEach(input => input.addEventListener('change', syncSingleDialogCount));
+    // 提交边界再次重算，在线店离线或商品刚标红时，即使触发提交事件也不能发出任务。
+    singleTargetDialog.querySelector('form').addEventListener('submit', event => {
+        if (event.submitter?.value !== 'apply') return;
+        syncSingleDialogCount();
+        if (uploadConfirmButton.disabled) event.preventDefault();
+    });
     singleTargetSearch?.addEventListener("input", () => {
         const query = singleTargetSearch.value.trim().toLocaleLowerCase();
         singleTargetOptions.forEach(option => { option.hidden = Boolean(query) && !String(option.dataset.storeSearch || "").includes(query); });
@@ -598,8 +677,10 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const bindSingleTargetOption = (option) => option.querySelector("input")?.addEventListener("change", syncSingleDialogCount);
     singleTargetOptions.forEach(bindSingleTargetOption);
     singleTargetDialog?.addEventListener("close", async () => {
-        const spuId = String(singleTargetDialog.dataset.spu || "");
-        if (singleTargetDialog.returnValue !== "apply" || !spuId) {
+        if (!singleTargetDialog.isConnected || !isCatalogRoute(location.hash)) return;
+        const mode = singleTargetDialog.dataset.mode;
+        const actionType = uploadActionInputs.find(input => input.checked)?.value;
+        if (singleTargetDialog.returnValue !== "apply" || !actionType) {
             resetSingleDialog();
             return;
         }
@@ -607,18 +688,28 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             resetSingleDialog();
             return;
         }
-        singleUploadBusy = true;
         const targetIds = singleTargetOptions.filter(option => option.querySelector("input")?.checked).map(option => String(option.querySelector("input")?.value || "")).filter(Boolean);
-        const product = (overview.products || []).find(item => String(item.spuId) === spuId);
+        const targets = (targetStores || []).filter(item => targetIds.includes(String(item.storeId)));
+        if (!targets.length) { resetSingleDialog(); return; }
+        // 批量只在最终提交后进入既有分段发送函数；开窗、切换类型和取消都不创建任务。
+        if (mode === 'batch') {
+            [...batchTargetStores.options].forEach(option => { option.selected = targetIds.includes(String(option.value)); });
+            updateTargetSummary();
+            await sendBatchProducts(actionType, targets);
+            if (singleTargetDialog.isConnected) resetSingleDialog();
+            return;
+        }
+        singleUploadBusy = true;
+        const product = overview.products.find(item => catalogKey(item) === singleTargetDialog.dataset.productKey);
         const sourceBatchId = product?.publicationData?.sourceBatchId;
         const sourceBatch = (overview.batches || []).find(batch => batch.id === sourceBatchId && (product?.batchIds || []).includes(batch.id) && batch.sourceStoreId);
-        const targets = (targetStores || []).filter(item => targetIds.includes(String(item.storeId)));
-        const row = rows.find(item => String(item.dataset.spu || "") === spuId);
+        const row = rows.find(item => item.dataset.productKey === singleTargetDialog.dataset.productKey);
         const button = row?.querySelector("[data-transfer-spu]");
         const toast = document.getElementById("catalog-toast");
         if (product) activeSendingProducts.add(product);
+        syncSelection();
         try {
-            await submitSingleProduct({ product, sourceBatch, targets, button, toast });
+            await submitSingleProduct({ product, sourceBatch, targets, button, toast, actionType });
         } catch (error) {
             if (toast) toast.innerHTML = `<div class="toast error">上传失败：${escapeHtml(error.message)}</div>`;
         } finally {
@@ -643,7 +734,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         try {
             const page = await api(`/temu/api/agents?online=1&receivable=1&limit=100&offset=${targetAgentsOffset}`, { cacheMs: 2500 });
             const additions = (page.agents || [])
-                .filter((agent) => agent.online && agent.pluginDetected && agent.identityMatched && agent.canReceiveUploads && agent.storeId)
+                .filter(canReceiveSplitUpload)
                 .map((agent) => ({ storeId: agent.storeId, storeName: agent.storeName || agent.pageStoreName || agent.storeId }))
                 .filter((store) => !knownTargetStoreIds.has(String(store.storeId)));
             for (const store of additions) {
@@ -707,7 +798,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const syncSelection = () => {
         rows.forEach((row) => {
             const box = row.querySelector(".product-checkbox");
-            if (box) box.checked = catalogSelectedProducts.has(String(row.dataset.spu || ""));
+            if (box) box.checked = catalogSelectedProducts.has(row.dataset.productKey);
         });
         const visibleBoxes = visibleRows().map((row) => row.querySelector(".product-checkbox")).filter(Boolean);
         const checkedVisible = visibleBoxes.filter((box) => box.checked).length;
@@ -715,16 +806,18 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         selectAll.disabled = visibleBoxes.length === 0;
         selectAll.checked = Boolean(visibleBoxes.length) && checkedVisible === visibleBoxes.length;
         selectAll.indeterminate = checkedVisible > 0 && checkedVisible < visibleBoxes.length;
-        deleteSelected.disabled = selected === 0;
+        const deletable = [...catalogSelectedProducts.values()].filter(canDeleteProduct).length;
+        deleteSelected.disabled = deletable === 0;
+        deleteSelected.title = selected > deletable ? `仅删除有权限的 ${deletable} 个商品，其他所选商品不会删除` : '删除所选商品';
         const unblockButton = document.getElementById("unblock-selected");
         if (unblockButton) unblockButton.disabled = ![...catalogSelectedProducts.values()].some((product) => product?.blocked || product?.sendBlocked);
         if (clearProductSelection) clearProductSelection.disabled = selected === 0;
         const selection = prepareBulkSelection([...catalogSelectedProducts.values()], sourceBatchForProduct);
         selectionCount.textContent = `已选择 ${selected} 个 · 可发送 ${selection.eligible} 个 · 标红跳过 ${selection.blocked.length} 个${selection.missing.length ? ` · 缺来源 ${selection.missing.length} 个` : ''}`;
-        const targetCount = [...(batchTargetStores?.selectedOptions || [])].filter(option => option.value).length;
-        if (batchDirectCreate) batchDirectCreate.disabled = batchUploadBusy || singleUploadBusy || selection.eligible === 0 || targetCount === 0;
+        if (batchDirectCreate) batchDirectCreate.disabled = batchUploadBusy || singleUploadBusy || selection.eligible === 0;
         updateTargetAgentPagination();
         updateTargetSummary();
+        syncSingleDialogCount();
         scheduleLiveApply();
     };
     let filterRequestId = 0;
@@ -811,9 +904,9 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             livePaginationTargets.products = catalogProductPage;
             cacheSelectedBatches(nextProducts, overview.batches);
             for (const product of nextProducts) {
-                const spuId = String(product?.spuId || "");
+                const spuId = catalogKey(product);
                 for (const sending of activeSendingProducts) {
-                    if (String(sending.spuId) === spuId && sending.sourceIdentity && sending.sourceIdentity !== product.sourceIdentity) sending.statusStale = true;
+                    if (catalogKey(sending) === spuId && sending.sourceIdentity && sending.sourceIdentity !== product.sourceIdentity) sending.statusStale = true;
                 }
                 if (spuId && catalogSelectedProducts.has(spuId)) {
                     const previous = catalogSelectedProducts.get(spuId);
@@ -825,13 +918,11 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                 }
             }
             if (productList && (!background || rowsChanged)) {
-                productList.classList.remove("grouped");
                 productList.innerHTML = renderProductRows(nextProducts, true, targetStores, overview.batches) || renderCatalogEmpty(overview);
                 rows = [...productList.querySelectorAll("[data-product-row]")];
             }
             // 绑定函数自行记录已绑定状态，调用方提前标记会使新页所有行跳过事件注册。
             rows.forEach(bindProductRow);
-            if ((!background || rowsChanged) && viewMode?.value === "group") viewMode.dispatchEvent(new Event("change", { bubbles: true }));
             updateProductTotals();
             syncSelection();
             return true;
@@ -866,16 +957,22 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     refreshCatalogStatus = async (live, canApply, catchup) => {
         const references = () => [...new Map([...activeSendingProducts, ...catalogSelectedProducts.values(), ...overview.products]
             .filter(product => product.sourceIdentity && product.productKey && !product.statusStale)
-            .map(product => [String(product.spuId), { spuId: String(product.spuId), sourceIdentity: product.sourceIdentity, productKey: product.productKey }])).values()]
+            .map(product => [catalogKey(product), { spuId: String(product.spuId), sourceIdentity: product.sourceIdentity, productKey: product.productKey }])).values()]
             .sort((a, b) => a.spuId.localeCompare(b.spuId));
         const refs = references();
         const version = JSON.stringify([live.inventory, live.claims, catchup, refs]);
         if (version === appliedStatusVersion) return true;
         const replies = [];
-        for (let offset = 0; offset < refs.length; offset += 100) {
+        // 接口保留单批 SPU 唯一约束；同 SPU 的不同来源分到不同批，不能静默丢掉一个引用。
+        const batches = [];
+        for (const ref of refs) {
+            let batch = batches.find(items => items.length < 100 && !items.some(item => item.spuId === ref.spuId));
+            if (!batch) { batch = []; batches.push(batch); }
+            batch.push(ref);
+        }
+        for (const batch of batches) {
             if (!canApply() || !productList.isConnected) return false;
-            const batch = refs.slice(offset, offset + 100);
-            const response = await api('/temu/api/products/status-read', { method: 'POST', readOnly: true,
+            const response = await api('/temu/api/products/status-read?' + libraryParams(), { method: 'POST', readOnly: true,
                 headers: { 'content-type': 'application/json' }, body: JSON.stringify({ products: batch }) });
             // 不完整响应不能吞掉待同步版本，也不能把缺失项误当成已删除。
             if (!Array.isArray(response.products) || !Array.isArray(response.staleIds)) throw Error('商品状态响应无效');
@@ -891,14 +988,15 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                 seen.add(id);
             }
             if (seen.size !== batch.length) throw Error('商品状态响应不完整');
-            replies.push(response);
+            replies.push({ products: response.products.map(status => ({ ...status, productKey: batch.find(ref => ref.spuId === status.spuId).productKey })),
+                staleKeys: response.staleIds.map(id => batch.find(ref => ref.spuId === id).productKey) });
         }
         if (!canApply() || !productList.isConnected || JSON.stringify(refs) !== JSON.stringify(references())) return false;
-        const current = new Map(replies.flatMap(reply => reply.products).map(status => [status.spuId, status]));
-        const stale = new Set(replies.flatMap(reply => reply.staleIds));
+        const current = new Map(replies.flatMap(reply => reply.products).map(status => [status.productKey, status]));
+        const stale = new Set(replies.flatMap(reply => reply.staleKeys));
         // 原位更新当前页、跨页选择和发送快照，确认窗及未发分段也能看到新的禁传状态。
         for (const product of new Set([...overview.products, ...catalogSelectedProducts.values(), ...activeSendingProducts])) {
-            const id = String(product.spuId), status = current.get(id);
+            const id = catalogKey(product), status = current.get(id);
             if (status && status.sourceIdentity === product.sourceIdentity) {
                 for (const key of ['blocked', 'sendBlocked', 'blockedReason', 'blockedAt', 'errorNotice']) product[key] = status[key];
             } else if (stale.has(id)) {
@@ -907,7 +1005,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             }
         }
         for (const row of rows) {
-            const product = overview.products.find(item => String(item.spuId) === row.dataset.spu);
+            const product = catalogRowProduct(overview.products, row);
             if (!product) continue;
             const blocked = !product.statusStale && Boolean(product.blocked || product.sendBlocked);
             row.classList.toggle('product-row-blocked', blocked);
@@ -963,7 +1061,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                     if (option.querySelector("input")?.checked) retainedIds.add(String(option.querySelector("input").value));
                 }
             } while (page.hasMore && page.agents?.length && (agents.length < wanted || [...retainedIds].some(id => !fetchedIds.has(id))));
-            const nextStores = agents.filter(agent => agent.online && agent.pluginDetected && agent.identityMatched && agent.canReceiveUploads && agent.storeId)
+            const nextStores = agents.filter(canReceiveSplitUpload)
                 .map(agent => ({ storeId: agent.storeId, storeName: agent.storeName || agent.pageStoreName || agent.storeId }));
             if (JSON.stringify(targetStores) !== JSON.stringify(nextStores)) {
                 targetStores = nextStores;
@@ -1040,7 +1138,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             const box = row.querySelector(".product-checkbox");
             if (!box) return;
             box.checked = selectAll.checked;
-            const product = overview.products.find((item) => String(item.spuId) === String(box.value));
+            const product = catalogRowProduct(overview.products, row);
             if (product) setProductSelected(product, box.checked);
         });
         syncSelection();
@@ -1049,7 +1147,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         clearCatalogProductSelection();
         syncSelection();
     });
-    deleteSelected.addEventListener("click", () => deleteInventoryProducts([...catalogSelectedProducts.keys()]));
+    deleteSelected.addEventListener("click", () => deleteInventoryProducts([...catalogSelectedProducts.values()].map(product => product.spuId), [...catalogSelectedProducts.values()]));
     document.getElementById("unblock-selected")?.addEventListener("click", async (event) => {
         const button = event.currentTarget;
         // 只解除选中的标红商品：未标红的商品无需处理，避免把正常商品也写一遍。
@@ -1087,34 +1185,34 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         if (!row || row.dataset.productBound === "1") return;
         row.dataset.productBound = "1";
         // 详情加载沿用本行来源身份，不能只靠货号或可猜 SPU 读取别店的错误。
-        const displayedProduct = overview.products.find(item => String(item.spuId) === String(row.dataset.spu));
+        const displayedProduct = catalogRowProduct(overview.products, row);
         const sendButton = row.querySelector('[data-transfer-spu]');
         if (sendButton && displayedProduct?.sendBlocked) sendButton.disabled = true;
         row.addEventListener('click', event => {
             const trigger = event.target.closest('[data-product-error]');
             if (!trigger) return;
-            const product = overview.products.find(item => String(item.spuId) === String(row.dataset.spu));
+            const product = catalogRowProduct(overview.products, row);
             if (!product || product.statusStale) return;
             void TemuProductErrorUI.open(product, trigger, (notice, signal) => api(
-                '/temu/api/products/error-details?' + new URLSearchParams({ sourceStoreId: notice.sourceStoreId,
+                '/temu/api/products/error-details?' + new URLSearchParams({ library: catalogLibrary, sourceStoreId: notice.sourceStoreId,
                     spuId: notice.spuId, sourceInstanceId: notice.sourceInstanceId }), { signal }));
         });
         row.querySelector(".product-checkbox")?.addEventListener("change", (event) => {
             const box = event.currentTarget;
-            const product = overview.products.find((item) => String(item.spuId) === String(box.value));
+            const product = catalogRowProduct(overview.products, row);
             if (product) setProductSelected(product, box.checked);
             syncSelection();
         });
         row.querySelector("[data-delete-spu]")?.addEventListener("click", (event) => {
             event.stopPropagation();
-            deleteInventoryProducts([event.currentTarget.dataset.deleteSpu]);
+            const product = catalogRowProduct(overview.products, row);
+            if (product) deleteInventoryProducts([product.spuId], [product]);
         });
         row.querySelector("[data-transfer-spu]")?.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
             const button = event.currentTarget;
-            const spuId = String(button.dataset.transferSpu || "");
-            const product = overview.products.find(item => String(item.spuId) === spuId);
+            const product = catalogRowProduct(overview.products, row);
             const toast = document.getElementById("catalog-toast");
             // 事件入口也核对当前商品，不能只靠按钮外观阻止迟到点击。
             if (product?.statusStale || product?.sendBlocked || product?.blocked) {
@@ -1125,27 +1223,22 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                 if (toast) toast.innerHTML = `<div class="toast">已有单商品上传正在处理中，请等待当前任务完成。</div>`;
                 return;
             }
-            if (!singleTargetDialog || !singleTargetOptions.length) {
-                if (toast) toast.innerHTML = `<div class="toast error">当前没有可接收上传任务的在线目标店插件。</div>`;
-                return;
-            }
-            singleTargetDialog.dataset.spu = spuId;
-            if (singleTargetSpu) singleTargetSpu.textContent = spuId;
-            resetSingleDialog();
-            singleTargetDialog.showModal();
-            singleTargetSearch?.focus();
+            openUploadDialog('single', product);
         });
     };
     rows.forEach(bindProductRow);
-    batchDirectCreate?.addEventListener("click", async () => {
+    batchDirectCreate?.addEventListener("click", () => {
+        if (batchUploadBusy || singleUploadBusy || !prepareBulkSelection([...catalogSelectedProducts.values()], sourceBatchForProduct).eligible) return;
+        openUploadDialog('batch');
+    });
+    /** 批量提交沿用来源分组、实时资格、两店并发及离页中断，类型在确认时固定。 */
+    const sendBatchProducts = async (actionType, targets) => {
         const toast = document.getElementById("catalog-toast");
         if (batchUploadBusy || singleUploadBusy) {
             if (toast) toast.innerHTML = `<div class="toast">批量上传正在处理中，请等待当前任务完成。</div>`;
             return;
         }
         const selectedIds = [...catalogSelectedProducts.keys()];
-        const targetIds = [...(batchTargetStores?.selectedOptions || [])].map(option => String(option.value || "")).filter(Boolean);
-        const targets = (targetStores || []).filter(store => targetIds.includes(String(store.storeId)));
         if (!selectedIds.length || !targets.length) {
             if (toast) toast.innerHTML = `<div class="toast error">请先选择商品和在线目标店铺。</div>`;
             return;
@@ -1158,17 +1251,13 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         }
         batchUploadBusy = true;
         products.forEach(product => activeSendingProducts.add(product));
+        syncSelection();
         const routeVersion = routeRequestId;
         const routeHash = location.hash;
         const canSend = () => routeVersion === routeRequestId && routeHash === location.hash && batchDirectCreate.isConnected;
         batchDirectCreate.disabled = true;
-        batchDirectCreate.textContent = "等待确认…";
-        // 确认与检查也纳入同一互斥及错误恢复范围；内嵌浏览器的原生 confirm 可能被静默取消。
+        // 共用弹窗已完成类型和店铺确认，同来源店确认仍在首个写请求之前执行。
         try {
-        if (!await confirmAction({ title: "确认批量上架", details: [`已选择 ${products.length} 个，可发送 ${total} 个，标红跳过 ${blocked.length} 个，缺少来源 ${skipped.length} 个。`, `发送到 ${targets.length} 家目标店：`, ...targets.map(target => target.storeName), "确认表示商品符合适用要求，并同意平台《商品合规声明》V2.0。", "目标店插件会检查重复商品；创建不等于审核上架。离开本页将停止剩余发送，已发内容不撤回。"], confirmLabel: "确认发送", destructive: false })) {
-            if (toast) toast.innerHTML = `<div class="toast">已取消发送，未创建任务。</div>`;
-            return;
-        }
         if (!canSend()) return;
         if (!await confirmSourceStoreTargets(groups.map(group => group.sourceBatch), targets)) {
             if (toast) toast.innerHTML = `<div class="toast">已取消发送到来源店铺，本次未创建任务。</div>`;
@@ -1178,13 +1267,13 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         batchDirectCreate.textContent = "检查中…";
         if (toast) toast.innerHTML = `<div class="toast">正在检查发送服务…</div>`;
         const capability = await api("/temu/api/direct-create-capability");
-        if (!capability?.directCreate) throw new Error("后台尚未启用接口创建，请联系管理员启用。");
+        assertUploadCapability(capability, actionType);
         if (!canSend()) return;
         batchDirectCreate.textContent = "发送中…";
-        if (toast) toast.innerHTML = `<div class="toast">正在向 ${escapeHtml(String(targets.length))} 家目标店上传 ${escapeHtml(String(total))} 个商品…</div>`;
-            const sendingProducts = new Map(products.map(product => [String(product.spuId), product]));
+        if (toast) toast.innerHTML = `<div class="toast">正在向 ${escapeHtml(String(targets.length))} 家目标店发送 ${escapeHtml(String(total))} 个${actionType === 'qualification_upload' ? '补全资质' : '上传商品'}任务…</div>`;
+            const sendingProducts = new Map(products.map(product => [JSON.stringify([product.publicationData?.sourceBatchId, String(product.spuId)]), product]));
             const result = await submitBulkManifest(groups.map(group => ({ sourceStoreId: group.sourceBatch.sourceStoreId, sourceBatchId: group.sourceBatch.id, spuIds: group.spuIds })), targets,
-                { canSend, productForId: spuId => sendingProducts.get(String(spuId)) });
+                { canSend, actionType, productForId: (spuId, group) => sendingProducts.get(JSON.stringify([group.sourceBatchId, String(spuId)])) });
             // 旧页面结果不能清除用户重新进入商品库后勾选的新商品。
             if (!canSend()) return;
             if (toast) toast.innerHTML = `<div class="toast success">${escapeHtml(transferResultText(result))}发送前已跳过 ${blocked.length} 个标红商品。${skipped.length ? `跳过 ${skipped.length} 个无来源批次商品。` : ''}</div>`;
@@ -1200,7 +1289,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
                 syncSelection();
             }
         }
-    });
+    };
     /** 分页只发起当前页请求，筛选条件仍由服务端统一应用。 */
     const goToProductPage = (page) => {
         const nextPage = Math.max(1, Number(page) || 1);
@@ -1216,155 +1305,6 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         livePaginationTargets.products = 1;
         void loadProductPage({ page: 1 });
     });
-    uploadButton?.addEventListener("click", () => {
-        if (files) files.value = "";
-        files?.click();
-    });
-    files?.addEventListener("change", () => {
-        if (files.files.length) {
-            uploadFiles(files.files, "catalog-toast");
-            files.value = "";
-        }
-    });
-
-    /**
-     * 按店铺分组视图。
-     *
-     * 为什么需要：运营清理商品时通常按店铺来（"这个店不做了"），
-     * 平铺列表得逐个搜索勾选；分组后可直接整组处理。
-     *
-     * 分组只在视觉上把已有行归拢，不重新请求数据：
-     * 直接复用渲染好的行节点，避免两套渲染逻辑产生差异。
-     */
-    if (viewMode && productList) {
-        // 店名映射从 overview.batches 现算：sourceStores 是 renderProducts 里的局部变量，
-        // 本函数拿不到它；分组标题需要「店名」而不是「storeId」。
-        const nameOfStore = () => new Map((overview.batches || [])
-            .filter((batch) => batch.sourceStoreId)
-            .map((batch) => [String(batch.sourceStoreId), String(batch.sourceStoreName || batch.shopName || batch.sourceStoreId)]));
-        const applyGrouping = () => {
-            const grouped = viewMode.value === "group";
-            // 先把已生成的组容器拆掉、行节点还原回列表，避免来回切换时节点丢失。
-            for (const wrapper of [...productList.querySelectorAll("[data-business-product-group]")]) {
-                const rowsBox = wrapper.querySelector(".business-group-rows");
-                for (const row of [...(rowsBox?.children || [])]) productList.insertBefore(row, wrapper);
-                wrapper.remove();
-            }
-            productList.classList.toggle("grouped", grouped);
-            if (!grouped) return;
-
-            const rows = [...productList.querySelectorAll("[data-product-row]")];
-            const groups = new Map();
-            for (const row of rows) {
-                const ids = String(row.dataset.sourceStores || "").split(",").map((value) => value.trim()).filter(Boolean);
-                const buckets = ids.length ? ids : [""];
-                for (const storeId of buckets) {
-                    if (!groups.has(storeId)) groups.set(storeId, []);
-                    groups.get(storeId).push(row);
-                }
-            }
-            // 有来源店的组按名称排序，无归属组放最后（它是待清理项）。
-            const storeNames = nameOfStore();
-            const ordered = [...groups.entries()].sort(([left], [right]) => {
-                if (!left) return 1;
-                if (!right) return -1;
-                return String(storeNames.get(left) || left).localeCompare(String(storeNames.get(right) || right), "zh-Hans-CN");
-            });
-            for (const [storeId, groupRows] of ordered) {
-                const wrapper = document.createElement("section");
-                wrapper.className = "business-product-group";
-                wrapper.dataset.businessProductGroup = storeId || "__unassigned__";
-                const title = storeId ? (storeNames.get(storeId) || storeId) : "无归属店铺";
-                wrapper.innerHTML = `
-                    <header class="business-group-head">
-                        <label class="select-all"><input type="checkbox" data-business-group-check><span></span>全选本组</label>
-                        <strong>${escapeHtml(title)}</strong>
-                        <span class="business-group-count">${groupRows.length} 个</span>
-                        <button type="button" class="toolbar-button danger" data-business-group-delete="${escapeHtml(storeId)}" disabled>删除本组选中</button>
-                    </header>
-                    <div class="business-group-rows"></div>`;
-                const rowsBox = wrapper.querySelector(".business-group-rows");
-                // 行节点从列表里移到组容器内：同一个节点，事件绑定与勾选状态都保留。
-                for (const row of groupRows) rowsBox.appendChild(row);
-                productList.appendChild(wrapper);
-            }
-        };
-
-        // 组内全选与整组删除：删除时带上该组的 storeId，避免清掉别的店那份。
-        productList.addEventListener("change", (event) => {
-            const box = event.target;
-            if (!(box instanceof HTMLInputElement) || box.type !== "checkbox") return;
-            if (!box.hasAttribute("data-business-group-check")) return;
-            const wrapper = box.closest("[data-business-product-group]");
-            for (const row of wrapper.querySelectorAll("[data-product-row]")) {
-                const target = row.querySelector(".product-checkbox");
-                if (!target || row.hidden) continue;
-                target.checked = box.checked;
-                const product = overview.products.find((item) => String(item.spuId) === String(target.value));
-                if (product) setProductSelected(product, box.checked);
-            }
-            syncSelection();
-        });
-        productList.addEventListener("click", async (event) => {
-            const button = event.target.closest("[data-business-group-delete]");
-            if (!button) return;
-            const wrapper = button.closest("[data-business-product-group]");
-            const title = wrapper.querySelector("strong")?.textContent?.trim() || "本组";
-            const ids = [...wrapper.querySelectorAll("[data-product-row]")]
-                .filter((row) => !row.hidden)
-                .map((row) => row.querySelector(".product-checkbox"))
-                .filter((box) => box && box.checked)
-                .map((box) => String(box.value || ""))
-                .filter(Boolean);
-            if (!ids.length) return;
-            const storeId = button.getAttribute("data-business-group-delete") || "";
-            button.disabled = true;
-            try {
-                const ok = await confirmInventoryRemoval(`${ids.length} 个商品（${title}）`);
-                if (!ok) return;
-                await api("/temu/api/products", {
-                    method: "DELETE",
-                    headers: { "content-type": "application/json" },
-                    // 限定在本次分组内：同一 SPU 在别的店可能另有一行，不限定会跨店误删。
-                    body: JSON.stringify({ spuIds: ids, storeIds: storeId ? [storeId] : [] })
-                });
-                clearCatalogProductSelection();
-                await route();
-            } catch (error) {
-                const toast = document.getElementById("catalog-toast");
-                if (toast) toast.innerHTML = `<div class="toast error">删除失败：${escapeHtml(error.message)}</div>`;
-                button.disabled = false;
-            }
-        });
-        // 每次勾选后同步"删除本组选中"按钮的可用状态与文案。
-        const syncGroupButtons = () => {
-            for (const wrapper of productList.querySelectorAll("[data-business-product-group]")) {
-                const checked = [...wrapper.querySelectorAll("[data-product-row]")]
-                    .filter((row) => !row.hidden)
-                    .map((row) => row.querySelector(".product-checkbox"))
-                    .filter((box) => box && box.checked);
-                const button = wrapper.querySelector("[data-business-group-delete]");
-                if (button) {
-                    button.disabled = checked.length === 0;
-                    button.textContent = checked.length ? `删除本组选中 ${checked.length} 个` : "删除本组选中";
-                }
-                const head = wrapper.querySelector("[data-business-group-check]");
-                const visibleBoxes = [...wrapper.querySelectorAll("[data-product-row]")]
-                    .filter((row) => !row.hidden)
-                    .map((row) => row.querySelector(".product-checkbox"))
-                    .filter(Boolean);
-                if (head) {
-                    head.checked = visibleBoxes.length > 0 && checked.length === visibleBoxes.length;
-                    head.indeterminate = checked.length > 0 && checked.length < visibleBoxes.length;
-                }
-            }
-        };
-        productList.addEventListener("change", (event) => {
-            if (event.target instanceof HTMLInputElement && event.target.classList.contains("product-checkbox")) syncGroupButtons();
-        });
-        viewMode.addEventListener("change", () => { applyGrouping(); syncSelection(); syncGroupButtons(); });
-    }
-
     syncSelection();
     updateProductPagination();
 }
@@ -1396,23 +1336,33 @@ function confirmInventoryRemoval(description) {
 
 /** 删除前冻结所选 ID 并要求确认；成功后重读仓库，不再显示占据表格空间的成功提示。 */
 let inventoryDeletionBusy = false;
-async function deleteInventoryProducts(spuIds) {
+async function deleteInventoryProducts(spuIds, products = null) {
+    // 混选共享商品只删除有权限的来源行；不回退到省略来源的整仓删除请求。
+    if (!Array.isArray(products)) return;
+    const selectedCount = products.length;
+    products = products.filter(canDeleteProduct);
+    spuIds = products.map(product => product.spuId);
     const ids = [...new Set((spuIds || []).map((value) => String(value || "").trim()).filter(Boolean))];
     if (!ids.length) return;
-    const description = ids.length === 1 ? `SPU ${ids[0]}` : `${ids.length} 个所选商品`;
+    const description = `${products.length === 1 ? `SPU ${ids[0]}` : `${products.length} 个所选商品`}${selectedCount > products.length ? `（另有 ${selectedCount - products.length} 个商品无删除权限，不会删除）` : ''}`;
     if (inventoryDeletionBusy || !await confirmInventoryRemoval(description)) return;
     inventoryDeletionBusy = true;
     const toast = document.getElementById("catalog-toast");
     if (toast) toast.innerHTML = `<div class="toast">正在删除 ${description}…</div>`;
     try {
-        await api("/temu/api/products", {
-            method: "DELETE",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ spuIds: ids })
+        // 每组精确限定来源店，共享库同 SPU 的其他来源不能随着当前行一起删除。
+        const groups = new Map();
+        for (const product of products || []) for (const storeId of product.sourceStoreIds || []) {
+            if (!groups.has(storeId)) groups.set(storeId, []);
+            groups.get(storeId).push(product.spuId);
+        }
+        for (const [storeId, selected] of groups.size ? groups : [[null, ids]]) await api('/temu/api/products', {
+            method: 'DELETE', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ spuIds: selected, ...(storeId ? { storeIds: [storeId] } : {}) })
         });
         // 删除可能连同同货号的其他 SPU 一并清理，跨页选择已不再完整，重绘前统一清空。
         clearCatalogProductSelection();
-        if (location.hash.startsWith("#/product/")) location.hash = "#/products";
+        if (location.hash.startsWith("#/product/")) location.hash = catalogLibrary === 'personal' ? '#/products/mine' : '#/products';
         else await route();
     } catch (error) {
         if (toast) toast.innerHTML = `<div class="toast error">删除失败：${escapeHtml(error.message)}</div>`;
@@ -1430,7 +1380,10 @@ function renderProduct(payload) {
         <div class="top product-detail-top"><div class="top-copy"><h1>商品详情</h1><p class="detail-meta">SPU ${escapeHtml(product.spuId)}${product.category ? ` · ${escapeHtml(product.category)}` : ""}${identifierText(product.skcIds) ? ` · SKC ${escapeHtml(identifierText(product.skcIds))}` : ""}</p></div><div class="detail-actions"><a class="back-link" href="#/products">返回商品库</a><button type="button" class="toolbar-button danger" id="delete-current-product">删除商品</button></div></div>
         ${window.ProductDetailView.render(product)}
     `;
-    document.getElementById("delete-current-product")?.addEventListener("click", () => deleteInventoryProducts([product.spuId]));
+    document.getElementById("delete-current-product")?.addEventListener("click", () => deleteInventoryProducts([product.spuId], [product]));
+    const back = app.querySelector('.back-link');
+    if (back) back.href = catalogLibrary === 'personal' ? '#/products/mine' : '#/products';
+    if (!canDeleteProduct(product)) document.getElementById('delete-current-product').hidden = true;
 }
 
 function renderStores(payload = { stores: [] }, successMessage = "", minePayload = { stores: [] }, focusId = "", activeStoreView = activeClaimView) {
@@ -1809,49 +1762,6 @@ function confirmAction({ title, details = [], options = [], confirmLabel = "确�
     });
 }
 
-/** 导入只接收来源资料，成功后回商品库；不再进入完整度查验或平台创建页面。 */
-async function uploadFiles(fileList, toastId = "toast") {
-    const toast = document.getElementById(toastId);
-    const routeVersion = routeRequestId, routeHash = location.hash;
-    const body = new FormData();
-    [...fileList].forEach((file) => body.append("files", file, file.name));
-    if (toast) toast.innerHTML = `<div class="toast">正在上传并识别文件…</div>`;
-    try {
-        const result = await api("/temu/api/import", { method: "POST", body });
-        // 入库请求可正常完成，但迟到结果不能把用户从其他页面拉回商品库。
-        if (routeVersion !== routeRequestId || routeHash !== location.hash) return;
-        const message = result.reused ? "这组文件已经入过库。" : "上传完成。";
-        if (location.hash === '#/products') await route({ forceRefresh: true });
-        else location.hash = '#/products';
-        const currentToast = document.getElementById(toastId);
-        if (currentToast && location.hash === '#/products') currentToast.innerHTML = `<div class="toast success">${message}</div>`;
-    } catch (error) {
-        if (toast) toast.innerHTML = `<div class="toast error">上传失败：${escapeHtml(error.message)}</div>`;
-    }
-}
-
-function bindDrop() {
-    const drop = document.getElementById("drop");
-    const input = document.getElementById("files");
-    if (!drop || !input) return;
-    input.addEventListener("change", () => {
-        if (input.files.length) {
-            uploadFiles(input.files);
-            input.value = "";
-        }
-    });
-    drop.addEventListener("dragover", (event) => {
-        event.preventDefault();
-        drop.classList.add("drag");
-    });
-    drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
-    drop.addEventListener("drop", (event) => {
-        event.preventDefault();
-        drop.classList.remove("drag");
-        if (event.dataTransfer.files.length) uploadFiles(event.dataTransfer.files);
-    });
-}
-
 function escapeHtml(value) {
     return String(value || "").replace(/[&<>"']/g, (char) => ({
         "&": "&amp;",
@@ -1895,7 +1805,7 @@ async function loadAccount(signal) {
     const adminNav = document.getElementById("nav-admin");
     if (box && nameEl && currentAccount?.user) {
         nameEl.textContent = currentAccount.user.username;
-        if (roleEl) roleEl.textContent = currentAccount.localMode ? "本机模式" : (currentAccount.isAdmin ? "管理员" : "普通用户");
+        if (roleEl) roleEl.textContent = currentAccount.localMode ? '本机模式' : `${currentAccount.user.accountType === 'test' ? '测试账户' : '正式账户'} · ${currentAccount.isAdmin ? '管理员' : '普通用户'}`;
         box.hidden = false;
     }
     if (adminNav) adminNav.hidden = !currentAccount?.isAdmin;
@@ -1926,7 +1836,7 @@ let commonPrefetchScheduled = false;
 let forceStoreDirectoryRefresh = false;
 
 function routeNavName(hash) {
-    if (hash === "#/products" || hash === "#/products/all" || hash.startsWith("#/product/")) return "products";
+    if (isCatalogRoute(hash) || hash === "#/products/all" || hash.startsWith("#/product/")) return "products";
     if (hash === "#/stores") return "stores";
     if (hash === "#/import") return "import";
     return "home";
@@ -2037,7 +1947,7 @@ async function route(options = {}) {
         }
         if (!currentAccount) await loadAccount(signal);
         if (requestId !== routeRequestId) return;
-        if (hash === "#/products") {
+        if (isCatalogRoute(hash)) {
             const [overview, agents] = await Promise.all([
                 api(catalogPageUrl(), { signal, cacheMs: 5000, force: forceRefresh }),
                 api("/temu/api/agents?online=1&receivable=1&limit=100&offset=0", { signal, cacheMs: 3000, force: forceRefresh }).catch(() => ({ agents: [], total: 0, hasMore: false }))
@@ -2074,9 +1984,11 @@ async function route(options = {}) {
             location.href = `${siteRoot()}/admin`;
             return;
         }
-        const productMatch = hash.match(/^#\/product\/([^/]+)/);
+        const productMatch = hash.match(/^#\/product\/([^/?]+)/);
         if (productMatch) {
-            const product = await api(`/temu/api/products/${productMatch[1]}`, { signal });
+            const params = new URLSearchParams(hash.split('?')[1] || '');
+            catalogLibrary = params.get('library') === 'personal' ? 'personal' : 'shared';
+            const product = await api(`/temu/api/products/${productMatch[1]}?${params}`, { signal });
             if (requestId !== routeRequestId) return;
             renderProduct(product);
             return;
@@ -2097,7 +2009,15 @@ async function route(options = {}) {
 }
 
 window.addEventListener("hashchange", () => {
-    if ((location.hash || "#/") !== "#/products") clearCatalogProductSelection();
+    const nextLibrary = location.hash === '#/products/mine' ? 'personal' : 'shared';
+    if (!isCatalogRoute(location.hash) || nextLibrary !== catalogLibrary) clearCatalogProductSelection();
+    if (isCatalogRoute(location.hash) && nextLibrary !== catalogLibrary) {
+        catalogLibrary = nextLibrary;
+        catalogProductPage = 1;
+        Object.assign(catalogFilters, { q: '', draft: '', sourceStoreId: '', blocked: '' });
+        // 切换范围时销毁旧订阅和摘要，旧响应不得刷新新库。
+        closeLiveEvents(); latestLive = null; lastLive = null; lastLiveHash = '';
+    }
     if ((location.hash || "#/") !== "#/stores") selectedClaimStores.clear();
     route();
 });
@@ -2112,7 +2032,7 @@ route();
  * 被操作阻挡的通知保留在内存，空闲后补同步；断线才启用低频读取兜底。
  */
 const LIVE_FALLBACK_MS = 60000;
-const AUTO_REFRESH_HASHES = new Set(["#/products", "#/stores"]);
+const AUTO_REFRESH_HASHES = new Set(["#/products", "#/products/mine", "#/stores"]);
 let autoRefreshBusy = false;
 let lastLive = null;
 let lastLiveHash = "";
@@ -2134,7 +2054,7 @@ function takeRestoredPageCount(key) {
 function controlKey(element) {
     if (!element || !element.tagName) return "";
     // 商品行的勾选框没有 id 和 name，只能按 SPU 定位，否则自动刷新会丢掉正在选择的商品。
-    if (element.classList?.contains("product-checkbox")) return `spu:${element.value}`;
+    if (element.classList?.contains("product-checkbox")) return `product:${element.closest('[data-product-row]')?.dataset.productKey}`;
     if (element.id) return `#${element.id}`;
     if (element.name) return `@${element.name}:${element.value}`;
     return "";
@@ -2142,7 +2062,7 @@ function controlKey(element) {
 
 function findControl(key) {
     if (!key) return null;
-    if (key.startsWith("spu:")) return app.querySelector(`[data-product-row][data-spu="${CSS.escape(key.slice(4))}"] .product-checkbox`);
+    if (key.startsWith("product:")) return app.querySelector(`[data-product-row][data-product-key="${CSS.escape(key.slice(8))}"] .product-checkbox`);
     if (key.startsWith("#")) return document.getElementById(key.slice(1));
     const [name, ...rest] = key.slice(1).split(":");
     return app.querySelector(`[name="${CSS.escape(name)}"][value="${CSS.escape(rest.join(":"))}"]`);
@@ -2218,7 +2138,7 @@ function restoreViewState(state) {
         else element.value = item.value;
     }
     // 商品与店铺分页已从独立状态恢复，不模拟筛选 change，否则会回到第一页。
-    ["batch-target-stores", "product-view-mode"].forEach((id) => document.getElementById(id)?.dispatchEvent(new Event("change")));
+    document.getElementById("batch-target-stores")?.dispatchEvent(new Event("change"));
     checks.forEach(([element, checked]) => {
         if (element.disabled) return;
         element.checked = checked;
@@ -2247,7 +2167,7 @@ function restoreViewState(state) {
 
 /** 页面只订阅自己使用的数据，避免后台无关日志或扫描状态触发全站重绘。 */
 function liveKey(live, hash) {
-    const fields = hash === "#/products" ? ["inventory", "claims", "agents"]
+    const fields = isCatalogRoute(hash) ? ["inventory", "claims", "agents"]
         : hash === "#/stores" ? ["claims", "directory"]
         : ["inventory", "claims", "agents", "directory"];
     return JSON.stringify(fields.map(field => live[field]));
@@ -2259,7 +2179,6 @@ function autoRefreshBlocked() {
     if (document.visibilityState !== "visible") return true;
     if (!AUTO_REFRESH_HASHES.has(location.hash || "#/")) return true;
     if (document.querySelector("dialog[open]")) return true;
-    if (document.getElementById("drop")?.classList.contains("drag")) return true;
     // 已勾选商品或目标店时暂停整页刷新，避免大规模分页下的跨页选择被自动重绘打断。
     if (catalogSelectedProducts.size > 0) return true;
     if (app.querySelector('#batch-target-stores option:checked')) return true;
@@ -2277,10 +2196,10 @@ let liveStatusCatchup = 0;
 /** 商品状态使用独立读通道，目录读取慢或结构刷新被操作挡住时仍能标红；失败只补读，不发送商品。 */
 async function applyCatalogStatus() {
     if (catalogStatusBusy || !latestLive || liveAuthExpired || !refreshCatalogStatus || routeController
-        || location.hash !== '#/products' || document.visibilityState !== 'visible' || catalogPageLoading) return;
+        || !isCatalogRoute(location.hash) || document.visibilityState !== 'visible' || catalogPageLoading) return;
     catalogStatusBusy = true;
-    const live = latestLive, navigation = routeRequestId, page = catalogPageLoadVersion, catchup = liveStatusCatchup;
-    const canApply = () => location.hash === '#/products' && navigation === routeRequestId && page === catalogPageLoadVersion
+    const live = latestLive, navigation = routeRequestId, page = catalogPageLoadVersion, catchup = liveStatusCatchup, hash = location.hash;
+    const canApply = () => location.hash === hash && navigation === routeRequestId && page === catalogPageLoadVersion
         && !routeController && document.visibilityState === 'visible' && !catalogPageLoading
         && live.inventory === latestLive?.inventory && live.claims === latestLive?.claims && catchup === liveStatusCatchup;
     let applied = false;
@@ -2307,7 +2226,7 @@ async function applyLiveChanges() {
     const interactionVersion = viewInteractionVersion;
     const pageVersion = catalogPageLoadVersion;
     const live = latestLive;
-    let targetsApplied = hash !== "#/products";
+    let targetsApplied = !isCatalogRoute(hash);
     // 请求发出后仍可能发生翻页、输入或弹窗操作；旧响应只能丢弃，不能抢回页面。
     const viewUnchanged = () => hash === (location.hash || "#/") && navigationVersion === routeRequestId
         && interactionVersion === viewInteractionVersion && pageVersion === catalogPageLoadVersion;
@@ -2317,7 +2236,7 @@ async function applyLiveChanges() {
         // 目标店只做局部更新，不因弹窗、输入或商品勾选暂停；提交期间仍冻结，避免更换任务目标。
         const canApplyTargets = () => hash === (location.hash || "#/") && navigationVersion === routeRequestId
             && !routeController && document.visibilityState === "visible" && !singleUploadBusy && !batchUploadBusy && !inventoryDeletionBusy;
-        if (hash === "#/products") {
+        if (isCatalogRoute(hash)) {
             targetsApplied = canApplyTargets() && await refreshCatalogTargets?.(live, canApplyTargets) === true;
             if (!targetsApplied) return;
         }
@@ -2332,7 +2251,7 @@ async function applyLiveChanges() {
         if (!canApply()) return;
         // 首次连接与切页也核对当前数据，弥补首屏请求和建立连接之间可能遗漏的变更。
         const previous = lastLiveHash === hash && lastLive ? lastLive : {};
-        const applied = hash === "#/products"
+        const applied = isCatalogRoute(hash)
             ? await refreshCatalogView?.(live, previous, canApply)
             : await route({ forceRefresh: true, background: true, canApply });
         // 提交前检查操作保护，提交后只核对视图版本；新DOM的读取占位不能把已提交更新判为失败。
@@ -2362,7 +2281,7 @@ function receiveLiveSnapshot(live) {
 function connectLiveEvents() {
     if (liveAuthExpired || document.visibilityState !== "visible" || !AUTO_REFRESH_HASHES.has(location.hash || "#/")) return;
     if (eventStream || typeof EventSource === "undefined") return;
-    const stream = new EventSource(`${siteRoot()}/api/events`);
+    const stream = new EventSource(`${siteRoot()}/api/events?${libraryParams()}`);
     eventStream = stream;
     stream.addEventListener("live", event => {
         if (eventStream !== stream) return;
@@ -2392,7 +2311,8 @@ async function fallbackLiveSnapshot() {
     if (liveAuthExpired || fallbackBusy || document.visibilityState !== "visible" || !AUTO_REFRESH_HASHES.has(location.hash || "#/")) return;
     if (eventStream?.readyState === 1) return;
     fallbackBusy = true;
-    try { receiveLiveSnapshot(await api("/temu/api/live")); } catch {} finally { fallbackBusy = false; }
+    const hash = location.hash;
+    try { const live = await api('/temu/api/live?' + libraryParams()); if (hash === location.hash) receiveLiveSnapshot(live); } catch {} finally { fallbackBusy = false; }
     connectLiveEvents();
 }
 
@@ -2404,6 +2324,7 @@ setInterval(fallbackLiveSnapshot, LIVE_FALLBACK_MS);
 document.addEventListener("visibilitychange", resumeLiveEvents);
 window.addEventListener("hashchange", resumeLiveEvents);
 window.addEventListener("focus", resumeLiveEvents);
-window.addEventListener("pagehide", closeLiveEvents);
+// BFCache离页也使发送许可失效；浏览器保留DOM不表示可以继续发送后续店铺或分段。
+window.addEventListener("pagehide", () => { routeRequestId += 1; closeLiveEvents(); });
 window.addEventListener("pageshow", resumeLiveEvents);
 connectLiveEvents();

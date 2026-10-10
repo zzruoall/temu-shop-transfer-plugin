@@ -1,7 +1,7 @@
 (function installTemuLocalApp() {
     "use strict";
 
-    // 10.x 使用独立事件通道；旧 9.x 仍在页面时，不能把它转发的响应再算进当前中转任务。
+    // 当前插件沿用10.x独立事件通道；旧9.x仍在页面时，不能把它转发的响应算进当前中转任务。
     const SOURCE = "temu-shop-transfer-v10";
     const IDLE_WINDOW_MS = 4000;
     const RUN_TIMEOUT_MS = 45000;
@@ -14,12 +14,6 @@
     const PLUGIN_VERSION = chrome.runtime.getManifest().version;
     const STATUS_EVENT = "temu-shop-transfer-status";
     const STATUS_REQUEST_EVENT = "temu-shop-transfer-status-request";
-    // 连接登记只需周期性续租；任务领取保持短周期，避免每轮心跳都串行等待四个网络请求。
-    // 服务端在线窗口为 35 秒，登记间隔必须留出网络抖动余量，不能超过该窗口。
-    const AGENT_REGISTER_INTERVAL_MS = 20_000;
-    const AGENT_SYNC_INTERVAL_MS = 8_000;
-    const AGENT_RETRY_BACKOFF_BASE_MS = 5_000;
-    const AGENT_RETRY_BACKOFF_MAX_MS = 60_000;
     // 紫鸟商品表格没有稳定的 data 属性，SPU ID 会以“SPU ID：数字”文本出现在每个商品行内。
     // 只在表格行内读取该字段，避免把 /goods/list 等左侧导航路由误当成商品 ID。
     // 页面把 SPU 数字与下一个“SKC ID”直接连写，结尾不能要求单词边界；只禁止继续吞入更多数字。
@@ -124,12 +118,11 @@
     let pluginInstanceId = "";
     let agentState = { phase: "idle", detail: "识别店铺中", claimed: 0 };
     let lastOperationState = "";
-    let agentSyncInFlight = null;
-    let agentRegisterInFlight = null;
-    let agentRegisteredAt = 0;
-    let agentRegisteredPageStoreName = "";
-    let agentSyncFailures = 0;
-    let agentNextSyncAt = 0;
+    let agentSubscribeInFlight = null;
+    let storeSnapshotEnabled = false;
+    let subscribedStoreId = '';
+    let lastStoreSequence = 0;
+    let sharedConnection = { phase: 'connecting', detail: '正在连接' };
     // 停止/继续按钮的防重入标记：连点会让后台重复落盘，也让按钮文案与真实状态脱节。
     let directPauseBusy = false;
     // 所有控制动作递增面板代次，发出较早的异步快照不能覆盖控制后的新队列。
@@ -197,7 +190,7 @@
      * 默认折叠工具区只留采集按钮、进度和是否完成；入库结果、诊断数字和导出入口要点“展开”。
      */
     /**
-     * 10.x 与旧采集插件会落在同一卖家页面。旧版曾占用相同 DOM id，
+     * 当前插件与旧采集插件可能落在同一卖家页面。旧版曾占用相同 DOM id，
      * 因而必须用版本和来源标记确认宿主归属；否则新版会误以为自己已挂载。
      */
     function isCurrentPanelHost(node) {
@@ -219,7 +212,7 @@
 
     /**
      * 不同扩展的 content script 注入顺序不可控，监听后续插入的旧宿主，
-     * 保证当前页最终只保留带 10.x 标记的面板，而非依赖某次固定加载顺序。
+     * 保证当前页最终只保留带当前版本标记的面板，而非依赖某次固定加载顺序。
      */
     function keepCurrentPanelInCharge() {
         if (legacyPanelObserver || !document.documentElement) return;
@@ -299,7 +292,7 @@
                     <div class="transfer-progress" hidden aria-live="polite">
                         <div class="transfer-progress-head"><span class="transfer-progress-title">接口创建进度</span><span class="transfer-progress-percent"></span></div>
                         <div class="stage-track" role="list" aria-label="接口创建阶段">
-                            <span class="stage" data-stage="duplicate_check">对比</span><span class="stage" data-stage="authorizing">预检</span><span class="stage" data-stage="submitting">提交</span><span class="stage" data-stage="created">已创建</span>
+                            <span class="stage" data-stage="duplicate_check">对比</span><span class="stage" data-stage="authorizing">预检</span><span class="stage" data-stage="submitting">商品</span><span class="stage" data-stage="qualifying">资质</span><span class="stage" data-stage="created">已完成</span>
                         </div>
                         <div class="transfer-progress-detail"></div>
                         <button type="button" class="btn secondary wide transfer-retry" hidden>人工确认后重试</button>
@@ -347,7 +340,6 @@
                         </div>
                         <div class="row"><span>接口诊断</span><span class="value interface-diagnostic-status off">未开启</span></div>
                     </details>
-                    <div class="tip">状态自动刷新。采集包下载后由本地网站读取；目标任务须成功领取才会出现。无反应时导出操作日志。</div>
                     <div class="tip">接口创建任务由插件自动执行，不要点击上传按钮；保持商品列表页打开即可。</div>
                 </div>
             </section>`;
@@ -968,6 +960,7 @@
         if (state.scanTimer) clearTimeout(state.scanTimer);
         state.scanTimer = setTimeout(() => {
             state.scanTimer = null;
+            checkStoreIdentityChanged();
             scanPageProducts();
         }, 180);
     }
@@ -979,6 +972,7 @@
         state.observer = new MutationObserver(schedulePageScan);
         state.observer.observe(document.documentElement, {
             childList: true,
+            characterData: true,
             subtree: true,
             attributes: true,
             attributeFilter: ["class", "data-field", "data-column-key", "data-col-key", "data-row-key", "aria-selected", "aria-current", "value"]
@@ -994,7 +988,7 @@
      * 面板此前会出现在首页、新建商品页、草稿页等管理路由上，遮挡平台内容且容易误操作；
      * 而所有实际动作（判重、预检、提交、结果读取、采集）都必须在商品列表页发起——
      * directPage 对这些操作会直接校验 location.pathname === '/goods/list'，在别的页面根本执行不了。
-     * 因此这里收敛到列表页一种，面板与心跳共用同一判定，避免出现"面板显示正常但点了没用"。
+     * 因此面板与订阅连接共用列表页判定，避免出现"面板显示正常但点了没用"。
      */
     function isWorkPage() {
         if (location.hostname !== "agentseller.temu.com") return false;
@@ -1006,6 +1000,55 @@
     }
     function syncPanelVisibility() {
         if (panelHost) panelHost.hidden = !isManagementPage();
+    }
+
+    /** SPA 路由事件只在进入或离开列表页时订阅/退订，不因筛选参数变化重复连接。 */
+    let subscribedPath = location.pathname;
+    let observedPageStoreName = '';
+    /** 店名变化由现有 DOM 观察触发，重新读平台身份；不以店名推断商城 ID，也不做网络轮询。 */
+    function checkStoreIdentityChanged() {
+        if (!isWorkPage()) return;
+        const name = typeof TemuStoreIdentity !== 'undefined' ? String(TemuStoreIdentity.readPageIdentity()?.storeName || '') : '';
+        if (!name) return;
+        const known = Boolean(observedPageStoreName);
+        const changed = known && observedPageStoreName !== name;
+        observedPageStoreName = name;
+        /**
+         * 首屏往往先建连、后渲染店名：订阅时读到空名，之后名字才出现。
+         * 这**不是**换店，但也必须把名字补送出去，否则网站只能一直显示店铺 ID。
+         *
+         * 两条路径必须分开：换店要退订并丢弃旧批次（`leaveStoreAgent` 会结束当前执行轮），
+         * 而"名字刚读到"只是补一次身份，**不能**走那条销毁性路径，否则会误杀正在跑的任务。
+         */
+        if (!changed) {
+            if (known) return;
+            void Promise.resolve(agentSubscribeInFlight).then(() => {
+                if (isWorkPage() && observedPageStoreName === name) return subscribeStoreAgent();
+            }).catch(() => {});
+            return;
+        }
+        targetViewEpoch++;
+        storeSnapshotEnabled = false;
+        subscribedStoreId = ''; lastStoreSequence = 0;
+        mappedStore = { storeId: '', storeName: '' };
+        state.transferTasks = []; state.directPaused = false;
+        root?.querySelector('.error-dialog')?.close();
+        // 等旧订阅完成后退订，防止迟到的旧订阅把已经换店的文档重新登记为观看页。
+        void Promise.resolve(agentSubscribeInFlight).then(() => send('leaveStoreAgent'))
+            .then(() => subscribeStoreAgent()).catch(() => {});
+    }
+    function handleStoreRouteChanged() {
+        syncPanelVisibility();
+        if (subscribedPath === location.pathname) return;
+        subscribedPath = location.pathname;
+        targetViewEpoch++;
+        storeSnapshotEnabled = false;
+        subscribedStoreId = ''; lastStoreSequence = 0;
+        mappedStore = { storeId: '', storeName: '' };
+        state.transferTasks = []; state.directPaused = false;
+        void Promise.resolve(agentSubscribeInFlight).then(() => send('leaveStoreAgent'))
+            .then(() => { if (isWorkPage() && state.ready) return subscribeStoreAgent(); }).catch(() => {});
+        render();
     }
 
     function currentDetailSpuId() {
@@ -1091,6 +1134,9 @@
         const download = finalization.download || {};
         const ingest = finalization.ingest || {};
         const notes = [];
+        if (Number(queue.qualificationComplete) || Number(queue.qualificationFailed)) notes.push(`资质读取完成 ${Number(queue.qualificationComplete) || 0}，未完整 ${Number(queue.qualificationFailed) || 0}`);
+        if (queue.qualificationFailures?.length) notes.push(queue.qualificationFailures.map(item => `SPU ${item.spuId}：${item.reason}`).join("；"));
+        if (queue.stopReason) notes.push(queue.stopReason);
         if (download.status === "done") notes.push("完整包已下载");
         else if (download.status === "requested") notes.push("已发起本批次完整包下载，请在浏览器下载列表确认");
         else if (download.status === "skipped") notes.push(`下载未完成：${download.reason || "已跳过"}`);
@@ -1208,9 +1254,10 @@
                 const value = event.data;
                 if (event.source !== window || event.origin !== location.origin || value?.source !== source || value.kind !== "result" || value.requestId !== requestId || value.runId !== queue.runId || value.spuId !== queue.current.spuId) return;
                 cleanup();
-                if (value.error) reject(new Error(value.error)); else resolve(value.payload);
+                if (value.error) reject(Object.assign(new Error(value.error), { queryUncertain: value.queryUncertain })); else resolve(value);
             };
-            const timer = setTimeout(() => { cleanup(); reject(new Error("页面详情查询无回执，请刷新后重新采集")); }, 20000);
+            // 页面桥没有回执时底层结果仍未知；有回执的业务失败则使用桥返回的结构化标记。
+            const timer = setTimeout(() => { cleanup(); reject(Object.assign(new Error("商品与资质查询超时无回执，请刷新后重新采集"), { queryUncertain: true })); }, 90000);
             const cleanup = () => { clearTimeout(timer); window.removeEventListener("message", onMessage); };
             window.addEventListener("message", onMessage);
             window.postMessage({ source, kind: "query", requestId, runId: queue.runId, spuId: queue.current.spuId }, location.origin);
@@ -1228,14 +1275,20 @@
             while (queue.active && queue.current && state.enabled && generation === state.runGeneration) {
                 state.detailQueue = queue;
                 state.phase = "接口采集中";
-                render(`已保存 ${queue.completed}/${queue.total} 个商品，正在读取 SPU ${queue.current.spuId}。`);
+                render(`已保存 ${queue.completed}/${queue.total} 个商品，正在读取 SPU ${queue.current.spuId} 的商品与资质资料。`);
+                // 查询的不明结果跨资料保存步骤保留，落库或后台消息失败不能把在途平台请求变成已结束。
+                let queryUncertain;
                 try {
-                    const payload = await queryApiDetail(queue);
+                    const query = await queryApiDetail(queue);
+                    queryUncertain = query.queryUncertain;
                     syncPageContext();
                     if (!state.enabled || generation !== state.runGeneration || pageKey !== state.pageKey) break;
                     state.pendingWrites += 1;
                     let response;
-                    try { response = await send("captureApiDetail", { input: { runId: queue.runId, spuId: queue.current.spuId, payload } }); }
+                    try { response = await send("captureApiDetail", { input: {
+                        runId: queue.runId, spuId: queue.current.spuId, payload: query.payload,
+                        qualifications: query.qualifications, stopBatch: query.stopBatch === true, stopReason: query.stopReason || "", queryUncertain: query.queryUncertain
+                    } }); }
                     finally { state.pendingWrites = Math.max(0, state.pendingWrites - 1); }
                     if (!state.enabled || generation !== state.runGeneration) break;
                     if (!response?.ok || !response.queue) throw new Error(response?.error || "详情保存失败");
@@ -1250,7 +1303,7 @@
                     if (!state.enabled || generation !== state.runGeneration) break;
                     state.failed += 1;
                     state.productFailures += 1;
-                    const failed = await send("advanceDetailSupplement", { input: { runId: queue.runId, spuId: queue.current.spuId, status: "failed", reason: String(error?.message || error) } }).catch(() => null);
+                    const failed = await send("advanceDetailSupplement", { input: { runId: queue.runId, spuId: queue.current.spuId, status: "failed", reason: String(error?.message || error), queryUncertain: queryUncertain === true ? true : (error?.queryUncertain ?? queryUncertain) } }).catch(() => null);
                     if (failed?.ok) queue = failed;
                     else queue = { ...queue, active: false, status: "partial" };
                     state.phase = "部分完成";
@@ -1601,13 +1654,19 @@
         const reason = String(task.reason || "");
         const checking = state === "received" || (state === "authorizing" && /检索|重复|对比/.test(reason));
         const stage = checking ? "duplicate_check" : state === "authorizing" ? "authorizing" : state;
-        const stages = ["duplicate_check", "authorizing", "submitting", "created"];
+        const qualification = task.actionType === 'qualification_upload';
+        const stages = qualification ? ["duplicate_check", "authorizing", "qualifying", "created"] : ["duplicate_check", "authorizing", "submitting", "created"];
         const labels = {
             duplicate_check: "重复对比中",
             authorizing: "资料预检中",
             submitting: "正在提交",
             verifying: "正在读取提交结果",
-            created: "创建成功",
+            created: "商品内容已创建",
+            qualifying: "正在处理资质",
+            qualification_complete: "资质已补全或已提交",
+            qualification_not_found: "没有匹配到内容",
+            qualification_failed: "资质未完成",
+            qualification_unknown: "资质待核对",
             unknown: "结果待核对",
             preflight_failed: "预检失败",
             rejected: "平台拒绝",
@@ -1620,9 +1679,9 @@
         const terminalUnknown = outcome === "unknown";
         const terminalDone = outcome === "success" || outcome === "skipped";
         const terminalProcessed = Boolean(outcome);
-        const index = terminalUnknown ? stages.indexOf("submitting") : terminalError ? stages.indexOf(state === "rejected" ? "submitting" : "authorizing") : Math.max(0, stages.indexOf(stage === "verifying" ? "submitting" : stage));
+        const index = state.startsWith('qualification_') ? stages.indexOf('qualifying') : terminalUnknown ? stages.indexOf("submitting") : terminalError ? stages.indexOf(state === "rejected" ? "submitting" : "authorizing") : Math.max(0, stages.indexOf(stage === "verifying" ? "submitting" : stage));
         const percent = terminalProcessed ? 100 : Math.round(((index + 1) / stages.length) * 100);
-        return { state, stage, stages, index, percent, label: labels[state] || labels[stage] || "任务处理中", reason, terminalError, terminalUnknown, terminalDone, terminalProcessed };
+        return { state, stage, stages, index, percent, qualification, label: labels[state] || labels[stage] || "任务处理中", reason, terminalError, terminalUnknown, terminalDone, terminalProcessed };
     }
 
     function captureStatusText() {
@@ -1741,11 +1800,10 @@
         const batchResultClass = directBatch.failed ? "bad" : (directBatch.unknown ? "warn" : "done");
         const agentStatus = root.querySelector(".agent-status");
         if (agentStatus) {
-            // CLI 与商品入库 HTTP 是两条通道，接收同步成功不能伪装成 HTTP 入库成功。
-            const cliOnline = currentPageIdentity().storeId && Date.now() - Number(state.cliConnectedAt || 0) < 120000;
-            agentStatus.textContent = cliOnline ? "CLI 已连接（任务同步）" : (directBatch.complete ? "本批已处理结束" : (agentState.detail || "识别店铺中"));
+            // 接收连接与执行结果分开：批次结束不应掩盖网络断开，连接就绪也不表示商品入库成功。
+            agentStatus.textContent = sharedConnection.detail || "正在连接";
             agentStatus.classList.remove("on", "off", "warn", "bad", "done");
-            agentStatus.classList.add(cliOnline ? "done" : (directBatch.complete ? batchResultClass : (agentState.phase === "verified" || agentState.phase === "claimed" ? "done" : (agentState.phase === "error" ? "bad" : (agentState.phase === "idle" ? "off" : "warn")))));
+            agentStatus.classList.add(sharedConnection.phase === 'connected' ? 'done' : (sharedConnection.phase === 'error' ? 'bad' : 'warn'));
         }
         const transferStatus = root.querySelector(".transfer-status");
         const directTasks = storeTasks.filter(task => task.directCreate);
@@ -1760,7 +1818,12 @@
                 authorizing: "预检中",
                 submitting: "提交中",
                 verifying: "读取提交结果",
-                created: "已创建",
+                created: "商品内容已创建",
+                qualifying: "资质处理中",
+                qualification_failed: "资质未完成",
+                qualification_unknown: "资质待核对",
+                qualification_complete: "资质已补全",
+                qualification_not_found: "没有匹配到内容",
                 unknown: "结果待核对",
                 preflight_failed: "预检失败",
                 rejected: "平台拒绝",
@@ -1790,14 +1853,16 @@
                 percentNode.textContent = directPaused
                     && !directBatch.complete
                     ? `已停止 · 已处理 ${directBatch.finished}/${directBatch.total} · SPU ${current.spuId || "未知"}`
-                    : `${percent}% · 已处理 ${directBatch.finished}/${directBatch.total} · SPU ${current.spuId || "未知"}`;
+                    : `${percent}% · 已处理 ${directBatch.finished}/${directBatch.total} · ${directProgress.qualification ? '补全资质' : '上架商品'} · SPU ${current.spuId || "未知"}`;
                 detailNode.textContent = `${batchSummary}\n${directBatch.complete ? "本批已处理结束。" : ""}${directPaused && !directBatch.complete
                     ? "接口创建已停止：插件不会继续上传，刷新页面也不会自动恢复。"
                     : (directProgress.reason || directProgress.label)}`;
                 transferProgress.querySelectorAll(".stage").forEach(node => {
                     const nodeStage = node.getAttribute("data-stage");
                     const nodeIndex = directProgress.stages.indexOf(nodeStage);
-                    const errorStage = directProgress.state === "preflight_failed" ? "authorizing" : (directProgress.state === "rejected" ? "submitting" : directProgress.stage);
+                    // 两条流程分别展示阶段，商品任务不能显示资质已完成，资质任务也不显示商品提交。
+                    node.hidden = nodeIndex < 0;
+                    const errorStage = directProgress.state === "preflight_failed" ? "authorizing" : (directProgress.state === "rejected" ? "submitting" : (directProgress.state === "qualification_failed" ? "qualifying" : directProgress.stage));
                     node.classList.remove("active", "done", "error");
                     if (directPaused || directProgress.terminalUnknown) return;
                     if (directProgress.terminalError && nodeStage === errorStage) node.classList.add("error");
@@ -1978,7 +2043,9 @@
         const page = helper && typeof helper.readPageIdentity === "function"
             ? helper.readPageIdentity()
             : { pageUrl: location.href, storeName: "", storeId: "", source: "unresolved" };
-        const mappedMatchesPage = Boolean(mappedStore.storeId && mappedStore.storeName && page.storeName && helper && (
+        const verifiedMall = mappedStore.executionMode === 'plugin-api' && mappedStore.identityMatched
+            && mappedStore.storeId === `temu:${mappedStore.mallId}`;
+        const mappedMatchesPage = Boolean(verifiedMall && (!mappedStore.storeName || !page.storeName) || mappedStore.storeId && mappedStore.storeName && page.storeName && helper && (
             helper.namesMatch(page.storeName, mappedStore.storeName)
             || (helper.namesCompatible && helper.namesCompatible(page.storeName, mappedStore.storeName))
         ));
@@ -2003,7 +2070,7 @@
         };
     }
 
-    /** 人工打开上传页和确认时复用与心跳相同的店名核验，不能仅相信页面脚本传入的 storeId。 */
+    /** 人工操作仍核对店名，不能仅相信页面脚本传入的 storeId。 */
     function currentPageIdentityMatched(identity = currentPageIdentity()) {
         const helper = typeof TemuStoreIdentity !== "undefined" ? TemuStoreIdentity : null;
         const expectedName = mappedStore.storeName || boundStore.storeName || "";
@@ -2013,181 +2080,63 @@
             || (helper.nameFoundInText && helper.nameFoundInText(document.body && document.body.innerText || "", expectedName)));
     }
 
-    /**
-     * 插件进入页面后主动识别 Temu 店名并公开只读状态。紫鸟 storeId 由中转仓工人按店名映射补齐，
-     * 没有映射时仍上报心跳，但不能领取发给具体店铺的任务。
-     */
-    /**
-     * 目标店心跳的单飞锁与退避。页面脚本可能在定时器、刷新状态和接口回调中同时触发同步，
-     * 这里保证同一页面不会并发领取任务；连续断网时退避也避免每 8 秒堆积一个超时请求。
-     */
-    async function syncStoreAgent() {
-        if (agentSyncInFlight) return agentSyncInFlight;
-        if (Date.now() < agentNextSyncAt) return null;
-        agentSyncInFlight = syncStoreAgentNow().finally(() => { agentSyncInFlight = null; });
-        return agentSyncInFlight;
+    /** 后台快照同时驱动连接和任务显示，连接成功无需等待商品到来。 */
+    function applyStoreAgentSnapshot(snapshot) {
+        if (!storeSnapshotEnabled || !isWorkPage() || !snapshot?.identityMatched || snapshot.executionMode !== 'plugin-api'
+            || snapshot.storeId !== `temu:${snapshot.mallId}`) return;
+        if (subscribedStoreId && snapshot.storeId !== subscribedStoreId) return;
+        if (!Number.isSafeInteger(snapshot.sequence) || snapshot.sequence <= lastStoreSequence) return;
+        const hadTargetState = state.transferTasks.length > 0 || state.directPaused;
+        lastStoreSequence = Number(snapshot.sequence);
+        subscribedStoreId = snapshot.storeId;
+        mappedStore = { storeId: snapshot.storeId, storeName: snapshot.storeName || '',
+            mallId: snapshot.mallId, identityMatched: true, executionMode: 'plugin-api' };
+        state.transferTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+        state.directPaused = Boolean(snapshot.directPaused);
+        sharedConnection = snapshot.connection || { phase: 'disconnected', detail: '连接已断开' };
+        const current = currentTransferTask();
+        const batch = directBatchProgress(currentStoreTransferTasks());
+        agentState = { phase: sharedConnection.phase === 'connected' ? 'verified' : 'error',
+            detail: sharedConnection.detail || '连接已断开', claimed: state.transferTasks.length };
+        if (batch.complete) {
+            state.message = `本批已处理结束。${directBatchSummary(batch)}${current?.reason ? '\n' + current.reason : ''}`;
+        } else if (state.transferTasks.length) {
+            state.message = state.directPaused ? '已暂停，同店页面共享未完成队列；新发送会替换未开始商品。'
+                : (current?.reason || '商品已接收，正在本店执行页处理。');
+        } else if (hadTargetState && !state.enabled) {
+            // 结束或执行页失效后的空快照必须清掉旧暂停文案，但不覆盖独立采集进度。
+            state.message = '准备就绪';
+        }
+        closeForeignErrorDialog(snapshot.storeId, state.transferTasks);
+        render();
     }
 
-    async function syncStoreAgentNow() {
-        const viewEpoch = targetViewEpoch;
-        const bound = await send("getBoundStore").catch(() => null);
-        if (bound && bound.ok && bound.store) boundStore = bound.store;
-        const identity = currentPageIdentity();
-        // 新版始终通过云端API同步；CLI心跳只作诊断，不再抑制插件领取。
-        state.cliConnectedAt = Number(bound?.cliConnectedAt || 0);
-        const helper = typeof TemuStoreIdentity !== "undefined" ? TemuStoreIdentity : null;
-        // 心跳核验只拿当前页对得上的店名。残留手工绑定如果属于另一家店，不能拿来当 expectedName。
-        const boundMatchesPage = Boolean(boundStore.storeName && identity.pageStoreName && helper && (
-            helper.namesMatch(identity.pageStoreName, boundStore.storeName)
-            || (helper.namesCompatible && helper.namesCompatible(identity.pageStoreName, boundStore.storeName))
-        ));
-        const expectedName = mappedStore.storeName || (boundMatchesPage ? boundStore.storeName : "") || "";
-        const nameMatched = Boolean(expectedName && helper && helper.namesMatch(identity.pageStoreName, expectedName));
-        const nameCompatible = Boolean(expectedName && helper && helper.namesCompatible && helper.namesCompatible(identity.pageStoreName, expectedName));
-        const textMatched = Boolean(expectedName && helper && helper.nameFoundInText && helper.nameFoundInText(document.body && document.body.innerText || "", expectedName));
-        const identityMatched = Boolean((nameMatched || nameCompatible || textMatched) && identity.pageStoreName);
-        const agentIdentity = {
-            ...identity,
-            identityMatched,
-            expectedCount: expectedProductCount(),
-            completedCount: matchedProductCount(),
-            capturePhase: state.phase,
-            ingestPhase: ingestState.phase,
-            pendingUploadCount: currentStoreTransferTasks(identity).length,
-            sourceTag: "plugin-heartbeat"
-        };
-        publishPublicStatus(agentIdentity);
-        try {
-            // 店名改变时必须立即重新登记；同一店铺只每分钟续租一次，减少一次完整网络往返。
-            const pageStoreChanged = agentRegisteredPageStoreName !== String(identity.pageStoreName || "");
-            let registered = null;
-            if (!agentRegisteredAt || pageStoreChanged || Date.now() - agentRegisteredAt >= AGENT_REGISTER_INTERVAL_MS) {
-                if (!agentRegisterInFlight) {
-                    agentRegisterInFlight = send("registerStoreAgent", { identity: agentIdentity })
-                        .finally(() => { agentRegisterInFlight = null; });
-                }
-                registered = await agentRegisterInFlight;
-                agentRegisteredAt = Date.now();
-                agentRegisteredPageStoreName = String(identity.pageStoreName || "");
-            } else {
-                registered = { ok: true, agent: { ...mappedStore, pluginInstanceId } };
-            }
-            if (!registered?.ok) throw new Error(registered?.error || "agent_register_failed");
-            if (registered && registered.ok && registered.agent) {
-                pluginInstanceId = String(registered.agent.pluginInstanceId || pluginInstanceId || "");
-                if (registered.agent.storeId) {
-                    mappedStore = {
-                        storeId: String(registered.agent.storeId || ""),
-                        storeName: String(registered.agent.storeName || expectedName || identity.pageStoreName || ""),
-                        mallId: String(registered.agent.mallId || ''),
-                        executionMode: registered.agent.executionMode || '',
-                        identityMatched: registered.agent.identityMatched === true
-                    };
-                    agentIdentity.storeId = mappedStore.storeId;
-                    agentIdentity.storeName = mappedStore.storeName;
-                    const mappedName = mappedStore.storeName;
-                    // 后台已从当前页面运行时核验商城ID，名称变化不能在面板层再次否决；服务端仍核验实例和领取凭证。
-                    const mallVerified = mappedStore.executionMode === 'plugin-api' && mappedStore.identityMatched
-                        && /^\d+$/.test(mappedStore.mallId) && mappedStore.storeId === `temu:${mappedStore.mallId}`;
-                    agentIdentity.identityMatched = mappedStore.executionMode === 'plugin-api' ? mallVerified : Boolean(identity.pageStoreName && mappedName && helper && (
-                        helper.namesMatch(identity.pageStoreName, mappedName)
-                        || (helper.namesCompatible && helper.namesCompatible(identity.pageStoreName, mappedName))
-                        || (helper.nameFoundInText && helper.nameFoundInText(document.body && document.body.innerText || "", mappedName))
-                    ));
-                }
-            }
-            if (!identity.pageStoreName && !(mappedStore.executionMode === 'plugin-api' && agentIdentity.identityMatched)) {
-                agentState = { phase: "idle", detail: "未识别店铺", claimed: 0 };
-                render();
-                return;
-            }
-            if ((mappedStore.storeName || (boundMatchesPage ? boundStore.storeName : "")) && !agentIdentity.identityMatched) {
-                agentState = { phase: "error", detail: "店铺身份不符", claimed: 0 };
-                render();
-                return;
-            }
-            if (!agentIdentity.storeId) {
-                agentState = { phase: "idle", detail: identity.pageStoreName, claimed: 0 };
-                render();
-                return;
-            }
-            // 没有本地待办时无需访问状态核对接口；有待办才清理终态，减少一次串行请求。
-            if (currentStoreTransferTasks(agentIdentity).length) {
-                const reconciled = await send("reconcileTargetUploadTasks", { identity: agentIdentity }).catch(() => null);
-                if (viewEpoch !== targetViewEpoch || directPauseBusy) return;
-                if (reconciled && reconciled.ok && Array.isArray(reconciled.tasks)) state.transferTasks = reconciled.tasks;
-                if (reconciled && reconciled.ok && typeof reconciled.directPaused === "boolean") state.directPaused = reconciled.directPaused;
-            }
-            const claimed = await send("claimStoreJobs", { identity: agentIdentity });
-            if (viewEpoch !== targetViewEpoch || directPauseBusy) return;
-            if (!claimed?.ok) throw new Error(claimed?.error || "task_claim_failed");
-            const jobs = claimed && Array.isArray(claimed.claimed) ? claimed.claimed : [];
-            if (claimed && claimed.ok && Array.isArray(claimed.tasks)) state.transferTasks = claimed.tasks;
-            if (claimed && claimed.ok && typeof claimed.directPaused === "boolean") state.directPaused = claimed.directPaused;
-            agentState = {
-                phase: jobs.length ? "claimed" : "idle",
-                detail: jobs.length ? ("已领 " + jobs.length) : identity.pageStoreName,
-                claimed: jobs.length
-            };
-            if (claimed && Number(claimed.receivedCount) > 0) {
-                agentState = { phase: "claimed", detail: `已接收，正在自动创建 ${currentStoreTransferTasks(agentIdentity).length} 个`, claimed: jobs.length };
-                state.message = "接口创建任务已接收，插件正在自动创建，无需点击上传。";
-            }
-            const currentTask = currentTransferTask(agentIdentity);
-            const directBatch = directBatchProgress(currentStoreTransferTasks(agentIdentity));
-            // 领取回执可能仍含已接收数量；界面以本店终态快照为准，结束后不能继续声称自动创建。
-            if (directBatch.complete) {
-                agentState = { phase: directBatch.failed ? "error" : (directBatch.unknown ? "unknown" : "verified"), detail: "本批已处理结束", claimed: jobs.length };
-                state.message = `本批已处理结束。${directBatchSummary(directBatch)}${currentTask?.reason ? `\n${currentTask.reason}` : ""}`;
-            } else if (currentTask?.directCreate) {
-                const labels = {
-                    received: "重复对比中",
-                    authorizing: "正在预检",
-                    submitting: "正在提交",
-                    verifying: "正在读取提交结果",
-                    created: "接口已创建",
-                    unknown: "结果待核对",
-                    preflight_failed: "预检失败",
-                    rejected: "平台拒绝",
-                    duplicate_wait: "等待重复检索",
-                    duplicate_exists: "已存在，未重复创建"
-                };
-                agentState = {
-                    phase: currentTask.directState === "created" ? "verified" : (currentTask.directState === "preflight_failed" || currentTask.directState === "unknown" ? "error" : "claimed"),
-                    detail: state.directPaused ? "已暂停" : (labels[currentTask.directState] || `已接收，正在自动创建 ${currentStoreTransferTasks(agentIdentity).length} 个`),
-                    claimed: jobs.length
-                };
-                if (state.directPaused) {
-                    state.message = "已暂停，保留本页队列；新发送会替换未开始商品。";
-                } else if (currentTask.reason) {
-                    state.message = currentTask.reason;
-                } else if (!currentTask.directState || currentTask.directState === "received") {
-                    state.message = `已接收 SPU ${currentTask.spuId}，正在自动创建，无需点击。`;
-                }
-            }
-        } catch (error) {
-            // 区分连接阶段，避免用户把未领取任务误认为商品发布失败。
-            const connectionErrors = {
-                missing_ingest_token: "未连接：缺少令牌",
-                ingest_unreachable: "插件无法访问仓库地址",
-                ingest_probe_timeout: "仓库连接超时（10秒）",
-                ingest_permission_denied: "未授权访问仓库地址",
-                missing_mapped_store: "尚未绑定目标店铺",
-                ingest_unauthorized: "仓库令牌无效"
-            };
-            agentState = { phase: "error", detail: connectionErrors[String(error?.message || "")] || "任务连接失败，请导出日志", claimed: 0 };
-            // 连续断网时采用指数退避，避免每 8 秒重复等待一次网络超时；初始化流程仍保持可用。
-            agentSyncFailures = Math.min(agentSyncFailures + 1, 4);
-            const delay = Math.min(AGENT_RETRY_BACKOFF_MAX_MS,
-                AGENT_RETRY_BACKOFF_BASE_MS * (2 ** Math.max(0, agentSyncFailures - 1)));
-            agentNextSyncAt = Date.now() + delay;
+    /** 初始化或进入列表页时订阅一次；后续变化由后台消息推送，不定时查询网络。 */
+    async function subscribeStoreAgent() {
+        if (!isWorkPage() || agentSubscribeInFlight) return agentSubscribeInFlight;
+        const epoch = targetViewEpoch;
+        agentSubscribeInFlight = (async () => {
+            sharedConnection = { phase: 'connecting', detail: '正在连接' };
+            agentState = { phase: 'idle', detail: '正在连接', claimed: 0 };
             render();
-            return false;
-        }
-        agentSyncFailures = 0;
-        agentNextSyncAt = 0;
-        render();
-        return true;
+            const result = await send('subscribeStoreAgent', { identity: currentPageIdentity() });
+            if (epoch !== targetViewEpoch || !isWorkPage()) return;
+            if (!result?.ok) throw Error(result?.error || '连接未完成');
+            storeSnapshotEnabled = true;
+            applyStoreAgentSnapshot(result.snapshot);
+        })().catch(error => {
+            if (epoch !== targetViewEpoch || !isWorkPage()) return;
+            sharedConnection = { phase: 'error', detail: String(error?.message || error) };
+            agentState = { phase: 'error', detail: sharedConnection.detail, claimed: 0 };
+            render();
+        }).finally(() => { agentSubscribeInFlight = null; });
+        return agentSubscribeInFlight;
+    }
+
+    /** 平台脚本或响应到达才重试只读身份探测，修复首屏晚加载；没有周期性网络查询。 */
+    function subscribeAfterPlatformReady() {
+        if (panelHost && isWorkPage() && !subscribedStoreId && !agentSubscribeInFlight
+            && sharedConnection.phase === 'error') void subscribeStoreAgent();
     }
 
     /** 后台队列和页面入库行同步，失败后仍显示排队/重试，而不是立刻当成永久失败。 */
@@ -2918,7 +2867,7 @@
     }
 
     /**
-     * 暂停保留本页队列，继续从本地队列接着处理；刷新不恢复旧页面任务。
+     * 暂停保留本店共享队列，继续由原执行页接着处理；展示页不会抢占执行文档。
      * 等后台控制成功才更新面板，避免页面显示已暂停而后台尚未停止新增。
      */
     async function toggleDirectCreatePaused() {
@@ -2931,17 +2880,17 @@
         try {
             const result = await send("setDirectCreatePaused", { identity, paused: nextPaused });
             if (!result?.ok) throw new Error(result?.error || "stop_direct_create_failed");
-            state.directPaused = Boolean(result.paused);
-            if (Array.isArray(result.tasks)) state.transferTasks = result.tasks;
+            if (result.snapshot) applyStoreAgentSnapshot(result.snapshot);
+            else { state.directPaused = Boolean(result.paused); if (Array.isArray(result.tasks)) state.transferTasks = result.tasks; }
             await logOperation({
                 action: state.directPaused ? "stop-direct-create" : "resume-direct-create",
                 status: "clicked",
                 storeId: identity.storeId,
-                reason: state.directPaused ? "操作者暂停本页队列" : "操作者继续本页队列"
+                reason: state.directPaused ? "操作者暂停本店共享队列" : "操作者继续本店共享队列"
             });
             render(state.directPaused
-                ? "已暂停，未完成商品保留在本页；新发送的批次会替换未开始队列。"
-                : "已继续，按本页队列顺序处理商品。");
+                ? "已暂停，未完成商品保留在本店共享队列；新发送会替换未开始商品。"
+                : "已继续，由本店执行页按队列顺序处理商品。");
         } catch (error) {
             render(`操作未完成：${String(error?.message || error)}。`);
         } finally {
@@ -2953,17 +2902,18 @@
     /** 目标店任务只从扩展后台读取，页面 DOM 与页面脚本不会接触完整商品资料。 */
     async function refreshTargetUploadTasks() {
         const viewEpoch = targetViewEpoch;
-        // 刷新页面后先恢复本地可信绑定，待办展示不依赖中转仓 HTTP 心跳成功。
+        const sequence = lastStoreSequence;
+        // 手动命令可读取一次本地快照，但迟到响应不能覆盖其间到达的主动推送。
         const binding = await send("getBoundStore").catch(() => null);
         if (binding?.ok && binding.store) boundStore = binding.store;
         if (binding?.ok) state.cliConnectedAt = Number(binding.cliConnectedAt || 0);
         const identity = currentPageIdentity();
         // 未能映射店铺时不展示任何共享存储里的待办，避免用户误在 A 店处理 B 店商品。
         const result = await send("getTargetUploadTasks", { storeId: identity.storeId || "" }).catch(() => null);
-        if (viewEpoch !== targetViewEpoch) return state.transferTasks;
+        if (viewEpoch !== targetViewEpoch || sequence !== lastStoreSequence) return state.transferTasks;
         if (result && result.ok) {
             state.transferTasks = Array.isArray(result.tasks) ? result.tasks : [];
-            // 暂停标记只属于当前页面会话，刷新后由后台重新建立初始状态。
+            // 暂停属于本店共享会话，观看页刷新不改变执行页队列。
             if (typeof result.directPaused === "boolean") state.directPaused = result.directPaused;
             closeForeignErrorDialog(String(identity.storeId || ''), state.transferTasks);
         }
@@ -2981,17 +2931,17 @@
     function directTaskOutcome(task) {
         if (!task?.directCreate) return "";
         const directState = String(task.directState || "");
-        if (directState === "created") return "success";
-        if (directState === "duplicate_exists") return "skipped";
-        if (directState === "preflight_failed" || directState === "rejected") return "failed";
-        if (directState === "unknown") return "unknown";
+        if (directState === "created" || directState === 'qualification_complete') return "success";
+        if (directState === "duplicate_exists" || directState === 'qualification_not_found') return "skipped";
+        if (directState === "preflight_failed" || directState === "rejected" || directState === 'qualification_failed') return "failed";
+        if (directState === "unknown" || directState === 'qualification_unknown') return "unknown";
         return "";
     }
 
     /** 当前展示优先运行中、等待中和人工待办；全部结束后保留最后一件失败或待核对，方便人工重试。 */
     function currentTransferTask(identity = currentPageIdentity()) {
         const tasks = currentStoreTransferTasks(identity);
-        const activeDirect = tasks.find(task => task.directCreate && ['authorizing', 'submitting', 'verifying'].includes(String(task.directState || '')))
+        const activeDirect = tasks.find(task => task.directCreate && ['authorizing', 'submitting', 'verifying', 'qualifying'].includes(String(task.directState || '')))
             || tasks.find(task => task.directCreate && !directTaskOutcome(task));
         if (activeDirect) return activeDirect;
         return tasks.find(task => !task.directCreate && task.status === "upload_opened")
@@ -3011,23 +2961,33 @@
             if (outcome) counts[outcome]++;
         }
         const finished = counts.success + counts.failed + counts.skipped + counts.unknown;
-        const runningIndex = directTasks.findIndex(task => ['authorizing', 'submitting', 'verifying'].includes(String(task.directState || '')));
+        const runningIndex = directTasks.findIndex(task => ['authorizing', 'submitting', 'verifying', 'qualifying'].includes(String(task.directState || '')));
         const currentIndex = Math.max(0, runningIndex >= 0 ? runningIndex : directTasks.findIndex(task => !directTaskOutcome(task)));
-        return { total, finished, ...counts, currentIndex, percent: total ? Math.round(finished / total * 100) : 0, complete: total > 0 && finished === total };
+        const actionCounts = ['product_create', 'qualification_upload'].map(actionType => {
+            const matching = directTasks.filter(task => (task.actionType || 'product_create') === actionType);
+            return { actionType, total: matching.length, finished: matching.filter(directTaskOutcome).length,
+                success: matching.filter(task => directTaskOutcome(task) === 'success').length,
+                failed: matching.filter(task => directTaskOutcome(task) === 'failed').length,
+                skipped: matching.filter(task => directTaskOutcome(task) === 'skipped').length,
+                unknown: matching.filter(task => directTaskOutcome(task) === 'unknown').length };
+        });
+        return { total, finished, ...counts, actionCounts, currentIndex, percent: total ? Math.round(finished / total * 100) : 0, complete: total > 0 && finished === total };
     }
 
-    /** 面板与心跳提示共用同一统计文案，避免“已处理”被误读为全部创建成功。 */
+    /** 面板和后台推送共用统计文案，避免“已处理”被误读为全部创建成功。 */
     function directBatchSummary(progress) {
-        return `已处理 ${progress.finished}/${progress.total} · 创建成功 ${progress.success}，失败 ${progress.failed}，跳过 ${progress.skipped}，待核对 ${progress.unknown}`;
+        const detail = (progress.actionCounts || []).filter(item => item.total).map(item => `${item.actionType === 'qualification_upload' ? '补全资质' : '上架商品'} ${item.finished}/${item.total}：成功 ${item.success}，未完成 ${item.failed}，跳过 ${item.skipped}，待核对 ${item.unknown}`).join('\n');
+        return `已处理 ${progress.finished}/${progress.total} · 成功 ${progress.success}，未完成 ${progress.failed}，跳过 ${progress.skipped}，待核对 ${progress.unknown}${detail ? '\n' + detail : ''}`;
     }
 
     /** 仅汇总本店当前页异常；同一投递的重复进度只显示一次，查重等待与结果未知不冒充创建失败。 */
     function directErrorEntries(tasks = currentStoreTransferTasks()) {
-        const kinds = { rejected: '平台拒绝', preflight_failed: '预检失败', unknown: '结果待核对', duplicate_wait: '查重等待' };
+        const kinds = { rejected: '平台拒绝', preflight_failed: '预检失败', unknown: '结果待核对', duplicate_wait: '查重等待',
+            qualification_failed: '资质未完成', qualification_unknown: '资质待核对', qualification_not_found: '没有匹配到内容' };
         const entries = new Map();
         for (const task of tasks || []) {
             if (!task.directCreate || !kinds[task.directState]) continue;
-            const key = JSON.stringify([task.targetStoreId, task.jobId, task.spuId]);
+            const key = JSON.stringify([task.targetStoreId, task.jobId, task.spuId, task.actionType || 'product_create', task.sourceTaskId || '']);
             const codes = values => [...new Set((Array.isArray(values) ? values : []).map(value => String(value).trim()).filter(Boolean))];
             entries.set(key, {
                 jobId: String(task.jobId || ''), spuId: String(task.spuId || ''), storeId: String(task.targetStoreId || ''),
@@ -3035,7 +2995,9 @@
                 productCodes: codes(task.productCodes), skuCodes: codes(task.skuCodes),
                 errorCode: String(task.errorCode || String(task.reason || '').match(/错误码\s*[:：]?\s*([\w-]+)/)?.[1] || ''),
                 stage: String(task.errorStage || (task.directState === 'duplicate_wait' ? '查重' : task.directState === 'preflight_failed' ? '预检' : '提交')),
-                reason: String(task.reason || '未提供具体错误，请导出操作日志核对'),
+                reason: String(task.reason || '未提供具体错误，请导出操作日志核对')
+                    + (task.directState.startsWith('qualification_') ? '\n' + (task.qualificationItems || []).filter(item => !['submitted', 'existing'].includes(item.state))
+                        .map(item => `${item.name || item.certType}：${item.reason || '未完成'}`).join('\n') + '\n请在目标店核对后，从网站重新人工投递；不会再次创建已有商品。' : ''),
                 noticeStatus: String(task.errorNoticeStatus || ''),
                 offendingSkuCode: String(task.offendingSkuCode || ''), reasonTruncated: Boolean(task.reasonTruncated)
             });
@@ -3126,13 +3088,13 @@
     async function retryUnknownDirectTask() {
         const task = currentTransferTask(currentPageIdentity());
         if (!task || !['unknown','preflight_failed','rejected'].includes(String(task.directState || ''))) return;
-        const result = await send('retryDirectTask', { input: { identity: currentPageIdentity(), jobId: task.jobId, spuId: task.spuId } }).catch(error => ({ ok: false, error: String(error?.message || error) }));
+        const result = await send('retryDirectTask', { input: { identity: currentPageIdentity(), jobId: task.jobId, spuId: task.spuId, actionType: task.actionType, sourceTaskId: task.sourceTaskId } }).catch(error => ({ ok: false, error: String(error?.message || error) }));
         if (!result?.ok) return render(`人工重试失败：${result?.error || '请稍后再试'}`);
         await refreshTargetUploadTasks();
         render('已确认重试，商品已排到上传队列末尾。');
     }
 
-    /** 结束清空本页队列；已发送的平台请求无法撤回，后续新批仍正常接收。 */
+    /** 结束清空本店共享队列；已发送的平台请求无法撤回，后续新批仍正常接收。 */
     async function cancelStoreTransferTasks() {
         if (directPauseBusy) return;
         const identity = currentPageIdentity();
@@ -3147,7 +3109,8 @@
         try {
             const result = await send("cancelStoreTasks", { identity });
             if (!result?.ok) throw new Error(result?.error || "cancel_store_tasks_failed");
-            await refreshTargetUploadTasks();
+            if (result.snapshot) applyStoreAgentSnapshot(result.snapshot);
+            else await refreshTargetUploadTasks();
             const kept = Number(result.kept || 0);
             render(kept
                 ? `队列已清空；${kept} 个已开始的请求无法撤回，结果请到目标店查看。`
@@ -3175,7 +3138,7 @@
             render("当前店铺与待上传商品不匹配，不能导出资料。");
             return;
         }
-        const result = await send("downloadTargetUploadTask", { input: { jobId: task.jobId, spuId: task.spuId, storeId: identity.storeId } }).catch(() => null);
+        const result = await send("downloadTargetUploadTask", { input: { jobId: task.jobId, spuId: task.spuId, storeId: identity.storeId, actionType: task.actionType, sourceTaskId: task.sourceTaskId } }).catch(() => null);
         render(result && result.ok ? `已导出 SPU ${task.spuId} 的待上传资料 JSON。` : "导出待上传资料失败，请重试。");
     }
 
@@ -3363,6 +3326,7 @@
         if (event.source !== window || event.origin !== location.origin) return;
         const message = event.data;
         if (!message || message.source !== SOURCE) return;
+        if (message.kind === 'route-changed') { handleStoreRouteChanged(); return; }
         if (message.kind === "network-skip") {
             if (!state.ready) {
                 if (pendingSkipEvents.length < 200) pendingSkipEvents.push(message);
@@ -3374,8 +3338,9 @@
             return;
         }
         if (message.kind !== "network-json") return;
+        subscribeAfterPlatformReady();
         // 主世界主动查询由专用回执落库，禁止被动监听重复入账或抢先推进商品队列。
-        if (state.apiRunning && /\/visage-agent-seller\/product\/query(?:$|[/?])/.test(String(message.requestUrl || ""))) return;
+        if (state.apiRunning && /\/visage-agent-seller\/product\/query(?:$|[/?])|\/mms\/arbok\/product_cert\/query\/(?:list|detail)(?:$|[/?])/.test(String(message.requestUrl || ""))) return;
         if (!state.ready) {
             if (pendingEvents.length < 200) pendingEvents.push(message);
             else state.bufferOverflow = true;
@@ -3390,15 +3355,21 @@
      */
     function initialize() {
         createPanel();
-        // 卖家中心是 SPA，路由切换不会重新注入 content script，因此持续监听地址变化以同步显隐。
-        let lastRoute = location.href;
-        setInterval(() => { if (location.href !== lastRoute) { lastRoute = location.href; syncPanelVisibility(); } }, 500);
+        // 主世界通知 history 路由变化，原生事件覆盖后退与 hash 导航，不使用地址轮询。
+        window.addEventListener('popstate', handleStoreRouteChanged);
+        window.addEventListener('hashchange', handleStoreRouteChanged);
+        document.addEventListener('load', event => {
+            if (event.target?.tagName === 'SCRIPT') subscribeAfterPlatformReady();
+        }, true);
         render();
         chrome.runtime.onMessage.addListener((message) => {
+            if (message?.type === 'storeAgentState') { applyStoreAgentSnapshot(message.snapshot); return; }
             if (!message || message.type !== "directCreateProgress" || !message.task) return;
             const incoming = message.task;
             const tasks = Array.isArray(state.transferTasks) ? state.transferTasks : [];
-            const index = tasks.findIndex((task) => String(task.jobId) === String(incoming.jobId || "") && String(task.spuId) === String(incoming.spuId || ""));
+            const index = tasks.findIndex((task) => String(task.jobId) === String(incoming.jobId || "") && String(task.spuId) === String(incoming.spuId || "")
+                && (task.actionType || 'product_create') === (incoming.actionType || 'product_create')
+                && (task.sourceTaskId || '') === (incoming.sourceTaskId || ''));
             // 进度不是入队通道，迟到消息不能复活已结束/刷新或另一轮的任务。
             if (index < 0 || tasks[index].targetStoreId !== incoming.targetStoreId
                 || tasks[index].relaySessionId !== incoming.relaySessionId
@@ -3411,6 +3382,8 @@
             if (area === "local" && changes.ingestSettingsV1) refreshIngestSettings();
             if (area === "local" && (changes.pendingIngestQueueV1 || changes.pendingIngestV1 || changes.lastIngestOutcomesV1)) refreshIngestQueue();
         });
+        // 接收连接独立于历史记录统计和采集恢复，避免大量本地商品延迟首屏连接状态。
+        if (isWorkPage()) void subscribeStoreAgent();
         send("getCaptureEnabled").then(async result => {
             state.captureToken = result?.captureToken || '';
             state.enabled = Boolean(result && result.ok && result.enabled);
@@ -3447,18 +3420,8 @@
             await refreshTargetUploadTasks();
             const instance = await send("getPluginInstanceId").catch(() => null);
             if (instance && instance.ok && instance.pluginInstanceId) pluginInstanceId = instance.pluginInstanceId;
-            await syncStoreAgent();
+            if (isWorkPage() && !subscribedStoreId) await subscribeStoreAgent();
             window.addEventListener(STATUS_REQUEST_EVENT, () => { publishPublicStatus(); });
-            /**
-             * 心跳只在商品列表页跑。
-             * 在其他页面（新建商品、草稿、首页）它同样会把店铺登记成"在线"，
-             * 但那里的插件根本执行不了创建任务——directPage 的判重/预检/提交都要求页面在 /goods/list，
-             * 于是网站显示绿灯、任务却一直没进展。让心跳与真实可工作状态一致，避免这种假在线。
-             */
-            setInterval(() => {
-                if (!isWorkPage()) return;
-                syncStoreAgent().catch(() => {});
-            }, AGENT_SYNC_INTERVAL_MS);
         }).catch(() => {
             state.ready = true;
             state.phase = "采集失败";

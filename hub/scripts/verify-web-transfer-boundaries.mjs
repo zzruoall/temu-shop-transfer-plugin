@@ -105,12 +105,14 @@ test('资格在途变化只过滤后续分段和未开始店铺，已交付分�
     for (const body of calls.slice(2)) assert.ok(!body.spuIds.includes('19') && !body.spuIds.includes('18'));
 });
 
-test('删除旧查验和空预览入口，导入后重新读取商品库', () => {
+test('删除旧查验、查看方式和手工导入入口，保留商品库路由与发送校验', () => {
     assert.doesNotMatch(source, /function renderBatch\(|function renderAllProductsFrame\(|核验说明|字段完整度|框架预览|待接入商品数据/);
     assert.doesNotMatch(source, /href=["']#\/products\/all/);
-    assert.match(implementation('uploadFiles'), /route\(\{ forceRefresh: true \}\)/);
-    assert.doesNotMatch(implementation('uploadFiles'), /#\/batch\//);
+    assert.doesNotMatch(source, /product-view-mode|catalog-upload-button|catalog-files|function uploadFiles\(|function bindDrop\(|data-business-product-group/);
     assert.match(implementation('route'), /#\/products\/all/);
-    assert.match(source, /button\.disabled = Boolean\(blocked \|\| !targetStores\.length/);
+    // 无在线店只禁用弹窗提交，不禁用开窗入口；红标与来源校验仍保留。
+    assert.match(source, /button\.disabled = Boolean\(blocked \|\| !hasBatch/);
+    assert.doesNotMatch(source, /button\.disabled = Boolean\(blocked \|\| !targetStores\.length/);
+    assert.match(source, /uploadConfirmButton\.disabled = !actionType \|\| !targetCount \|\| !selection\.eligible/);
     assert.match(source, /标红跳过.*缺少来源/);
 });

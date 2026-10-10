@@ -5,10 +5,16 @@
   "description": "店铺中转仓：采集入库和定向传输，保留在线与认领目录",
   "type": "module",
   "scripts": {
+    "verify:split-upload": "node --test scripts/verify-split-upload.mjs && node scripts/verify-split-upload-ui.mjs",
     "start": "node server.mjs",
     "start:all": "node server.mjs",
     "verify:relay": "node --test scripts/verify-receive-send-only.mjs scripts/verify-relay-capacity.mjs scripts/verify-relay-http.mjs scripts/verify-plugin-relay.mjs scripts/verify-product-failure-retired.mjs scripts/verify-plugin-progress-summary.mjs scripts/verify-failure-owner-boundary.mjs scripts/verify-plugin-error-notice.mjs scripts/verify-product-error-token.mjs scripts/verify-product-error-http.mjs scripts/verify-duplicate-removal.mjs scripts/verify-exact-code-query.mjs && node scripts/verify-duplicate-check.mjs && node scripts/verify-product-notice-state.mjs",
-    "verify": "npm run verify:relay && npm run verify:red-filter && npm run verify:detail && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-data-pagination.mjs && node scripts/verify-product-store-scope.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-ingest-fairness.mjs && node scripts/verify-multiuser.mjs && node scripts/verify-plugin-token-persist.mjs && node scripts/verify-users-state-race.mjs && node scripts/verify-admin-site.mjs && node scripts/verify-login-next.mjs",
+    "verify": "npm run verify:library && npm run verify:push && npm run verify:selection-state && npm run verify:qualifications && npm run verify:relay && npm run verify:red-filter && npm run verify:detail && node scripts/verify-store-identity.mjs && node scripts/verify-page-identity.mjs && node scripts/verify-data-pagination.mjs && node scripts/verify-product-store-scope.mjs && node scripts/verify-ingest-http.mjs && node scripts/verify-ingest-fairness.mjs && node scripts/verify-multiuser.mjs && node scripts/verify-plugin-token-persist.mjs && node scripts/verify-users-state-race.mjs && node scripts/verify-admin-site.mjs && node scripts/verify-login-next.mjs",
+    "verify:library": "node scripts/verify-account-types.mjs && node --test scripts/verify-shared-library.mjs scripts/verify-plugin-version.mjs",
+    "verify:library:mysql": "node scripts/verify-shared-library.mjs --mysql",
+    "verify:library:ui": "node scripts/verify-shared-library-ui.mjs",
+    "verify:push": "node --test scripts/verify-websocket-relay.mjs scripts/verify-websocket-http.mjs scripts/verify-plugin-push-state.mjs",
+    "verify:push:browser": "node scripts/verify-plugin-push-browser.mjs",
     "verify:red-filter": "node scripts/verify-red-product-filter.mjs && node --test scripts/verify-web-transfer-boundaries.mjs scripts/verify-product-status-state.mjs",
     "verify:detail": "node --test scripts/verify-product-detail-layout.mjs",
     "verify:admin-login": "node scripts/verify-admin-site.mjs && node scripts/verify-login-next.mjs && node scripts/verify-admin-login-ui.mjs",
@@ -21,7 +27,10 @@
     "verify:api": "node scripts/verify-api-batch.mjs",
     "verify:downloads": "node scripts/verify-download-discovery.mjs",
     "verify:operations": "node scripts/verify-operation-log.mjs",
-    "verify:selection": "node scripts/verify-plugin-selection.mjs",
+    "verify:selection": "node --test scripts/verify-selection-snapshot.mjs && node scripts/verify-plugin-selection.mjs",
+    "verify:selection-state": "node --test scripts/verify-selection-snapshot.mjs",
+    "verify:qualifications": "node --test scripts/verify-product-qualifications.mjs scripts/verify-qualification-background.mjs scripts/verify-qualification-detail-ui.mjs scripts/verify-detail-query-deadline.mjs scripts/verify-source-store-display.mjs scripts/verify-detail-save-uncertainty.mjs scripts/verify-qualification-assets.mjs scripts/verify-qualification-transfer.mjs scripts/verify-qualification-http.mjs scripts/verify-split-upload.mjs",
+    "verify:qualifications:browser": "node scripts/verify-qualification-browser.mjs && node scripts/verify-qualification-plugin.mjs",
     "verify:panel": "node scripts/verify-panel-shell.mjs",
     "verify:prepare": "node scripts/verify-direct-prepare-fields.mjs",
     "verify:direct-stop": "node scripts/verify-direct-stop.mjs",
@@ -34,6 +43,7 @@
   },
   "dependencies": {
     "mysql2": "^3.24.4",
-    "stream-json": "3.7.0"
+    "stream-json": "3.7.0",
+    "ws": "8.22.0"
   }
 }

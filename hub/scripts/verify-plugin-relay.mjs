@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { transferManifest } from '../lib/transfer-integrity.mjs';
 
-async function fixture() {
+export async function fixture({ notices = false } = {}) {
     const session = {}, local = {}, calls = [], logs = [];
     const area = data => ({ get: async key => key === null ? structuredClone(data) :
         Object.fromEntries((Array.isArray(key) ? key : [key]).map(id => [id, structuredClone(data[id])])),
@@ -23,19 +23,22 @@ async function fixture() {
     const executor = await readFile(new URL('../../plugin/direct-executor.js', import.meta.url), 'utf8');
     const round = await readFile(new URL('../../plugin/execution-round.js', import.meta.url), 'utf8');
     const integrity = await readFile(new URL('../../plugin/transfer-integrity.js', import.meta.url), 'utf8');
+    const qualification = await readFile(new URL('../../plugin/qualification-executor.js', import.meta.url), 'utf8');
     const privateQueue = bg.slice(bg.indexOf('const BOUND_STORE_KEY'), bg.indexOf('function hubApiUrl'));
-    const reception = bg.slice(bg.indexOf('async function registerStoreAgent'), bg.indexOf('chrome.runtime.onMessage.addListener'));
-    const identityHelpers = bg.slice(bg.indexOf('async function getPluginInstanceId'), bg.indexOf('async function registerStoreAgent'));
-    vm.runInContext(integrity + '\n' + executor + '\n' + round + '\n' + privateQueue + '\n' + identityHelpers + '\n' + reception, context);
+    const reception = bg.slice(bg.indexOf('let directPauseControlQueue'), bg.indexOf('chrome.runtime.onMessage.addListener'));
+    const identityHelpers = bg.slice(bg.indexOf('async function getPluginInstanceId'), bg.indexOf('let directPauseControlQueue'));
+    vm.runInContext(integrity + '\n' + executor + '\n' + qualification + '\n' + round + '\n' + privateQueue + '\n' + identityHelpers + '\n' + reception, context);
+    if (notices) vm.runInContext(await readFile(new URL('../../plugin/error-notice.js', import.meta.url), 'utf8'), context);
     context.sender = { tab: { id: 1, url: 'https://agentseller.temu.com/goods/list' }, documentId: 'doc-1' };
     context.base = { storeId: 'temu:222', mallId: '222', identityMatched: true, pageStoreName: '验证店', executionMode: 'plugin-api' };
     context.hubJson = async (url, body) => { calls.push({ url, body }); return url === '/api/jobs/claim' ? { claimed: [] } : { agent: body }; };
+    context.postProductErrorNotice = async body => { calls.push({ url: '/api/products/error-notice', body }); return { status: 'marked' }; };
     vm.runInContext('directIdentity = (sender, identity, locked=false) => bindExecutionIdentity(sender, {...base,...identity}, locked)', context);
     const identity = await vm.runInContext('bindExecutionIdentity(sender, base)', context);
     context.identity = identity;
-    const receive = async (ids, id = identity, jobId = globalThis.crypto.randomUUID(), failureGrant = '') => {
+    const receive = async (ids, id = identity, jobId = globalThis.crypto.randomUUID(), failureGrant = '', actionType = 'product_create') => {
         context.incoming = ids.map(spuId => { const snapshot = { publicationData: { sourceProduct: { productId: spuId } } };
-            return { jobId, spuId, snapshot, transferIntegrity: transferManifest(snapshot), directCreate: true, failureGrant,
+            return { jobId, spuId, snapshot, transferIntegrity: transferManifest(snapshot), directCreate: true, actionType, failureGrant,
                 transportOnly: true, executionRunId: id.relaySessionId, targetStoreId: id.storeId, sourceStoreId: 'temu:111' }; });
         context.receiveIdentity = id;
         return vm.runInContext('receiveTargetUploadTasks(incoming, receiveIdentity.storeId, receiveIdentity)', context);
@@ -43,6 +46,58 @@ async function fixture() {
     return { context, session, local, calls, logs, identity, receive,
         run: code => vm.runInContext(code, context), tasks: () => session.targetUploadTasksV1 || [] };
 }
+
+/** 真实背景数据流必须携带错误凭证，但面板和诊断不能得到签名授权。 */
+test('实际接收保存错误授权，仅真实错误异步通知且摘要不暴露授权', async () => {
+    const f = await fixture({ notices: true });
+    await f.receive(['1234567890']);
+    f.context.incoming[0].noticeToken = 'signed-v2-authorization';
+    // 使用新的投递批次避免只测试旧任务对象原地赋值。
+    f.context.incoming[0].jobId = 'notice-batch';
+    await f.run('receiveTargetUploadTasks(incoming,identity.storeId,identity)');
+    await f.run('updateDirectTaskProgress(identity.storeId,"notice-batch","1234567890",{directState:"created",reason:"创建成功"},identity)');
+    assert.equal(f.calls.filter(call => call.url === '/api/products/error-notice').length, 0);
+    await f.run('updateDirectTaskProgress(identity.storeId,"notice-batch","1234567890",{directState:"rejected",reason:"具体字段错误",errorCode:"PRODUCT_FIELD_INVALID",errorStage:"提交"},identity)');
+    for (let i = 0; i < 30 && f.tasks().find(task => task.jobId === 'notice-batch')?.errorNoticeStatus !== 'marked'; i++) await new Promise(resolve => setTimeout(resolve, 1));
+    const calls = f.calls.filter(call => call.url === '/api/products/error-notice');
+    assert.equal(calls.length, 1); assert.equal(calls[0].body.reason, '具体字段错误');
+    assert.equal(calls[0].body.noticeToken, 'signed-v2-authorization');
+    await f.run('updateDirectTaskProgress(identity.storeId,"notice-batch","1234567890",{directState:"rejected"},identity)');
+    await new Promise(resolve => setTimeout(resolve, 1));
+    assert.equal(f.calls.filter(call => call.url === '/api/products/error-notice').length, 1);
+    const view = await f.run('targetUploadTaskView(sender,identity.storeId)');
+    assert.equal(Object.hasOwn(view.tasks.find(task => task.jobId === 'notice-batch'), 'noticeToken'), false);
+});
+
+/** 相同错误在人工重试中再次出现时，旧请求不能把通知状态写回新一轮。 */
+test('人工重试隔离迟到通知，具体 SKU 与原因截断事实沿真实摘要传递', async () => {
+    const f = await fixture({ notices: true });
+    await f.receive(['1'], f.identity, 'retry-notice');
+    f.context.incoming[0].noticeToken = 'notice-authorization';
+    f.context.incoming[0].jobId = 'retry-authorized';
+    await f.run('receiveTargetUploadTasks(incoming,identity.storeId,identity)');
+    const completions = [];
+    f.context.postProductErrorNotice = async () => new Promise(resolve => completions.push(resolve));
+    f.context.longReason = 'X'.repeat(2500);
+    const update = 'updateDirectTaskProgress(identity.storeId,"retry-authorized","1",{directState:"rejected",reason:longReason,errorCode:"PRODUCT_SKU_INVALID",offendingSkuCode:"SKU-A"},identity)';
+    await f.run(update);
+    while (completions.length < 1) await new Promise(resolve => setTimeout(resolve, 1));
+    await f.run('setDirectCreatePaused(sender,identity,true)');
+    await f.run('retryDirectTask(sender,{identity,jobId:"retry-authorized",spuId:"1"})');
+    await f.run(update);
+    while (completions.length < 2) await new Promise(resolve => setTimeout(resolve, 1));
+    completions[0]({ status: 'already_marked' });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const task = f.tasks().find(item => item.jobId === 'retry-authorized');
+    assert.equal(task.directRetrySequence, 1); assert.equal(task.errorNoticeStatus, 'pending');
+    const view = await f.run('targetUploadTaskView(sender,identity.storeId)');
+    const summary = view.tasks.find(item => item.jobId === 'retry-authorized');
+    assert.equal(summary.offendingSkuCode, 'SKU-A'); assert.equal(summary.reasonTruncated, true);
+    assert.equal(summary.reason.length, 2000);
+    completions[1]({ status: 'marked' });
+    for (let i = 0; i < 50 && f.tasks().find(item => item.jobId === 'retry-authorized')?.errorNoticeStatus !== 'marked'; i++) await new Promise(resolve => setTimeout(resolve, 1));
+    assert.equal(f.tasks().find(item => item.jobId === 'retry-authorized').errorNoticeStatus, 'marked');
+});
 
 /** 初始化不能返回共享队列或把缺省执行停止冒充主动暂停。 */
 test('暂停展示核验真实文档，无映射、新文档和读取异常均回到空初始态', async () => {
@@ -136,7 +191,9 @@ test('运行器实际预检提交只在插件处理，平台调用模拟，绝�
     await f.receive(['1', '2']);
     let submits = 0;
     f.context.acquirePlatformForDirect = async () => { await f.run('directRunningTabs.add(1);directRunningStores.set("temu:222",1)'); return true; };
-    f.context.directPage = async (_tab, phase) => { assert.notEqual(phase, 'verify', '成功后不得额外详情回查'); if (phase === 'submit') submits++; return phase === 'submit-status' ? { state: 'created', productId: 'created-id' } : {}; };
+    f.context.directPage = async (_tab, phase) => { assert.notEqual(phase, 'verify', '商品成功后不得额外详情回查'); if (phase === 'submit') submits++; return phase === 'submit-status' ? { state: 'created', productId: '9876543210' } : {}; };
+    // 此用例只验证商品执行与零回执；资质决策和真实注入由独立的资质执行测试覆盖。
+    f.context.runDirectQualifications = async () => ({ state: 'complete', reason: '商品及资质已提交', items: [] });
     f.context.prepareDirectTask = async (task, identity, tab, key) => { f.session[key] = { stage: 'authorizing', request: {}, hash: 'a'.repeat(64), hashLength: 64, mallId: identity.mallId }; return { kind: 'prepared' }; };
     await f.run('runDirectTasks(1, identity)');
     assert.equal(submits, 2);
@@ -147,7 +204,7 @@ test('运行器实际预检提交只在插件处理，平台调用模拟，绝�
     assert.equal(Object.keys(f.local).filter(key => key.startsWith('directAttempt:')).length, 0);
 });
 
-/** 服务端不可用仍继续读取平台结果；失败清单只存在插件本地，不再发送标红通知。 */
+/** 没有新版错误授权的兼容任务只保留本地失败清单，不恢复旧回执接口。 */
 for (const noticeMode of ['ok', 'reject', 'hang']) test(`四件平台拒绝继续执行，结果零回传（${noticeMode}）`, async () => {
     const f = await fixture();
     await f.receive(['1', '2', '3', '4'], f.identity, 'isolated-click', 'signed-fixture-grant');
@@ -219,14 +276,13 @@ test('外围注入失败只保留当前件本地错误，不污染已成功项�
     assert.match(f.tasks()[1].reason, /注入环境不可用/);
 });
 
-test('暂停期间仍接收长轮询，但不发送收妥或平台回执', async () => {
+test('暂停期间仍可接收主动投递，但不发送收妥或平台回执', async () => {
     const f = await fixture();
     await f.run('setDirectCreatePaused(sender, identity, true)');
-    await f.run('registerStoreAgent(identity)');
-    await f.run('claimStoreJobs(identity)');
-    assert.deepEqual(f.calls.map(call => call.url), ['/api/agents/register', '/api/jobs/claim']);
-    assert.equal(f.calls[0].body.relayProtocol, 1);
-    assert.equal(f.calls[0].body.relaySessionId, f.identity.relaySessionId);
+    await f.receive(['1']);
+    assert.equal(f.tasks().length, 1);
+    assert.equal(f.session['directPause:temu:222'].paused, true);
+    assert.equal(f.calls.length, 0);
 });
 
 /** 验证一次点击拆成多个HTTP正文时不会被暂停替换规则截断。 */
@@ -261,17 +317,18 @@ test('当前件暂停时保留，结束后迟到完成只记日志，不复活�
     assert.deepEqual(f.tasks().map(t => [t.spuId, t.directState]), [['4', undefined]]);
 });
 
-test('结束前挂起的真实领取响应不能重新入队', async () => {
+test('结束前挂起的主动投递不能重新入队', async () => {
     const f = await fixture();
     await f.receive(['1']);
     const task = f.tasks()[0];
     let deliver, entered;
     const started = new Promise(resolve => { entered = resolve; });
-    f.context.hubJson = async () => { entered(); return new Promise(resolve => { deliver = resolve; }); };
-    const pending = f.run('claimStoreJobs(identity)');
+    const verify = f.context.TemuTransferIntegrity.verify;
+    f.context.TemuTransferIntegrity.verify = async (...args) => { entered(); await new Promise(resolve => { deliver = resolve; }); return verify(...args); };
+    const pending = f.receive(['2']);
     await started;
     await f.run('cancelStoreTasks(sender, identity)');
-    deliver({ claimed: [{ ...task, executionRunId: f.identity.relaySessionId, transportOnly: true }] });
+    deliver();
     await assert.rejects(pending, /接收页面已变化/);
     assert.equal(f.tasks().length, 0);
     const fresh = await f.run('bindExecutionIdentity(sender, base)');
@@ -401,8 +458,8 @@ for (const spacePressure of [false, true]) test(`暂停不丢弃当前件平台�
     assert.equal(f.tasks()[0].directState, 'created');
     const record = f.session[`directAttempt:${f.tasks()[0].jobId}:1`];
     assert.equal(record.productId, '9876543210');
-    assert.equal(record.done, true);
-    assert.ok(f.logs.some(log => log.phase === 'created'));
+    assert.equal(record.done, true, '商品任务已返回编号即完成，暂停不能启动独立资质任务');
+    assert.equal(f.tasks()[0].productId, '9876543210');
 });
 
 test('结束后的后台旧快照拒绝返回，面板也丢弃控制前的读取', async () => {
@@ -418,12 +475,12 @@ test('结束后的后台旧快照拒绝返回，面板也丢弃控制前的读�
         }
         return result;
     };
-    const reading = f.run('claimStoreJobs(identity)');
+    const reading = f.run('targetUploadTaskView(sender,identity.storeId)');
     await started;
     await f.run('cancelStoreTasks(sender,identity)');
     await f.receive(['2'], await f.run('bindExecutionIdentity(sender,base)'));
     finish();
-    await assert.rejects(reading, /接收页面已变化/);
+    assert.equal((await reading).tasks.length, 0);
 
     const content = await readFile(new URL('../../plugin/content-app.js', import.meta.url), 'utf8');
     const start = content.indexOf('async function refreshTargetUploadTasks()');
@@ -431,7 +488,7 @@ test('结束后的后台旧快照拒绝返回，面板也丢弃控制前的读�
     let deliver, requested;
     const requestedPromise = new Promise(resolve => { requested = resolve; });
     const fresh = { jobId: 'new' };
-    const ui = vm.createContext({ targetViewEpoch: 0, state: { transferTasks: [] },
+    const ui = vm.createContext({ targetViewEpoch: 0, lastStoreSequence: 0, state: { transferTasks: [] },
         currentPageIdentity: () => ({ storeId: 'temu:222' }),
         send: async type => type === 'getBoundStore' ? { ok: false } : (requested(), new Promise(resolve => { deliver = resolve; })) });
     vm.runInContext(content.slice(start, end), ui);

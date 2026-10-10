@@ -5,9 +5,15 @@ const directRerunTabs=new Map();
 // 已开始的预检/提交与尚未开始队列分离，暂停换批和结束不得重放当前件。
 const directActiveTaskKeys = new Set();
 const directDuplicateEpochs = new Map();
-/** 本地暂停开关只属于当前页面会话，不能继承旧版本或刷新前任务。 */
+/** 暂停属于本店执行会话，观看页可共享；不能继承旧版本或执行页刷新前任务。 */
 const directStopRequested = new Set();
 function directPauseKey(storeId) { return `directPause:${String(storeId || '').trim()}`; }
+/** 历史本地任务只恢复商品上传；资质任务必须显式声明，不能凭正文里有资质自动触发。 */
+function directActionType(task) { return task?.actionType === undefined ? 'product_create' : task.actionType; }
+/** 新来源标识隔离同SPU的多来源任务；无标识旧任务保留旧键以安全读取当前会话事实。 */
+function directTaskKey(task) {
+    return `directAttempt:${task.jobId}:${task.spuId}${directActionType(task) === 'qualification_upload' ? ':qualification_upload' : ''}${task.sourceTaskId ? ':' + task.sourceTaskId : ''}`;
+}
 /** 每个提交安全点核对真实文档和本地代次，读取失败保持禁止提交。 */
 async function readDirectPause(storeId, identity = null) {
     try {
@@ -58,6 +64,8 @@ async function rememberDirectProgress(task,patch,tabId){
         relaySessionId:task.relaySessionId,
         executionRunId:task.executionRunId,
         directCreate:true,
+        actionType:directActionType(task),
+        sourceTaskId:task.sourceTaskId || '',
         ...patch
     };
     if(typeof updateDirectTaskProgress==="function"){
@@ -99,16 +107,31 @@ async function writeDirectAttempt(task, key, record) {
         const tasks = await getTargetUploadTasks();
         const live = tasks.find(item => item.targetStoreId === task.targetStoreId
             && item.jobId === task.jobId && item.spuId === task.spuId
+            && directActionType(item) === directActionType(task)
+            && (item.sourceTaskId || '') === (task.sourceTaskId || '')
             && item.relaySessionId === task.relaySessionId);
         const previous = (await chrome.storage.session.get(key))[key];
-        // 暂停禁止下一次提交，但不抹掉已发出同一attempt的真实结果；结束换会话后仍必须拒绝。
-        const knownResult = record.attemptId && previous?.attemptId === record.attemptId
-            && ['verifying', 'created', 'unknown', 'rejected'].includes(record.stage);
+        // 商品已存在时没有新增尝试编号；资质编号同样只能接收本会话已发出请求的结果，不能放行下一次写入。
+        const qualificationResult = record.productId && record.productId === previous?.productId && record.mallId === previous?.mallId
+            && (record.qualificationItems || []).every(item => (previous?.qualificationItems || []).some(old => old.certType === item.certType
+                && (JSON.stringify(item) === JSON.stringify(old) || item.attemptId === old.attemptId
+                    && ['submitted', 'failed', 'unknown'].includes(item.state) && ['submitting', 'submitted', 'failed', 'unknown'].includes(old.state))))
+            && (record.qualificationItems || []).some(item => item.attemptId
+            && ['submitted', 'failed', 'unknown'].includes(item.state)
+            && (previous?.qualificationItems || []).some(old => old.certType === item.certType
+                && old.attemptId === item.attemptId && ['submitting', 'submitted', 'failed', 'unknown'].includes(old.state)));
+        // 暂停保留同一请求的真实结果；结束或新投递换会话后仍拒绝所有迟到结果。
+        const knownResult = qualificationResult || (record.attemptId && previous?.attemptId === record.attemptId
+            && ['verifying', 'created', 'unknown', 'rejected', 'qualifying', 'qualification_complete', 'qualification_failed', 'qualification_unknown'].includes(record.stage));
         if (!live || (!knownResult && (live.executionRunId !== task.executionRunId || revokedExecutionRuns.has(task.executionRunId)))) throw Error('本地执行轮次已结束，丢弃迟到结果');
         await pruneDirectAttempts();
         if (knownResult) {
             await saveTargetUploadTasks(tasks.map(item => item !== live ? item : { ...item, directState: record.stage,
-                ...(record.productId ? { reason: `平台已返回商品 ${record.productId}；请到目标店核对，不代表审核上架` } : {}) }), { [key]: record });
+                ...(record.productId ? { productId: String(record.productId), productState: 'complete' } : {}),
+                ...(record.qualificationItems ? { qualificationItems: record.qualificationItems } : {}),
+                ...(record.businessError ? { reason: record.businessError }
+                    : record.productId && directActionType(task) === 'product_create'
+                        ? { reason: `平台已返回商品 ${record.productId}；仅商品内容已创建，不代表审核上架` } : {}) }), { [key]: record });
         } else await setTargetSessionValues({ [key]: record });
     });
 }
@@ -167,6 +190,7 @@ async function directDuplicateCheck(tabId, payload = {}, options = {}) {
                 const MAX_PAGES = 60;
                 // 删除状态属于具体商品行；同货号的删除版本不能替仍在店内的另一版本放行。
                 const unknownMatches = new Set();
+                const existingProducts = new Map();
                 // 实时匹配与缓存压缩使用同一组 SKU，空数组不能遮蔽另一字段内的有效货号。
                 const rowSkus = row => [row.productSkuSummaries, row.skus, row.productSkuList]
                     .find(value => Array.isArray(value) && value.length) || [];
@@ -192,12 +216,19 @@ async function directDuplicateCheck(tabId, payload = {}, options = {}) {
                     const status = removalStatus(row);
                     if (status === null) { unknownMatches.add(key || Symbol()); return null; }
                     if (status === 1) return null;
-                    return { state: 'exists', productId: id, productName: name, matchedBy };
+                    return { state: 'exists', productId: id, productName: name, matchedBy, productCodes: rowCodes, skuCodes };
+                };
+                /** 按目标商品聚合同一商品的多个 SKC 行，避免只校验第一页或首个 SKU 就上传资质。 */
+                const rememberHit = hit => {
+                    const previous = existingProducts.get(hit.productId);
+                    existingProducts.set(hit.productId, { ...hit,
+                        productCodes: [...new Set([...(previous?.productCodes || []), ...hit.productCodes])],
+                        skuCodes: [...new Set([...(previous?.skuCodes || []), ...hit.skuCodes])] });
                 };
                 // 本轮已确认新建属于批次防重事实；平台列表同步延迟或旧删除行不能抹掉这一事实。
                 for (const row of createdRows) {
                     const hit = matchRow(row);
-                    if (hit) return { ...hit, queryMode: 'created_in_batch' };
+                    if (hit && !payload.qualificationMatch) rememberHit(hit);
                 }
                 // 货号只用于判断是不是重复商品，不是上传前提：有商品货号按商品货号比、只有 SKU 货号按 SKU 货号比。
                 // 两者都没有时无法比对，按“未发现重复”继续真实上传，由平台决定能否创建；
@@ -246,7 +277,9 @@ async function directDuplicateCheck(tabId, payload = {}, options = {}) {
                         }
                         for (const row of rows) {
                             const hit = matchRow(row);
-                            if (hit) return { ...hit, queryMode: field, scanned, pages };
+                            if (hit) {
+                                rememberHit(hit);
+                            }
                             const id = String(row.productId || row.spuId || row.goodsId || '');
                             const signature = JSON.stringify([id, String(row.productSkcId || '')]);
                             if (!id || seenRows.has(signature)) throw Error('货号精确查询分页重复或商品身份未知');
@@ -258,6 +291,29 @@ async function directDuplicateCheck(tabId, payload = {}, options = {}) {
                     }
                 }
                 if (unknownMatches.size) return { state: 'uncertain', scanned, pages, reason: '同货号商品的删除状态未确认，尚未提交' };
+                // 商品上传发现任一未删除版本即跳过；资质修改必须唯一且两级货号一致，不能任意挑选对象。
+                if (payload.qualificationMatch) {
+                    if (existingProducts.size !== 1) return { state: 'not_found', scanned, pages, reason: '没有匹配到内容：未找到唯一的未删除商品' };
+                    const hit = existingProducts.values().next().value;
+                    // 货号查询只返回命中的SKC，不代表商品全部规格；补资质前按已定位ID读取完整商品。
+                    const response = await client.post('/visage-agent-seller/product/query', { productId: hit.productId });
+                    const detail = response?.result || response?.res || response;
+                    if (response?.success === false || response?.errorCode && Number(response.errorCode) !== 1000000
+                        || String(detail?.productId || '') !== hit.productId || !Array.isArray(detail.productSkcList) || !detail.productSkcList.length) {
+                        throw Error('目标完整商品资料未确认，未提交资质');
+                    }
+                    if (String(await client.mallIdClient.getMallIdAsync()) !== String(payload.mallId)) throw Error('目标商城身份变化');
+                    if (detail.productSkcList.some(skc => !Array.isArray(skc.productSkuList))) throw Error('目标完整SKU资料未确认，未提交资质');
+                    hit.productCodes = [...new Set(detail.productSkcList.map(skc => String(skc.extCode || skc.skcExtCode || '').trim()).filter(Boolean))];
+                    hit.skuCodes = [...new Set(detail.productSkcList.flatMap(skc => skc.productSkuList)
+                        .map(sku => String(sku.extCode || sku.skuExtCode || '').trim()).filter(Boolean))];
+                    const same = (expected, actual) => !expected.size || expected.size === actual.length && actual.every(code => expected.has(code));
+                    if (!same(targetProductCodes, hit.productCodes) || !same(targetSkuCodes, hit.skuCodes)) {
+                        return { state: 'not_found', scanned, pages, reason: `没有匹配到内容：货号或SKU货号不一致；来源货号 ${[...targetProductCodes].join('、') || '无'}，SKU ${[...targetSkuCodes].join('、') || '无'}；目标货号 ${hit.productCodes.join('、') || '无'}，SKU ${hit.skuCodes.join('、') || '无'}` };
+                    }
+                }
+                if (existingProducts.size === 1) return { ...existingProducts.values().next().value, scanned, pages, queryMode };
+                if (existingProducts.size > 1) return { ...existingProducts.values().next().value, scanned, pages, queryMode };
                 return { state: 'not_found', scanned, pages, queryMode };
             }, args: [{ ...payload, cacheEpoch: directDuplicateEpochs.get(tabId) || '', force: options.force === true }] }));
             const pageError = directPageError(entry);
@@ -298,7 +354,7 @@ async function directPage(tabId,operation,payload={}){
             return text.slice(0, limit) || '未知错误';
         };
         try {
-        // 身份探测是只读操作，详情页/首页也必须能完成连接；商品准备、提交仍只能从商品列表页发起。
+        // 身份探测保持只读，接收连接另由 directIdentity 限定列表页；提交只从已绑定列表页发起。
         // 提交状态读取允许 Temu 提交后跳转到其他同源商品路由。
         if (!['identity', 'submit-status'].includes(operation)
             && location.origin + location.pathname !== 'https://agentseller.temu.com/goods/list') throw Error('请打开商品列表页');
@@ -457,7 +513,7 @@ async function directIdentity(sender,identity,controlLocked=false){
     let hostname = '';
     try { hostname = new URL(sender.tab.url || '').hostname; } catch (_) {}
     // 只有卖家中心页面拥有可信商城运行时；其他 temu 子域即使注入了脚本也不能参与店铺绑定。
-    if (hostname !== 'agentseller.temu.com') throw Error('unsupported_page');
+    if (hostname !== 'agentseller.temu.com' || new URL(sender.tab.url).pathname !== '/goods/list') throw Error('请打开商品列表页');
     await assertExecutionDocument(sender.tab.id, sender.documentId);
     const {mallId}=await directPage(sender.tab.id,'identity', { documentId: sender.documentId });
     return bindExecutionIdentity(sender, {...identity,storeId:`temu:${mallId}`,mallId,identityMatched:true,executionMode:'plugin-api'}, controlLocked);
@@ -562,7 +618,7 @@ async function reportDirectPreflightSkipped(task, identity, reason, phase = 'pre
 }
 /**
  * 目标店重复预检：检索目标店商品，看这件商品的货号是否已存在。
- * 命中重复返回终态；未命中继续，未确认抛出可识别的等待信号，不能触发新增。
+ * 命中未删除商品即结束商品上传；资质只能通过网站明确投递的独立任务处理。
  *
  * 单独抽出来是因为有两个入口都必须查到：首次预检，以及"请求已生成但还没提交"的恢复路径。
  * 后者以前跳过判重直接提交，而上一次尝试可能其实已经创建成功，于是同一件商品被创建两次。
@@ -586,9 +642,8 @@ async function directPreflightDuplicate(task, identity, tabId, compare) {
     const matchedLabel = duplicate.matchedBy === 'skuExtCode' ? 'SKU货号' : '商品货号';
     const reason = `目标店已存在商品 ${duplicate.productId || task.spuId}，按${matchedLabel}确认，未创建`;
     await reportDirectPreflightSkipped(task, identity, reason, 'duplicate_exists');
-    await writeDirectAttempt(task, `directAttempt:${task.jobId}:${task.spuId}`, { stage: 'duplicate_exists', done: true, retrySequence: directTaskRetrySequence(task) });
+    await writeDirectAttempt(task, directTaskKey(task), { stage: 'duplicate_exists', done: true, businessError: reason, retrySequence: directTaskRetrySequence(task) });
     await rememberDirectProgress(task, { directState: 'duplicate_exists', reason, status: 'received' }, tabId);
-    await TemuOperationLog.append({ action: 'direct-create', status: 'skipped', jobId: task.jobId, spuId: task.spuId, phase: 'duplicate_exists', reason });
     return { duplicate: true, reason };
 }
 
@@ -638,12 +693,12 @@ async function prepareDirectTask(task, identity, tabId, key, reservedCodes = new
 async function runDirectTasks(tabId,identity){
     // 标签页重入只补记唤醒；真正执行还要申请同一浏览器配置的平台占用，防止跨标签冲突。
     if(directRunningTabs.has(tabId)){
-        // 心跳可能在上一轮仍执行时到达；记住最新身份，上一轮结束后补跑，避免批量任务丢唤醒。
+        // 商品推送或人工继续可能在上一轮执行时到达；只记本地唤醒，不重复启动执行器。
         directRerunTabs.set(tabId, identity);
         return;
     }
     if(!tabId||!identity.storeId)return;
-    // 停止标记优先于任何页面操作：刷新页面后由心跳再次进入也不能绕过。
+    // 停止标记优先于任何页面操作：刷新后迟到的本地唤醒也不能绕过。
     if(directStopRequested.has(identity.storeId)||await readDirectPause(identity.storeId, identity)){
         directRerunTabs.delete(tabId);
         // 暂停不恢复或补报旧执行结果。
@@ -667,11 +722,17 @@ async function runDirectTasks(tabId,identity){
             // 一次性投递无需收妥回执，当前页面绑定有效即可开始。
             // 每件商品开始前先看停止标记，避免停止后仍继续对比、预检下一件。
             if(await stopPending()){stopped=true;break;}
-            const key=`directAttempt:${task.jobId}:${task.spuId}`;let record=await directAttemptRecord(task,key);if(record?.done)continue;
+            const key=directTaskKey(task);let record=await directAttemptRecord(task,key);if(record?.done)continue;
             let ownedCodes = [];
             directActiveTaskKeys.add(key);runningTaskKeys.add(key);activeKey = key;
+            // 资质任务只定位已有商品并补材料，不经过商品预检、创建请求或自动重试等待。
+            if (directActionType(task) === 'qualification_upload') {
+                if (!await runStandaloneQualifications(task, identity, tabId, record, key)) { stopped = true; break; }
+                continue;
+            }
+            if (directActionType(task) !== 'product_create') throw Error('不支持的上传任务类型，未执行');
             if (record?.schedulingBlocked) break;
-            // 目标店查询退避只存在本页队列，不能被心跳提前打断。
+            // 目标店查询退避只存在本店会话，不能被新商品推送提前打断。
             if (record?.retryAt && Date.now() < record.retryAt) break;
             let duplicateChecks = 0;
             if (record?.stage === 'duplicate_wait') {
@@ -689,7 +750,7 @@ async function runDirectTasks(tabId,identity){
                         await rememberDirectProgress(task, { directState: 'duplicate_wait', reason: readable, status: 'received' }, tabId);
                         break;
                     }
-                    // 预检发生在任何新增请求之前，失败后没有平台副作用；落终态是为了阻止心跳无限重复失败。
+                    // 预检尚无平台副作用；失败落终态，后续推送唤醒不能无限重复预检。
                     // 人工重试入口会删除该键，因此这里不牺牲确定性错误后的恢复能力。
                     await reportDirectPreflightSkipped(task, identity, readable);
                     await writeDirectAttempt(task, key, { stage: 'preflight_failed', done: true, businessError: readable, retrySequence: directTaskRetrySequence(task) });
@@ -697,17 +758,22 @@ async function runDirectTasks(tabId,identity){
                     await rememberDirectProgress(task, { directState: 'preflight_failed', reason: readable, errorStage: '预检', errorCode: String(outcome.error?.errorCode || outcome.error?.code || ''), offendingSkuCode: String(outcome.error?.offendingSkuCode || outcome.error?.skuExtCode || ''), status: 'received' }, tabId);
                     continue;
                 }
-                if (outcome.result?.kind === 'duplicate_exists' || outcome.result?.kind === 'duplicate_batch') continue;
+                if (['duplicate_batch', 'duplicate_exists'].includes(outcome.result?.kind)) continue;
                 ownedCodes = outcome.result?.codes || [];
                 // 本件预检已查过目标店，提交前不重复扫描。
                 if (outcome.result?.kind === 'prepared') checkedThisPass.add(key);
                 record = await directAttemptRecord(task,key);
             }
-            // 平台已确认创建的任务不能因心跳再次进入新增。
+            // 平台已确认创建的任务不能因后续推送再次进入新增。
             if(task.directState==="created")continue;
-            // 结果未知必须隔离：请求可能已被平台受理，禁止心跳自动复核/重发，避免两个商品变成三个创建尝试。
+            // 商品接口已返回编号即结束商品任务，恢复旧记录也不能隐式进入资质上传。
+            if (record?.productId && ['created', 'qualifying'].includes(record.stage)) {
+                await finishDirectProduct(task, tabId, record, key);
+                continue;
+            }
+            // 结果未知可能已被平台受理，后续本地唤醒不能自动复核或重发。
             if(task.directState==="unknown"||record?.stage==="unknown"){
-                // 心跳只补齐未知分类，不覆盖首次平台错误；人工核对提示由状态标签承担。
+                // 本地唤醒只补齐未知分类，不覆盖首次错误；未知请求仍须人工核对。
                 await rememberDirectProgress(task,{directState:'unknown',reason:task.reason || record?.businessError || '结果未知，未自动重发；请先核对目标店商品后人工确认重试',status:'received'},tabId);
                 continue;
             }
@@ -719,10 +785,12 @@ async function runDirectTasks(tabId,identity){
                 await TemuTransferIntegrity.verify(task.snapshot, task.transferIntegrity);
                 if(!record){
                     const source=directSnapshotSource(task.snapshot);if(String(source?.productId)!==task.spuId)throw Error('缺少来源完整资料');
-                    // 检索要翻完目标店全部分页，先给出可见状态，避免操作者以为点击没有反应。
+                    // 只分页查询对应货号，不扫描整店；检索阶段与真正提交明确区分。
                     await rememberDirectProgress(task,{directState:"authorizing",reason:`正在检索目标店是否已存在 SPU ${task.spuId}，请保持商品列表页打开`,status:"received"},tabId);
                     const finding = await directPreflightDuplicate(task, identity, tabId, directSourceComparePayload(source, identity));
-                    if (finding.duplicate) continue;
+                    if (finding.duplicate) {
+                        continue;
+                    }
                     const p=await directPage(tabId,'prepare',{source,mallId:identity.mallId,prepareKey:key});
                     record={stage:'authorizing',request:p.request,hash:p.hash,hashLength:p.hashLength,authorizationKey:crypto.randomUUID(),mallId:identity.mallId,duplicateCheck:finding.unconfirmed?'unconfirmed':'not_found',retrySequence:directTaskRetrySequence(task)};await writeDirectAttempt(task,key,record);
                     await TemuOperationLog.append({action:"direct-create",status:"started",jobId:task.jobId,spuId:task.spuId,phase:"prepare"});
@@ -805,16 +873,13 @@ async function runDirectTasks(tabId,identity){
                             if (result?.state === 'rejected') failure.definitive = true;
                             throw failure;
                         }
-                        // 创建编号来自平台提交响应；立即结算，不再额外查询详情或比对已创建内容。
+                        // 商品任务到创建确认即完成；资质由下一次人工选择补全任务独立执行。
                         record.productId = result.productId; record.stage='created'; await writeDirectAttempt(task,key,record);
                         await directPage(tabId, 'cache-created', { mallId: record.mallId, productId: record.productId, request: record.request, cacheEpoch: directDuplicateEpochs.get(tabId) || '' }).catch(() => directDuplicateEpochs.delete(tabId));
                     }
                 }
                 if(record.productId){
-                    const createdReason = `平台已确认创建（商品 ${record.productId}），不代表审核上架`;
-                    await report({phase:'created',attemptId:record.attemptId,productId:record.productId,reason:createdReason});record.done=true;record.stage='created';delete record.request;
-                    await TemuOperationLog.append({action:"direct-create",status:"succeeded",jobId:task.jobId,spuId:task.spuId,phase:"created"});
-                    await rememberDirectProgress(task,{directState:"created",reason:createdReason,errorCode:'',errorStage:'',status:"received"},tabId);
+                    await finishDirectProduct(task, tabId, record, key);
                 }else{await report({phase:'unknown',attemptId:record.attemptId,reason:'提交结果待核对，禁止自动重发'});record.stage='unknown';
                     await rememberDirectProgress(task,{directState:"unknown",reason:"提交结果待核对，禁止自动重发",status:"received"},tabId);
                 }
@@ -825,7 +890,7 @@ async function runDirectTasks(tabId,identity){
                 if (!record?.attemptId) for (const code of ownedCodes) reservedCodes.delete(code);
 
                 if (!record?.attemptId && error?.beforeAuthorization) {
-                    // 本页复用的请求若丢字段必须落成明确失败，不能让心跳无限重复预检。
+                    // 执行页复用请求若丢字段必须明确失败，后续推送不得无限重复预检。
                     await report({phase:'preflight_failed',reason:readable.slice(0,800)});
                     record={...record,stage:'preflight_failed',done:true,businessError:readable};
                     await writeDirectAttempt(task,key,record);
@@ -863,11 +928,16 @@ async function runDirectTasks(tabId,identity){
         const tasks=(await getTargetUploadTasks()).filter(t=>t.directCreate&&t.targetStoreId===identity.storeId
             && t.relaySessionId === identity.relaySessionId && t.executionRunId === identity.executionRunId);
         // 注入等外围错误只关联尚未结束的当前件，不能把本批第一件已成功商品误标为失败。
-        const task=tasks.find(item=>!['created','duplicate_exists','preflight_failed','rejected','unknown'].includes(String(item.directState||'')));
+        const task=tasks.find(item=>!['created','duplicate_exists','preflight_failed','rejected','unknown','qualification_complete','qualification_not_found','qualification_failed','qualification_unknown'].includes(String(item.directState||'')));
         const readable=directErrorText(error);
         await TemuOperationLog.append({action:"direct-create",status:"failed",storeId:identity.storeId,error:readable});
         if(task){
-            await rememberDirectProgress(task,{directState:"preflight_failed",reason:readable,errorStage:'预检',status:"received"},tabId);
+            // 外围故障按任务类型保留真实阶段，已创建商品不能被描述为资质失败。
+            const record = await directAttemptRecord(task, directTaskKey(task));
+            const qualification = directActionType(task) === 'qualification_upload';
+            await rememberDirectProgress(task,{directState:qualification ? 'qualification_unknown' : record?.productId ? 'created' : 'preflight_failed',
+                ...(record?.productId ? { productId: record.productId, productState: 'complete', qualificationItems: record.qualificationItems || [] } : {}),
+                reason:readable,errorStage:qualification ? '资质' : record?.productId ? '提交' : '预检',status:"received"},tabId);
         }
     }finally{
         for (const key of runningTaskKeys) directActiveTaskKeys.delete(key);

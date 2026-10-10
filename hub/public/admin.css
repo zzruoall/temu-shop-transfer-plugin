@@ -351,3 +351,6 @@ body {
     .admin-product-row { grid-template-columns: 34px minmax(0, 1fr) 104px minmax(120px, 1fr) 76px; }
     .admin-product-codes { display: none; }
 }
+.admin-category-label { display: flex; flex-direction: column; gap: 8px; padding: 12px 20px; color: #e2e8f0; font-size: 13px; }
+.admin-category-label select { width: 100%; padding: 8px; border: 1px solid #64748b; border-radius: 4px; background: #fff; color: #171717; }
+#admin-create-test { flex-wrap: wrap; }

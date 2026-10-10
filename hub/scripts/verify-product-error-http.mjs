@@ -51,7 +51,7 @@ test('错误通知真实闭环：权限、首次标记、并发去重、实际�
         };
         const sourceStoreId = 'temu:111', spuId = '1234567890';
         const agent = { storeId: 'temu:222', mallId: '222', pluginInstanceId, storeName: '隔离目标店', pageStoreName: '隔离目标店',
-            pluginVersion: '10.10.72', executionMode: 'plugin-api', pluginDetected: true, identityMatched: true,
+            pluginVersion: '11.0.4', executionMode: 'plugin-api', pluginDetected: true, identityMatched: true,
             relayProtocol: 1, relaySessionId: randomUUID() };
         assert.equal((await api('/api/agents/register', agent, 'device')).status, 200);
         assert.equal((await api('/api/stores/claim', { storeIds: [sourceStoreId, agent.storeId] })).status, 200);
@@ -87,7 +87,8 @@ test('错误通知真实闭环：权限、首次标记、并发去重、实际�
         const statusBody = { products: [{ spuId, sourceIdentity: originalIdentity, productKey: (await view()).productKey }] };
         const statusRead = () => api('/api/products/status-read', statusBody);
         assert.equal((await statusRead()).body.products[0].sendBlocked, false);
-        assert.deepEqual((await api('/api/products/status-read', statusBody, 'other')).body, { products: [], staleIds: [spuId] });
+        assert.equal((await api('/api/products/status-read', statusBody, 'other')).body.products.length, 1, '同类共享库允许读取他人商品状态');
+        assert.deepEqual((await api('/api/products/status-read?library=personal', statusBody, 'other')).body, { products: [], staleIds: [spuId] });
         assert.equal((await api('/api/products/status-read', statusBody, 'plugin')).status, 403);
         for (const invalid of [{ products: [] }, { products: Array(101).fill(statusBody.products[0]) },
             { products: [...statusBody.products, ...statusBody.products] }, { products: [{ spuId, sourceIdentity: 'bad' }] },
@@ -126,7 +127,8 @@ test('错误通知真实闭环：权限、首次标记、并发去重、实际�
         assert.equal((await api('/api/overview?productLimit=20&blocked=blocked')).body.blockedCount, 1);
         const detailUrl = `/api/products/error-details?${new URLSearchParams({ sourceStoreId, spuId, sourceInstanceId: task.sourceNoticeRef.sourceInstanceId })}`;
         const details = await api(detailUrl); assert.equal(details.status, 200); assert.equal(details.body.notice.skuCode, 'TEST-SKU-1');
-        assert.equal((await api(detailUrl, undefined, 'other')).status, 403);
+        assert.equal((await api(detailUrl, undefined, 'other')).status, 200, '共享商品具体错误同样可读');
+        assert.equal((await api(detailUrl + '&library=personal', undefined, 'other')).status, 403);
         assert.equal((await api(detailUrl, undefined, 'plugin')).status, 403);
         const before = (await api('/api/live')).body;
         assert.equal((await api('/api/products/error-notice', notice({ reason: '不能覆盖首次原因' }), 'plugin')).body.status, 'already_marked');

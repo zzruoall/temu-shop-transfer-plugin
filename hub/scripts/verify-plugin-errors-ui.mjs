@@ -36,24 +36,28 @@ try {
                 reason: '<img src=x onerror="window.fixtureXss=true">净含量必填（错误码 2000135）' },
             { jobId: 'batch', spuId: '10002', targetStoreId: 'temu:fixture', directCreate: true, directState: 'unknown', reason: '结果未知，禁止自动重发' },
             { jobId: 'batch', spuId: '10003', targetStoreId: 'temu:fixture', directCreate: true, directState: 'duplicate_wait', reason: '查重超时，未提交' },
+            { jobId: 'batch', spuId: '10004', targetStoreId: 'temu:fixture', directCreate: true, directState: 'qualification_failed', productId: '9876543210',
+                reason: '商品已创建，资质未完成', qualificationItems: [{ certType: 1421, name: '检测报告', state: 'failed', reason: '目标要求英文报告' }] },
+            { jobId: 'batch', spuId: '10005', targetStoreId: 'temu:fixture', directCreate: true, directState: 'qualification_unknown', reason: '资质提交结果待核对' },
             { jobId: 'other', spuId: '99999', targetStoreId: 'temu:other', directCreate: true, directState: 'rejected', reason: '其他店私有错误' }];
             window.fixtureXss = false;
             Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.fixtureCopied = value; } } });
             new Function('root', 'tasks', `const state = { transferTasks: tasks }; const currentPageIdentity = () => ({ storeId: 'temu:fixture' });
                 ${functions}
-                const button = root.querySelector('.transfer-errors'); button.hidden = false; button.textContent = '查看异常（3 件）';
+                const button = root.querySelector('.transfer-errors'); button.hidden = false; button.textContent = '查看异常（5 件）';
                 root.querySelector('.transfer-progress').hidden = false;
                 button.addEventListener('click', openDirectErrors);
                 window.fixtureCloseForeign = closeForeignErrorDialog;`)(root, tasks);
         }, { template, functions });
-        await page.getByRole('button', { name: '查看异常（3 件）' }).click();
+        await page.getByRole('button', { name: '查看异常（5 件）' }).click();
         const dialog = page.getByRole('dialog', { name: '本店异常商品' });
         await dialog.waitFor({ state: 'visible' });
-        assert.equal(await dialog.locator('.error-item').count(), 3);
+        assert.equal(await dialog.locator('.error-item').count(), 5);
         const text = await dialog.innerText();
         assert.match(text, /S-1、S-2/);
         assert.match(text, /结果待核对/);
         assert.match(text, /查重等待/);
+        assert.match(text, /检测报告.*目标要求英文报告/s);
         assert.doesNotMatch(text, /99999|其他店私有错误/);
         assert.equal(await dialog.locator('img').count(), 0, '平台原文不能成为可执行 HTML');
         const bounds = await dialog.evaluate(node => ({ left: node.getBoundingClientRect().left,
@@ -70,11 +74,11 @@ try {
         await page.screenshot({ path: new URL(`plugin-errors-10.10.71-${name}.png`, output).pathname.replace(/^\/(\w:)/, '$1'), fullPage: true });
         await page.keyboard.press('Escape');
         assert.equal(await dialog.count(), 0);
-        assert.equal(await page.getByRole('button', { name: '查看异常（3 件）' }).evaluate(node => node.getRootNode().activeElement === node), true);
+        assert.equal(await page.getByRole('button', { name: '查看异常（5 件）' }).evaluate(node => node.getRootNode().activeElement === node), true);
         assert.equal(await page.evaluate(() => window.fixtureXss), false);
-        await page.getByRole('button', { name: '查看异常（3 件）' }).click();
+        await page.getByRole('button', { name: '查看异常（5 件）' }).click();
         await page.evaluate(() => window.fixtureCloseForeign('temu:other', [{ targetStoreId: 'temu:other', directCreate: true, directState: 'rejected' }]));
         assert.equal(await dialog.count(), 0, '切到非空的新店队列也不得保留旧店弹窗');
     }
-    console.log(JSON.stringify({ passed: true, viewports: 2, errors: 3, pureText: true, copy: true, export: true, escapeFocus: true, realNetworkRequests: 0 }));
+    console.log(JSON.stringify({ passed: true, viewports: 2, errors: 5, pureText: true, copy: true, export: true, escapeFocus: true, realNetworkRequests: 0 }));
 } finally { await browser.close(); }

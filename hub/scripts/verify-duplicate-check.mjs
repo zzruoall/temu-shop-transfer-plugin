@@ -246,7 +246,9 @@ console.log('重复检索检查通过：精确货号过滤、不扫描整店、�
             TemuDirectReceipts: { send: async () => ({ acknowledged: true }) }
         });
         await seedCurrentExecutor(context, data);
-        vm.runInContext(source, context);
+        vm.runInContext(`${await readFile(new URL('../../plugin/qualification-executor.js', import.meta.url), 'utf8')}\n${source}`, context);
+        // 此夹具只验证创建与资质的路由分工；材料提交由独立资质执行器测试覆盖。
+        context.runDirectQualifications = async () => ({ state: 'complete', items: [], reason: '夹具适用资质已提交' });
         await vm.runInContext("runDirectTasks(1,executionIdentities['temu:123'])", context);
         return { searches, submits, data, context };
     }
@@ -273,7 +275,8 @@ console.log('重复检索检查通过：精确货号过滤、不扫描整店、�
         const hit = await runPass({ record, duplicateResult: { state: 'exists', productId: '5886465868', matchedBy: 'productExtCode' }, taskSnapshot: snapshot });
         assert.ok(hit.searches >= 1, '同轮准备记录也必须查目标店，不能凭本地记录直接提交');
         assert.equal(hit.submits, 0, '目标店已有该商品时必须跳过，绝不能提交');
-        assert.equal(hit.data['directAttempt:job:9100894431'].stage, 'duplicate_exists', '跳过结论要落本地终态，避免心跳反复重试');
+        assert.equal(hit.data['directAttempt:job:9100894431'].stage, 'duplicate_exists', '商品已存在只跳过，不自动进入资质');
+        assert.equal(hit.data['directAttempt:job:9100894431'].done, true);
 
         const miss = await runPass({ record, duplicateResult: { state: 'not_found', scanned: 0, pages: 0, queryMode: 'skuExtCodes' }, taskSnapshot: snapshot });
         assert.ok(miss.searches >= 1, '同轮准备记录必须复查');
@@ -295,13 +298,13 @@ console.log('重复检索检查通过：精确货号过滤、不扫描整店、�
         assert.equal(pass.data['directAttempt:job:9100894432'].stage, 'duplicate_exists');
     }
 
-    // 本件货号重复只终结本件，下一件不同货号仍完成提交，不能把跳过升级成整店停机。
+    // 本件货号重复只跳过新增；下一件不同货号仍创建，不能升级成整店停机。
     {
         const record = { stage: 'authorizing', request: { productSkcReqs: [{ extCode: 'SAME' }] },
             hash: 'a'.repeat(64), authorizationKey: 'k', mallId: '123', retrySequence: 0 };
         const pass = await runPass({ record, secondPrepared: true, secondCode: 'OTHER', taskSnapshot: snapshot,
             duplicateResult: payload => payload.productCodes.includes('SAME')
-                ? { state: 'exists', productId: 'existing', matchedBy: 'productExtCode' } : { state: 'not_found' } });
+                ? { state: 'exists', productId: '5886465868', matchedBy: 'productExtCode' } : { state: 'not_found' } });
         assert.equal(pass.data['directAttempt:job:9100894431'].stage, 'duplicate_exists');
         assert.equal(pass.data['directAttempt:job:9100894432'].stage, 'created');
         assert.equal(pass.submits, 1, '跳过重复货号后仍应处理下一件');

@@ -164,7 +164,7 @@ assert.match(pageHookSource, /SOURCE = "temu-shop-transfer-v10"/);
 assert.match(pageHookSource, /HOOK_MARKER = "__temuShopTransferV10HookInstalled__"/);
 assert.match(contentAppSource, /pluginVersion: PLUGIN_VERSION/);
 // 登记版本只取后台安装清单，不再接受内容页面自报的旧版本值。
-const registration = backgroundSource.slice(backgroundSource.indexOf('async function registerStoreAgent'), backgroundSource.indexOf('async function claimStoreJobs'));
+const registration = await readFile(path.join(pluginDirectory, 'store-channel.js'), 'utf8');
 assert.match(registration, /pluginVersion: chrome\.runtime\.getManifest\(\)\.version/);
 
 console.log("page identity checks passed");

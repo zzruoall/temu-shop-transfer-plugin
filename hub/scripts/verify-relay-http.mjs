@@ -66,7 +66,7 @@ test('实际HTTP收存发送，失败回执停用且零写入，保留历史红�
             return { status: response.status, body: await response.json() };
         };
         const agent = { pluginInstanceId: 'relay-test-instance', storeId: 'temu:222', mallId: '222',
-            storeName: '目标验证店', pageStoreName: '目标验证店', pluginVersion: '10.10.69',
+            storeName: '目标验证店', pageStoreName: '目标验证店', pluginVersion: '11.0.4',
             executionMode: 'plugin-api', pluginDetected: true, identityMatched: true,
             relayProtocol: 1, relaySessionId: randomUUID() };
         assert.equal((await api('/api/agents/register', agent)).status, 200);

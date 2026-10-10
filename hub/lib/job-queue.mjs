@@ -7,24 +7,20 @@ import { createMysqlJobRepository } from "./mysql-job-repository.mjs";
 import { assertCapturedSource, transferManifest, verifyTransferManifest } from "./transfer-integrity.mjs";
 import { jobRequestIdentity } from "./job-idempotency.mjs";
 import { supportsScheduling } from './scheduling.mjs';
+import { pluginVersionAtLeast } from './plugin-version.mjs';
+import { qualificationReferences, verifyQualificationBatchTransfer } from './product-qualifications.mjs';
 
 function asText(value) {
     return String(value || "").trim();
 }
 
 /**
- * 队列不信任“页面上有面板”这一类客户端布尔值。只有当前 10.x 插件同时上报版本和在场标记，
+ * 队列不信任“页面上有面板”这一类客户端布尔值。只有已核验的10/11插件同时上报版本和在场标记，
  * 才能领取或把任务写为身份已核验，避免旧版同名面板越过中转安全边界。
  */
 function hasSupportedPlugin(input = {}) {
-    const parts = asText(input.pluginVersion).split(".").map(part => Number(part));
-    return Boolean(input.pluginDetected)
-        && parts.length === 3
-        && parts.every(Number.isInteger)
-        && parts.every(part => part >= 0)
-        && parts[0] === 10
-        // 10.1.0 才公开 pluginInstanceId 和自动店名，10.0.x 不能被登记为可领取的中转 Agent。
-        && parts[1] > 0;
+    // 10.1.0 才公开实例和自动店名；11.0.0沿用该身份协议，10.0.x仍不可领取。
+    return Boolean(input.pluginDetected) && pluginVersionAtLeast(input.pluginVersion, [10, 1, 0]);
 }
 
 function unique(values) {
@@ -141,6 +137,8 @@ export function canonicalProductSnapshot(product = {}) {
     });
     // 原始发布资料不能经过旧摘要的 null→空串转换；成分变化也必须参与任务版本计算。
     if (product.publicationData) snapshot.publicationData = structuredClone(product.publicationData);
+    // 资质静态材料随任务版本投递引用；附件字节仍由受认证归档接口读取，不占插件任务存储。
+    if (product.qualifications) snapshot.qualifications = qualificationReferences(product.qualifications);
     return snapshot;
 }
 
@@ -191,10 +189,7 @@ function isAgentOnline(agent, nowMs = Date.now()) {
 
 /** 10.3 起插件支持接收商品快照并提供人工上传按钮，旧版本仅能做身份核验。 */
 function hasManualTransferPlugin(input = {}) {
-    const parts = asText(input.pluginVersion).split(".").map(part => Number(part));
-    return hasSupportedPlugin(input)
-        && parts[0] === 10
-        && (parts[1] > 3 || (parts[1] === 3 && parts[2] >= 0));
+    return hasSupportedPlugin(input) && pluginVersionAtLeast(input.pluginVersion, [10, 3, 0]);
 }
 
 /** 工作日志按目标店铺分文件保存，文件名只用店铺 ID 的哈希，避免路径穿越。 */
@@ -316,8 +311,7 @@ function summarizeJob(job) {
 
 /** 新任务要求摘要校验与可靠回执版本；旧实例仍可补报已授权尝试，不能领取新的创建许可。 */
 function hasTransferIntegrityPlugin(input = {}) {
-    const [major, minor, patch] = asText(input.pluginVersion).split(".").map(Number);
-    return major === 10 && (minor > 10 || (minor === 10 && patch >= 56));
+    return pluginVersionAtLeast(input.pluginVersion, [10, 10, 56]);
 }
 
 /** 任务页和汇总接口共用同一分组口径，避免前端筛选与服务端统计出现两套结论。 */
@@ -941,7 +935,7 @@ export function createJobQueue(rootDir, store, options = {}) {
             if (missingIds.length) throw Object.assign(httpError(`来源批次中没有这些 SPU：${missingIds.join("、")}`, 400), { code: 'bulk_product_invalid' });
             if (manualDelivery) {
                 if (!store.verifyBatchTransfer) throw httpError("仓库未启用来源原包一致性核验", 503);
-                batchProducts = await store.verifyBatchTransfer(batch, batchProducts);
+                batchProducts = await verifyQualificationBatchTransfer(store, batch, batchProducts);
                 batchProducts.forEach(assertCapturedSource);
             }
             if (input.expectedVersions && batchProducts.some(product => input.expectedVersions[product.spuId] !== makeProductVersion(product))) {
@@ -957,9 +951,9 @@ export function createJobQueue(rootDir, store, options = {}) {
             }
             // 离线是可恢复的接收条件，返回503让持久化分发退避；身份与版本错误仍须人工处理。
             if (manualDelivery && (!targetAgent || !isAgentOnline(targetAgent) || !targetAgent.pluginDetected)) throw Object.assign(httpError("目标店插件暂时离线，等待恢复连接", 503), { code: 'target_offline' });
-            if (directCreate && !/^10\.(?:9|[1-9]\d)\./.test(asText(targetAgent?.pluginVersion))) throw httpError("接口创建需要目标店安装 10.9.0 或更新的 10.x 插件", 409);
+            if (directCreate && !pluginVersionAtLeast(targetAgent?.pluginVersion, [10, 9, 0])) throw httpError("接口创建需要目标店安装兼容的10.9.0以上插件", 409);
             if (manualDelivery) {
-                if (!hasTransferIntegrityPlugin(targetAgent || {})) throw httpError("请将目标店插件更新至 10.10.56 或更新的 10.x 版本，以启用统一结果状态和判重等待保护", 409);
+                if (!hasTransferIntegrityPlugin(targetAgent || {})) throw httpError("请将目标店插件更新至兼容的10.10.56以上版本，以启用统一结果状态和判重等待保护", 409);
             }
             if (manualDelivery && (!targetAgent || !isAgentOnline(targetAgent) || !targetAgent.pluginDetected || !targetAgent.identityMatched || !hasManualTransferPlugin(targetAgent))) {
                 throw httpError("目标店插件不在线、身份未核验或版本不支持接收上传任务", 409);
@@ -1151,7 +1145,7 @@ export function createJobQueue(rootDir, store, options = {}) {
                 return {attemptId:item.directAttemptId, state:item.directState};
             }
             if (["begin", "preflight_failed", "duplicate_exists"].includes(phase)) {
-                if (!/^10\.(?:9|[1-9]\d)\./.test(asText(agent.pluginVersion))) throw httpError("目标插件需要升级到10.9.0", 409);
+                if (!pluginVersionAtLeast(agent.pluginVersion, [10, 9, 0])) throw httpError("目标插件需要升级到兼容的10.9.0以上版本", 409);
                 // unknown 不是失败：即使插件查不到货号，也不能从回执通道自动解锁新 attempt。
                 // 人工确认重试必须先调用 directRetry，让旧 attempt 留痕并把任务重新排到队尾。
                 if (item.status !== "received" || item.directState) throw httpError("任务尚未明确结束，不能重复提交；结果未知请人工确认重试", 409);
@@ -1927,7 +1921,7 @@ export function createJobQueue(rootDir, store, options = {}) {
                 item.receivedSnapshotSha256 = input.snapshotSha256;
             }
             item.status = status;
-            item.reason = asText(input.reason) || (status === "plugin_missing" && !pluginDetected ? "未检测到兼容的 10.x 中转插件" : "");
+            item.reason = asText(input.reason) || (status === "plugin_missing" && !pluginDetected ? "未检测到兼容的中转插件" : "");
             item.pageUrl = asText(input.pageUrl);
             item.submitted = false;
             item.published = false;

@@ -16,7 +16,9 @@ function siteRoot() {
 }
 
 async function api(path, options) {
-    const requestPath = path.startsWith("/temu/") ? `${siteRoot()}${path.slice("/temu".length)}` : path;
+    let requestPath = path.startsWith("/temu/") ? `${siteRoot()}${path.slice("/temu".length)}` : path;
+    // 管理操作与统计使用同一显式分类，避免在测试面板误用正式商品的权限范围。
+    requestPath += `${requestPath.includes('?') ? '&' : '?'}accountType=${adminAccountType}`;
     const response = await fetch(requestPath, options);
     let data = {};
     try {
@@ -38,6 +40,8 @@ function escapeHtml(value) {
 }
 
 const stage = document.getElementById("admin-app");
+let adminAccountType = 'production';
+let adminRenderVersion = 0;
 
 /**
  * 破坏性操作的确认弹窗：列出影响范围，并让操作者选择处理方式。
@@ -123,6 +127,11 @@ function renderShell() {
             <div class="admin-toolbar">
                 <label class="admin-search">搜索<input id="admin-user-search" type="search" placeholder="手机号" autocomplete="off"></label>
             </div>
+            <form id="admin-create-test" class="admin-toolbar" aria-label="注册测试账户">
+                <label class="admin-search">测试手机号<input name="username" type="tel" pattern="1[3-9][0-9]{9}" required autocomplete="off"></label>
+                <label class="admin-search">初始密码<input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+                <button class="admin-btn" type="submit">注册测试账户</button><span id="admin-create-test-status" role="status"></span>
+            </form>
             <div class="admin-list" id="admin-user-list"></div>
         </section>
         <section class="admin-panel" data-admin-panel="products" hidden>
@@ -160,21 +169,24 @@ function showView(name) {
 
 /** 主渲染：拉数据、画行、绑事件。 */
 async function render() {
+    const version = ++adminRenderVersion;
     const [payload, storePayload, overview] = await Promise.all([
         api("/temu/api/admin/users"),
         api("/temu/api/stores").catch(() => ({ stores: [] })),
         api("/temu/api/overview").catch(() => ({ products: [], batches: [] }))
     ]);
     const deletedPayload = await api("/temu/api/admin/stores/deleted").catch(() => ({ stores: [] }));
-    const users = Array.isArray(payload.users) ? payload.users : [];
+    if (version !== adminRenderVersion) return;
+    const users = (Array.isArray(payload.users) ? payload.users : []).filter(user => (user.accountType || 'production') === adminAccountType);
     const stores = (storePayload.stores || []).filter((store) => store.storeId);
     const deletedStores = Array.isArray(deletedPayload.stores) ? deletedPayload.stores : [];
     const products = Array.isArray(overview.products) ? overview.products : [];
+    const productTotal = Math.max(products.length, Number(overview.productCount) || 0);
     const batches = Array.isArray(overview.batches) ? overview.batches : [];
 
     const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
     setText("tab-count-stores", stores.length);
-    setText("tab-count-products", products.length);
+    setText("tab-count-products", productTotal);
     setText("tab-count-users", users.length);
     setText("tab-count-deleted", deletedStores.length);
     setText("store-count", `${stores.length} 家`);
@@ -183,7 +195,8 @@ async function render() {
     const regToggle = document.getElementById("registration-open");
     if (regToggle) regToggle.checked = Boolean(payload.registrationOpen);
 
-    const userOptions = users.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.username)}</option>`).join("");
+    const reassignUsers = adminAccountType === 'unclassified' ? (payload.users || []) : users;
+    const userOptions = reassignUsers.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.username)} · ${user.accountType === 'test' ? '测试' : '正式'}</option>`).join("");
 
     // 账号行
     const userRows = users.map((user) => {
@@ -195,7 +208,7 @@ async function render() {
             <span class="admin-dot ${user.role === "admin" ? "role" : "online"}"></span>
             <div class="admin-row-body">
                 <strong>${escapeHtml(user.username)}</strong>
-                <span>${user.role === "admin" ? "管理员" : "普通用户"}${disabled ? " · 已停用" : ""} · 创建于 ${escapeHtml(String(user.createdAt || "").slice(0, 10) || "—")}${storesOwned ? ` · 名下店铺 ${storesOwned} 家` : ""}</span>
+                <span>${user.accountType === 'test' ? '测试账户' : '正式账户'} · ${user.role === "admin" ? "管理员" : "普通用户"}${disabled ? " · 已停用" : ""} · 创建于 ${escapeHtml(String(user.createdAt || "").slice(0, 10) || "—")}${storesOwned ? ` · 名下店铺 ${storesOwned} 家` : ""}</span>
             </div>
             <span class="admin-row-owner"><b>状态</b>${disabled ? "已停用" : "正常"}</span>
             <div class="admin-row-actions">
@@ -220,7 +233,7 @@ async function render() {
             <span class="admin-row-owner"><b>归属账户</b>${escapeHtml(store.ownerNameMasked || store.ownerName || "未认领")}</span>
             <div class="admin-row-actions">
                 <select class="admin-select" data-reassign-target="${escapeHtml(store.storeId)}"><option value="">改派给…</option>${userOptions}</select>
-                <button type="button" class="admin-btn" data-reassign-store="${escapeHtml(store.storeId)}">改派</button>
+                <button type="button" class="admin-btn" data-reassign-store="${escapeHtml(store.storeId)}">${store.accountType === 'unclassified' ? '归类并改派' : '改派'}</button>
                 ${store.claimState !== "unclaimed" ? `<button type="button" class="admin-btn" data-force-release="${escapeHtml(store.storeId)}">解除</button>` : ""}
                 <button type="button" class="admin-btn danger" data-delete-store="${escapeHtml(store.storeId)}" data-store-name="${escapeHtml(store.storeName || store.storeId)}">删除</button>
             </div>
@@ -250,9 +263,9 @@ async function render() {
     fill("admin-product-list", renderProductList(products, batches), "商品库还是空的。");
 
     const productCountEl = document.getElementById("product-count");
-    if (productCountEl) productCountEl.textContent = `${products.length} 个`;
+    if (productCountEl) productCountEl.textContent = products.length < productTotal ? `${products.length} / ${productTotal} 个` : `${productTotal} 个`;
 
-    bindEvents({ users, stores, products, batches });
+    bindEvents({ users, stores, products, productTotal, batches });
 }
 
 /**
@@ -302,7 +315,7 @@ function renderProductList(products, batches) {
         </div>`;
 }
 
-function bindEvents({ users, stores, products = [], batches = [] }) {
+function bindEvents({ users, stores, products = [], productTotal = products.length, batches = [] }) {
     // ---------- 商品列表：勾选、筛选、批量删除 ----------
     const productList = document.getElementById("admin-product-list");
     if (productList) {
@@ -417,7 +430,7 @@ function bindEvents({ users, stores, products = [], batches = [] }) {
                 if (matched) visible += 1;
             }
             const count = document.getElementById("product-count");
-            if (count) count.textContent = (keyword || wanted) ? `${visible} / ${products.length} 个` : `${products.length} 个`;
+            if (count) count.textContent = (keyword || wanted || products.length < productTotal) ? `${visible} / ${productTotal} 个` : `${productTotal} 个`;
             syncToolbar();
         };
         search?.addEventListener("input", apply);
@@ -537,7 +550,7 @@ function bindEvents({ users, stores, products = [], batches = [] }) {
             title: `删除店铺「${storeName}」？`,
             details,
             options: [
-                { value: "keep", label: "保留店铺产品", hint: `只删除店铺记录、归属、任务与日志；${impact.productCount || 0} 个商品保留在商品库（店铺已删除，这些商品仅管理员可见）。` },
+                { value: "keep", label: "保留店铺产品", hint: `只删除店铺记录与归属；${impact.productCount || 0} 个商品保留在同分类商品库，已删除来源不能继续发送。` },
                 { value: "purge", label: "完全删除", hint: `店铺记录、${impact.productCount || 0} 个商品、${impact.jobCount || 0} 个任务、${impact.logCount || 0} 条日志一并删除，不可恢复。` }
             ]
         });
@@ -596,6 +609,27 @@ async function boot() {
         return;
     }
     renderShell();
+    // 分类切换清除旧行与选择；过期异步响应由版本号拒绝提交。
+    document.getElementById('admin-account-type')?.addEventListener('change', async event => {
+        adminAccountType = ['test', 'unclassified'].includes(event.target.value) ? event.target.value : 'production';
+        adminRenderVersion++;
+        stage.querySelectorAll('.admin-list').forEach(list => { list.textContent = '正在读取…'; });
+        await render();
+    });
+    document.getElementById('admin-create-test')?.addEventListener('submit', async event => {
+        event.preventDefault();
+        const form = event.currentTarget, button = form.querySelector('button'), status = document.getElementById('admin-create-test-status');
+        if (button.disabled) return;
+        button.disabled = true;
+        try {
+            await api('/temu/api/admin/users/test', { method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ username: form.elements.username.value, password: form.elements.password.value }) });
+            form.reset();
+            adminAccountType = 'test'; document.getElementById('admin-account-type').value = 'test';
+            await render(); status.textContent = '测试账户已注册';
+        } catch (error) { status.textContent = error.message; }
+        finally { button.disabled = false; }
+    });
     await render();
 }
 

@@ -21,7 +21,7 @@ async function fixture(viewport, count = 6) {
         publicationData: { sourceBatchId: 'batch' }, blocked: i < 2, sendBlocked: i < 2,
         blockedReason: i < 2 ? '当前类目净含量必填（错误码 2000135）' : '', sourceStoreIds: ['temu:111'] }));
     const agents = ['222', '333', '444'].map(id => ({ storeId: `temu:${id}`, storeName: `目标店 ${id}`, online: true,
-        pluginDetected: true, identityMatched: true, canReceiveUploads: true }));
+        pluginDetected: true, identityMatched: true, canReceiveUploads: true, pluginVersion: '11.0.4' }));
     page.on('pageerror', error => errors.push(error.message));
     await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -36,10 +36,10 @@ async function fixture(viewport, count = 6) {
         if (url.pathname === '/api/agents') return json({ agents, total: agents.length, hasMore: false });
         if (url.pathname === '/api/live') return json({ inventory: '1', claims: '1', agents: '1', directory: '1' });
         if (url.pathname === '/api/events') return route.abort();
-        if (url.pathname === '/api/direct-create-capability') return json({ directCreate: true });
+        if (url.pathname === '/api/direct-create-capability') return json({ directCreate: true,
+            actionTypes: ['product_create', 'qualification_upload'], minimumPluginVersion: '11.0.4' });
         if (url.pathname === '/api/stores') return json({ stores: [], total: 0, counts: {} });
         if (url.pathname === '/api/ziniao/stores') return json({ stores: [] });
-        if (url.pathname === '/api/import') return json({ batch: { id: 'imported' }, reused: false });
         if (url.pathname === '/api/relay/send') {
             const body = route.request().postDataJSON(); sends.push(body);
             if (hold) await new Promise(resolve => gates.push(resolve));
@@ -56,22 +56,23 @@ async function fixture(viewport, count = 6) {
         release() { hold = false; gates.splice(0).forEach(resolve => resolve()); } };
 }
 
-/** 通过真实按钮打开确认窗，测试里不直接调用发送函数替代用户入口。 */
+/** 未预选店直接打开共用任务弹窗，再选类型和目标；确认前不得产生发送。 */
 async function selectAndConfirm(page) {
     await page.locator('label:has(#select-all-products)').click();
     assert.equal(await page.locator('#select-all-products').isChecked(), true);
-    await page.getByRole('button', { name: '选择目标店铺', exact: true }).click();
-    await page.locator('label:has(#batch-target-select-all)').click();
-    assert.equal(await page.locator('#batch-target-select-all').isChecked(), true);
-    await page.locator('#batch-target-dialog button[value="apply"]').click();
+    assert.equal(await page.locator('#batch-target-stores').evaluate(select => select.selectedOptions.length), 0);
+    assert.equal(await page.locator('#batch-direct-create').isEnabled(), true);
     await page.locator('#batch-direct-create').click();
-    const confirm = page.getByRole('dialog', { name: '确认批量上架' });
+    const confirm = page.locator('#single-target-dialog');
+    await confirm.locator('.upload-action-types label:has(input[value="product_create"])').click();
+    await page.locator('label:has(#single-target-select-all)').click();
+    assert.equal(await page.locator('#single-target-select-all').isChecked(), true);
     assert.match(await confirm.innerText(), /标红跳过 2 个/);
     return confirm;
 }
 
 try {
-    for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['mobile', { width: 375, height: 800 }]]) {
+    for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['mobile', { width: 390, height: 844 }]]) {
         const f = await fixture(viewport), { page } = f;
         assert.equal(await page.locator('a[href="#/products/all"]').count(), 0);
         assert.equal(await page.locator('[data-transfer-spu]').first().isEnabled(), false);
@@ -84,7 +85,8 @@ try {
         const width = await page.evaluate(() => ({ viewport: innerWidth, width: document.documentElement.scrollWidth }));
         assert.ok(width.width <= width.viewport + 1, JSON.stringify(width));
         await page.screenshot({ path: new URL(`web-transfer-confirm-${name}.png`, output).pathname.slice(1), fullPage: true });
-        await confirm.getByRole('button', { name: '确认发送', exact: true }).click();
+        assert.equal(f.sends.length, 0);
+        await confirm.locator('button[value="apply"]').click();
         await page.waitForFunction(() => {
             const message = document.querySelector('#catalog-toast')?.textContent || '';
             if (message.includes('发送失败')) throw Error(message);
@@ -94,21 +96,24 @@ try {
         for (let i = 0; i < 100 && f.sends.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
         assert.equal(f.sends.length, 2);
         assert.notEqual(f.sends[0].targetStoreId, f.sends[1].targetStoreId);
-        for (const body of f.sends) assert.deepEqual(body.spuIds, f.products.slice(2).map(p => p.spuId));
+        for (const body of f.sends) {
+            assert.deepEqual(body.spuIds, f.products.slice(2).map(p => p.spuId));
+            assert.equal(body.actionType, 'product_create');
+        }
         f.release();
         await page.waitForFunction(() => document.querySelector('#catalog-toast')?.textContent.includes('实际发出 12 份'));
         assert.equal(f.sends.length, 3); assert.deepEqual(f.errors, []);
-        const reads = f.overviewReads;
-        await page.locator('#catalog-files').setInputFiles({ name: 'mock.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
-        await page.waitForFunction(() => document.querySelector('#catalog-toast')?.textContent.includes('上传完成'));
-        assert.ok(f.overviewReads > reads); assert.equal(new URL(page.url()).hash, '#/products');
+        // 商品库仅通过插件采集入库，不再提供手工导入或展示模式的选择入口。
+        assert.equal(await page.locator('#catalog-files, #catalog-upload-button, #product-view-mode').count(), 0);
+        assert.equal(await page.getByRole('button', { name: '导入资料', exact: true }).count(), 0);
+        assert.equal(new URL(page.url()).hash, '#/products');
         assert.doesNotMatch(await page.locator('#app').innerText(), /完整度|核验说明|响应数/);
         await page.screenshot({ path: new URL(`web-transfer-result-${name}.png`, output).pathname.slice(1), fullPage: true });
         await f.context.close();
     }
     const f = await fixture({ width: 1280, height: 900 }, 20), { page } = f;
     const confirm = await selectAndConfirm(page);
-    await confirm.getByRole('button', { name: '确认发送', exact: true }).click();
+    await confirm.locator('button[value="apply"]').click();
     for (let i = 0; i < 100 && f.sends.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(f.sends.length, 2);
     await page.getByRole('link', { name: '店铺认领', exact: true }).click();
@@ -123,6 +128,6 @@ try {
     }
     assert.deepEqual(f.errors, []); await f.context.close();
     console.log(JSON.stringify({ passed: true, viewports: 2, realApp: true, redButtonsRemainDisabled: true,
-        selected: 6, perStoreSent: 4, maxConcurrent: 2, routeStopsRemaining: true, importRefresh: true, oldRoutesRedirect: true,
+        selected: 6, perStoreSent: 4, maxConcurrent: 2, routeStopsRemaining: true, removedImportAndViewMode: true, oldRoutesRedirect: true,
         realPlatformRequests: 0 }));
 } finally { await browser.close(); }

@@ -17,7 +17,7 @@ import { normalizeBasePathValue, resolveRequestBasePath, stripRequestBasePath } 
  * 插件令牌的可访问路径白名单。只有这些接口允许用插件令牌访问；
  * 普通用户数据接口一律要求用户会话或设备令牌；商品失败提示另由投递签名限制写入范围。
  */
-const PLUGIN_SCOPED_PATHS = /^\/api\/(?:ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|ingest-info|plugin\/register|agents\/register|jobs\/claim|products\/(?:failure|error-notice))$/;
+const PLUGIN_SCOPED_PATHS = /^\/api\/(?:ingest(?:\/prepare|\/requests\/[a-zA-Z0-9-]{16,80}(?:\/cancel)?)?|ingest-info|plugin\/register|agents\/register|jobs\/claim|relay\/socket|products\/(?:failure|error-notice))$/;
 
 export function createCloudAuth({ dataRoot, credentialPath }) {
     const users = createUsers(dataRoot);

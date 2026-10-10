@@ -73,7 +73,7 @@ async function retireIngestJob(job) {
 
 /** 停止通道只发送原requestId；独立于商品队列，最多两条并发，失败留给后续闹钟。 */
 function flushIngestStops() {
-    // 心跳、升级与刷新可能同时触发；共用一次冲刷，避免每个调用各开两条取消请求。
+    // 清理闹钟、升级与刷新可能同时触发；共用一次冲刷，避免重复发出取消请求。
     if (!ingestStopFlush) ingestStopFlush = flushIngestStopsNow().finally(() => { ingestStopFlush = null; });
     return ingestStopFlush;
 }
@@ -154,6 +154,7 @@ function invalidateExecutionTab(tabId, reason) {
     const active = executionActiveTabs.get(tabId);
     if (active) { revokedExecutionRuns.add(active.executionRunId); directStopRequested.add(active.storeId); }
     const run = directPauseControlQueue.then(async () => {
+        await chrome.storage.session.remove(`executionViewer:${tabId}`);
         const stored = await chrome.storage.session.get(null);
         for (const [key, state] of Object.entries(stored)) {
             if (!key.startsWith('directPause:') || state?.tabId !== tabId) continue;
@@ -169,7 +170,7 @@ function invalidateExecutionTab(tabId, reason) {
     return run;
 }
 
-/** 会话绑定可信文档和真实商城；后台休眠保留同页状态，刷新、切店或升级不恢复旧任务。 */
+/** 同店共用执行会话；新增展示页只登记观看身份，不撤销另一页正在执行的队列。 */
 async function bindExecutionIdentity(sender, identity, controlLocked = false) {
     if (!controlLocked) {
         const run = directPauseControlQueue.then(() => bindExecutionIdentity(sender, identity, true));
@@ -186,7 +187,7 @@ async function bindExecutionIdentity(sender, identity, controlLocked = false) {
     const stored = await chrome.storage.session.get(null);
     for (const [key, state] of Object.entries(stored)) {
         if (!key.startsWith('directPause:')) continue;
-        if (state.tabId !== tabId && state.storeId !== identity.storeId) continue;
+        if (state.tabId !== tabId && state.enabledVersion === version) continue;
         if (state.documentId === documentId && state.tabId === tabId && state.storeId === identity.storeId && state.enabledVersion === version) continue;
         await stopExecutionRound(state, '页面或商城变化，丢弃旧任务');
         await withTargetTaskMutation(async () => {
@@ -196,18 +197,39 @@ async function bindExecutionIdentity(sender, identity, controlLocked = false) {
     }
     if ((executionDocumentEpochs.get(tabId) || 0) !== epoch) throw Error('页面已变化');
     await chrome.storage.session.set({ [identityKey]: identity.storeId });
+    await chrome.storage.session.set({ [`executionViewer:${tabId}`]: { ...identity, tabId, documentId, enabledVersion: version } });
     const key = directPauseKey(identity.storeId);
     let state = (await chrome.storage.session.get(key))[key];
+    /**
+     * 页面读到的店名统一在这里归一化一次，往下所有人都拿这一份。
+     *
+     * 为什么集中在这里：`identity` 的字段来自多个调用方（页面探测、后台恢复、观看页），
+     * 各自可能只填 `storeName` 或只填 `pageStoreName`。如果每个下游各自 `a || b`，
+     * 就会出现"有的路径有名字、有的没有"——认证帧恰好走了没名字的那条。
+     */
+    const pageName = String(identity.storeName || identity.pageStoreName || '').trim().slice(0, 120);
     if (!state) {
-        state = { storeId: identity.storeId, tabId, documentId, relaySessionId: crypto.randomUUID(),
+        state = { storeId: identity.storeId, mallId: identity.mallId, storeName: pageName,
+            pageStoreName: pageName, tabId, documentId, relaySessionId: crypto.randomUUID(),
             executionRunId: crypto.randomUUID(), paused: false, enabledVersion: version };
         await installLocalExecutionRound(state);
         if ((executionDocumentEpochs.get(tabId) || 0) !== epoch) throw Error('页面已变化');
         await withTargetTaskMutation(() => setTargetSessionValues({ [key]: state }));
         directStopRequested.delete(identity.storeId);
+    } else if (pageName && pageName !== String(state.storeName || '').trim()) {
+        /**
+         * 会话已存在但这次读到了不同的名字：补写进会话。
+         * 空名不覆盖旧名（DOM 重绘的瞬间会读到空，那不是"店名消失"）。
+         */
+        state = { ...state, storeName: pageName, pageStoreName: pageName };
+        await withTargetTaskMutation(async () => {
+            const latest = (await chrome.storage.session.get(key))[key];
+            if (latest && latest.relaySessionId === state.relaySessionId) await setTargetSessionValues({ [key]: state });
+        });
     }
-    executionActiveTabs.set(tabId, state);
-    return { ...identity, tabId, documentId, relayProtocol: 1,
+    executionActiveTabs.set(state.tabId, state);
+    return { ...identity, storeName: pageName || String(state.storeName || ''),
+        pageStoreName: pageName || String(state.pageStoreName || ''), tabId: state.tabId, documentId: state.documentId, relayProtocol: 1,
         relaySessionId: state.relaySessionId, executionRunId: state.executionRunId };
 }
 /** 页面内最后一道门禁独立于网络，离开页面立即禁止尚未发出的新增。 */
@@ -222,17 +244,19 @@ async function installLocalExecutionRound(state) {
 }
 /** 继续只换本地代次，保留接收会话和未开始队列，不进行服务器握手。 */
 async function startExecutionRound(sender, identity, resetReception = false) {
-    await assertExecutionDocument(sender.tab.id, sender.documentId);
+    // 操作可来自同店展示页，但安装执行门禁必须仍指向真实执行页，不能静默换执行文档。
+    const ownerSender = { tab: { id: identity.tabId }, documentId: identity.documentId };
+    await assertExecutionDocument(ownerSender.tab.id, ownerSender.documentId);
     const key = directPauseKey(identity.storeId);
     const old = (await chrome.storage.session.get(key))[key];
     if (!old || old.relaySessionId !== identity.relaySessionId) throw Error('接收页面已变化');
-    const epoch = executionDocumentEpochs.get(sender.tab.id) || 0;
+    const epoch = executionDocumentEpochs.get(ownerSender.tab.id) || 0;
     // 结束必须同时换接收会话，截断结束前尚未返回的网络投递；继续则保留同一批队列。
     const state = { ...old, paused: false, executionRunId: crypto.randomUUID(),
         ...(resetReception ? { relaySessionId: crypto.randomUUID(), pausedSendId: '', retiredSendIds: [] } : {}) };
     revokedExecutionRuns.add(old.executionRunId);
     await installLocalExecutionRound(state);
-    if ((executionDocumentEpochs.get(sender.tab.id) || 0) !== epoch) throw Error('页面已变化');
+    if ((executionDocumentEpochs.get(ownerSender.tab.id) || 0) !== epoch) throw Error('页面已变化');
     await withTargetTaskMutation(async () => {
         // 重读共享控制行保留刚提交的换批名单，再把执行代次与队列一起提交。
         const latest = (await chrome.storage.session.get(key))[key];
@@ -243,7 +267,7 @@ async function startExecutionRound(sender, identity, resetReception = false) {
             task.relaySessionId === state.relaySessionId
                 ? { ...task, executionRunId: state.executionRunId } : task), { [key]: state });
     });
-    executionActiveTabs.set(sender.tab.id, state);
+    executionActiveTabs.set(ownerSender.tab.id, state);
     directStopRequested.delete(identity.storeId);
     return { ...identity, relaySessionId: state.relaySessionId, executionRunId: state.executionRunId };
 }

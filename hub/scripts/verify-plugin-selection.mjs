@@ -1,11 +1,11 @@
 /**
- * 在真实 Chromium 中加载未打包插件，用本地夹具页面核对“勾选商品后选择性采集”的跨页与刷新行为。
+ * 在真实 Chromium 中加载未打包插件，核对实时勾选、固定批次及失败/刷新后的选择行为。
  * 夹具通过路由拦截伪造商品列表，且整机网络指向不可用代理，因此不会访问真实 Temu、不会入库、不会登记心跳。
  * 缺少 playwright 时跳过，不阻断其他验证。
  */
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.dirname(scriptsDir);
 const pluginDir = path.resolve(rootDir, "..", "plugin");
 const manifest = JSON.parse(readFileSync(path.join(pluginDir, "manifest.json"), "utf8"));
+const screenshotDir = path.resolve(rootDir, "..", "output", "playwright");
 
 // playwright 只用于本轮实测，不进 hub 依赖；按环境变量、常规解析、本机既有安装依次尝试。
 function loadPlaywright() {
@@ -37,7 +38,6 @@ if (!playwright) {
 
 const PAGE_ONE_SPUS = ["6220828213", "5886465868", "5248761746"];
 const PAGE_TWO_SPUS = ["4211980377", "3901775221"];
-const SELECTED_SPUS = [PAGE_ONE_SPUS[0], PAGE_TWO_SPUS[0]];
 
 /** 夹具只保留插件识别商品行所需的结构：表格行 + 行内复选框 + “SPU ID：数字”。 */
 function fixtureHtml() {
@@ -49,17 +49,19 @@ function fixtureHtml() {
         '<html lang="zh"><head><meta charset="utf-8"><title>商品列表</title>',
         "<style>body{margin:0;padding:16px 460px 16px 16px;font:14px/1.6 sans-serif}table{border-collapse:collapse;width:100%}td{border:1px solid #ddd;padding:6px}</style>",
         "</head><body>",
-        `<main><table><tbody id="rows">${rows(PAGE_ONE_SPUS)}</tbody></table></main>`,
+        `<main><table><thead><tr><th><input id="select-all" type="checkbox" aria-label="全选"></th></tr></thead><tbody id="rows">${rows(PAGE_ONE_SPUS)}</tbody></table><div class="ant-pagination"><span class="ant-pagination-item-active" id="page-number">1</span></div></main>`,
         "<script>",
         `try { window.__loads = Number(localStorage.getItem("fixtureLoads") || 0) + 1; localStorage.setItem("fixtureLoads", String(window.__loads)); } catch (error) { window.__loads = 1; }`,
         `window.__page = 1;`,
         `window.__renderRows = function (spus, page) {`,
         `    window.__page = page || 1;`,
+        `    document.getElementById("page-number").textContent = String(window.__page);`,
         `    document.getElementById("rows").innerHTML = spus.map(function (spu) {`,
         `        return '<tr><td><input type="checkbox" aria-label="select ' + spu + '"></td><td>SPU ID：' + spu + '</td><td>商品 ' + spu + '</td></tr>';`,
         `    }).join("");`,
         `};`,
         `window.__pageTwo = ${JSON.stringify(PAGE_TWO_SPUS)};`,
+        `document.getElementById('select-all').addEventListener('change', event => document.querySelectorAll('#rows input').forEach(input => { input.checked = event.target.checked; }));`,
         "</script></body></html>"
     ].join("\n");
 }
@@ -73,6 +75,7 @@ function pluginStatus(page) {
         return {
             version: attribute("data-plugin-version"),
             expectedCount: attribute("data-expected-count"),
+            selectedCount: attribute("data-selected-count"),
             completedCount: attribute("data-completed-count"),
             capturePhase: attribute("data-capture-phase"),
             ingestPhase: attribute("data-ingest-phase"),
@@ -127,14 +130,13 @@ async function selectedSpuCheckboxes(page) {
     return page.evaluate(() => Array.from(document.querySelectorAll("table tbody tr")).map(row => ({
         spu: (row.textContent.match(/SPU\s*ID\s*[：:#]?\s*([0-9]{4,20})/) || [])[1] || null,
         checked: Boolean(row.querySelector("input[type='checkbox']")?.checked),
-        // 平台隐藏了真实复选框，插件用行标记提供可见反馈，测试同时核对这条可见证据。
+        // 新逻辑不能用锁定行标记把当前选择伪装成任务范围。
         marked: row.getAttribute("data-temu-selected-capture") === "1"
     })));
 }
 
 /**
- * 等待表格重绘成指定商品页，并可附加勾选恢复条件。
- * 插件扫描有 180ms 防抖，表格换页后必须等它重新映射复选框，不能在旧状态上断言。
+ * 等待表格重绘成指定商品页；选择同步与扫描有防抖，不能在旧状态上断言。
  */
 async function waitForRows(page, spus, predicate = null, timeout = 20000) {
     const deadline = Date.now() + timeout;
@@ -202,7 +204,7 @@ try {
     );
     assert.equal(currentPageCapture.capturePhase, "待人工确认", "夹具缺少 SKC 时应在删除状态核验处停止");
 
-    // 回到干净页面后继续验证跨页勾选；不能用普通采集留下的待确认状态启动选择性采集。
+    // 回到干净页面验证选择性采集；刷新只使用当前原生勾选，不恢复历史清单。
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
     await waitForStatus(page, status => status.expectedCount === String(PAGE_ONE_SPUS.length), "重载后的第一页统计");
@@ -215,39 +217,68 @@ try {
         "第一页只应勾选第 1 件商品"
     );
 
-    // 翻到第二页再勾选第 1 件商品；第一页的选择必须保留在选择清单里。
-    await page.evaluate(() => window.__renderRows(window.__pageTwo, 2));
-    await page.locator("table tbody tr").first().locator("input[type='checkbox']").click();
-    assert.deepEqual(
-        (await selectedSpuCheckboxes(page)).map(row => row.checked),
-        [true, false],
-        "第二页只应勾选第 1 件商品"
-    );
-
+    await waitForStatus(page, status => status.selectedCount === "1", "首次实时勾选");
     const loadsBeforeSelected = await page.evaluate(() => window.__loads || 0);
-    // 触发选择性采集：插件会写入选择清单开关并刷新页面。
+    // 夹具缺 SKC 会停止；失败后的修改仍只影响当前选择，不得改旧批次或强制勾回。
     await clickPanelButton(client, "start-selected");
-    await page.waitForFunction(loads => (window.__loads || 0) > loads, loadsBeforeSelected, { timeout: 30000 });
-    await page.waitForFunction(version => Boolean(document.querySelector(`[data-plugin-version="${version}"]`)), manifest.version, { timeout: 20000 });
-
-    // 刷新后采集范围必须来自选择清单（2 件），而不是刷新后第一页的 3 件。
-    const afterReload = await waitForStatus(page, status => status.expectedCount === String(SELECTED_SPUS.length), "刷新后恢复锁定勾选清单");
-    assert.equal(afterReload.loads, loadsBeforeSelected + 1, "选择性采集应刷新一次页面");
-
-    // 刷新回第一页后，已锁定的商品必须重新显示为勾选，未勾选商品不能被误勾。
-    const rows = await waitForRows(page, PAGE_ONE_SPUS, list => list[0].checked);
-    assert.equal(rows[0].checked, true, `${SELECTED_SPUS[0]} 刷新后应恢复勾选`);
-    assert.equal(rows[1].checked, false, `${PAGE_ONE_SPUS[1]} 未被选择，不应被勾选`);
-    assert.equal(rows[2].checked, false, `${PAGE_ONE_SPUS[2]} 未被选择，不应被勾选`);
-    assert.deepEqual(rows.map(row => row.marked), [true, false, false], "刷新后只有锁定商品带可见锁定标记");
-
-    // 采集进行中再翻到第二页：锁定的第二页商品重新出现时也必须恢复勾选，证明清单按 SPU 保存而不是按页码保存。
+    await waitForStatus(page, status => status.expectedCount === "1" && status.capturePhase === "待人工确认", "选择批次失败保留快照");
+    assert.equal(await page.evaluate(() => window.__loads), loadsBeforeSelected, "选择性采集不能刷新页面");
+    await page.locator("table tbody tr").first().locator("input[type='checkbox']").uncheck();
+    await waitForStatus(page, status => status.selectedCount === "0", "失败后实时取消选择");
+    assert.equal((await pluginStatus(page)).expectedCount, "1", "取消选择不能改旧批次");
+    await page.waitForTimeout(700);
+    assert.deepEqual((await selectedSpuCheckboxes(page)).map(row => row.checked), [false, false, false]);
+    await page.locator("#select-all").check();
+    await waitForStatus(page, status => status.selectedCount === "3", "表头全选");
+    assert.equal((await pluginStatus(page)).expectedCount, "1");
+    await page.locator("#select-all").uncheck();
+    await waitForStatus(page, status => status.selectedCount === "0", "表头取消全选");
+    // 模拟受控组件只改属性、不发送 change；轮询仍须同步数量。
+    await page.evaluate(() => { document.querySelector('#rows input').checked = true; });
+    await waitForStatus(page, status => status.selectedCount === "1", "无事件勾选同步");
+    const rows = await selectedSpuCheckboxes(page);
+    assert.ok(rows.every(row => !row.marked), "插件不得伪造旧锁定标记");
+    // 真实切页必须隔离原选择与 SKC；下一页的原生选择由页面决定。
     await page.evaluate(() => window.__renderRows(window.__pageTwo, 2));
-    const pageTwoRows = await waitForRows(page, PAGE_TWO_SPUS, list => list[0].checked);
-    assert.equal(pageTwoRows[0].checked, true, `${SELECTED_SPUS[1]} 重新出现时应恢复勾选`);
-    assert.equal(pageTwoRows[1].checked, false, `${PAGE_TWO_SPUS[1]} 未被选择，不应被勾选`);
-    assert.deepEqual(pageTwoRows.map(row => row.marked), [true, false], "第二页只有锁定商品带可见锁定标记");
-    assert.equal((await pluginStatus(page)).expectedCount, "2", "翻页不应改变锁定的采集范围");
+    await waitForStatus(page, status => status.selectedCount === "0" && status.expectedCount === "2", "切页隔离");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForStatus(page, status => status.selectedCount === "0" && status.expectedCount === "3", "刷新只读当前选择");
+    assert.deepEqual((await selectedSpuCheckboxes(page)).map(row => row.checked), [false, false, false]);
+
+    // 原始页面刚刷新没有勾选；注入离线客户端并挂起删除核验，验证真正运行中也不改范围。
+    await page.evaluate(() => {
+        document.querySelectorAll("#rows tr").forEach((row, index) => {
+            row.lastElementChild.textContent += ` SKC ID：${9000000000 + index}`;
+        });
+        function factory() { return ".postWithoutMallId= .mallIdClient= getMallIdAsync"; }
+        const runtime = () => ({ mallIdClient: { getMallIdAsync: async () => "999000000000001" },
+            post: async (url, input) => {
+                window.__removalInput = input;
+                return new Promise(resolve => { window.__finishRemoval = () => resolve({ success: false, errorCode: 1234 }); });
+            } });
+        runtime.m = { 4242: factory };
+        const chunks = [];
+        chunks.push = entry => { entry[2](runtime); return 1; };
+        window.chunkLoadingGlobal_temu_sca_goods = chunks;
+    });
+    await page.locator("#rows input").nth(0).check();
+    await page.locator("#rows input").nth(1).check();
+    await waitForStatus(page, status => status.selectedCount === "2", "运行前选择两件");
+    await clickPanelButton(client, "start-selected");
+    await page.waitForFunction(() => typeof window.__finishRemoval === "function");
+    assert.equal((await pluginStatus(page)).expectedCount, "2");
+    await page.locator("#rows input").nth(0).uncheck();
+    await page.locator("#rows input").nth(1).uncheck();
+    await page.locator("#rows input").nth(2).check();
+    await waitForStatus(page, status => status.selectedCount === "1" && status.expectedCount === "2", "运行中当前选择一件而批次两件");
+    assert.deepEqual(await page.evaluate(() => window.__removalInput.productSkcIds), ["9000000000", "9000000001"]);
+    mkdirSync(screenshotDir, { recursive: true });
+    for (const [name, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 375, height: 800 }]]) {
+        await page.setViewportSize(viewport);
+        await page.screenshot({ path: path.join(screenshotDir, `selection-snapshot-${name}.png`) });
+    }
+    await page.evaluate(() => window.__finishRemoval());
+    await waitForStatus(page, status => status.capturePhase === "待人工确认" && status.selectedCount === "1" && status.expectedCount === "2", "核验失败仍分离选择与批次");
 
     // 结束后停止本次采集，避免夹具环境下继续空转到超时。
     await clickPanelButton(client, "stop").catch(() => {});
@@ -256,12 +287,17 @@ try {
     assert.deepEqual(fatal, [], `页面脚本不应报错：${fatal.join(" | ")}`);
 
     console.log(JSON.stringify({
-        result: "selected capture survives pagination and reload",
+        result: "live selection is separate from fixed capture snapshot",
         version: manifest.version,
-        selectedSpus: SELECTED_SPUS,
-        pageAfterReload: rows
+        fixedSpus: [PAGE_ONE_SPUS[0]],
+        realtimeRows: rows,
+        runningSnapshotVerified: true,
+        realPlatformCalls: 0
     }));
 } finally {
     if (context) await context.close().catch(() => {});
+    // 递归清理只允许本脚本刚创建的系统临时目录，不能跨出约定父目录。
+    assert.equal(path.dirname(path.resolve(profileDir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(profileDir).startsWith("ziniao-plugin-selection-"));
     rmSync(profileDir, { recursive: true, force: true });
 }

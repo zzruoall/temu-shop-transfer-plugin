@@ -64,15 +64,15 @@ for (const level of ['product', 'sku']) {
         assert.equal(hit.productId, 'active');
         assert.ok(f.calls.some(body => body.page === 2));
     });
-    test(`${level}：删除与未知共存不能误新增，未知与有效共存仍跳过`, async () => {
+    test(`${level}：删除与未知共存不能误新增，未知与有效共存也不能决定资质修改对象`, async () => {
         const f = fixture({ level, pages: [[row('old', 1, level), row('unknown', null, level)]] });
         const uncertain = await f.check();
         assert.equal(uncertain.state, 'uncertain');
         assert.match(uncertain.reason, /删除状态未确认/);
         assert.equal(f.window.__temuDuplicateIndex, undefined);
         const hit = await fixture({ level, pages: [[row('unknown', null, level), row('active', 0, level)]] }).check();
-        assert.equal(hit.state, 'exists');
-        assert.equal(hit.productId, 'active');
+        assert.equal(hit.state, 'uncertain');
+        assert.match(hit.reason, /删除状态未确认/);
     });
 }
 

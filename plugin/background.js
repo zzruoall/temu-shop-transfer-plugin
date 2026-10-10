@@ -8,10 +8,14 @@ importScripts("store-identity.js");
 importScripts("operation-log.js");
 importScripts("cli-receiver.js");
 importScripts("transfer-integrity.js");
+importScripts("qualification-reader.js");
+importScripts("qualification-transfer.js");
+importScripts("qualification-executor.js");
 // 目标执行独立；仅错误发送小型通知，正常进度与成功结果不回传。
 importScripts("direct-executor.js");
 importScripts("error-notice.js");
 importScripts("execution-round.js");
+importScripts("store-channel.js");
 
 const DATABASE_NAME = "temu-local-dataset";
 const DATABASE_VERSION = 2;
@@ -492,6 +496,8 @@ function hasDetailPayloadEvidence(payload, depth = 0) {
 
 function classifyEvent(requestUrl, payload, pageUrl = "") {
     const url = String(requestUrl || "");
+    // 只认专用资质快照；平台原始资质清单不能冒充商品详情，也不能把附件混入商品素材。
+    if (/\/mms\/arbok\/product_cert\/query\/list(?:$|[?])/.test(url) && payload?.success === true && payload.result?.schemaVersion === 1) return "product-qualifications";
     const hasDetailPayload = hasDetailPayloadEvidence(payload);
     // 先处理已确认的 Temu 主列表接口，避免其中携带单个 productId 时被库存旁路接口规则抢先误判。
     if (/\/visage-agent-seller\/product\/skc\/pageQuery(?:$|[/?])/i.test(url)) return "product-list";
@@ -535,7 +541,10 @@ async function saveCapture(event, sender) {
     }
     const serializedPayload = JSON.stringify(event.payload);
     const payloadBytes = getUtf8ByteLength(serializedPayload);
-    if (payloadBytes > MAX_RESPONSE_BYTES) {
+    // 附件归档允许独立字节预算；只对可信资质结构放宽，普通页面响应仍保持 8MiB 上限。
+    const qualificationEvent = classifyEvent(event.requestUrl, event.payload, sender.tab?.url) === 'product-qualifications';
+    if (qualificationEvent) TemuQualificationReader.validateSnapshot(event.payload.result, event.payload.result?.productId);
+    if (payloadBytes > (qualificationEvent ? 56 * 1024 * 1024 : MAX_RESPONSE_BYTES)) {
         const error = new Error("capture_too_large");
         error.captureMeta = { payloadBytes, productRelated: false };
         throw error;
@@ -549,19 +558,31 @@ async function saveCapture(event, sender) {
     const detailCapture = summarizeDetailCapture(payload, event.requestUrl, rawPageUrl, event.responseStatus);
     const detailEvidence = detailCapture.detailText;
     const primaryProduct = isPrimaryProductDetailRequestUrl(event.requestUrl) ? (payload.result || payload.res || payload) : null;
-    const explicitSpu = normalizeProductId(primaryProduct && primaryProduct.productId);
+    // 资质独立快照只以自己的 SPU 建立身份，不能递归把模板或关联商品 ID 算作本次采集对象。
+    const qualificationSnapshot = dataType === "product-qualifications"
+        ? TemuQualificationReader.validateSnapshot(payload.result, payload.result.productId) : null;
+    const explicitSpu = normalizeProductId(qualificationSnapshot?.productId || primaryProduct && primaryProduct.productId);
     const routeSpu = readDetailPageProductId(rawPageUrl);
     if (explicitSpu && routeSpu && explicitSpu !== routeSpu) throw new Error("detail_product_id_mismatch");
     const detailPageProductId = explicitSpu || routeSpu;
     const detailPage = isProductDetailPageUrl(rawPageUrl);
     const detailRequestSeen = isPrimaryProductDetailRequestUrl(event.requestUrl) || (detailPage && (isProductDetailRequestUrl(event.requestUrl) || dataType === "product-detail"));
     // 详情接口有时只返回 detail/图片，不重复 productId；页面路由是当前 SPU 的唯一上下文证据。
-    if (dataType === "product-detail" && detailPageProductId) {
+    if ((dataType === "product-detail" || dataType === "product-qualifications") && detailPageProductId) {
         // 核心响应自身ID优先，编辑路由仅作缺ID时的上下文；冲突已在前面拒绝。
         productMeta.productIds = [detailPageProductId];
         productMeta.idSources.spu = (Array.isArray(productMeta.idSources.spu) ? productMeta.idSources.spu : [])
             .filter(source => Array.isArray(source.samples) && source.samples.includes(detailPageProductId));
         productMeta.idSources.spu.unshift({ path: explicitSpu ? "$payload.productId" : "$pageUrl.productId", key: explicitSpu ? "productId" : "pageProductId", count: 1, samples: [detailPageProductId] });
+    }
+    if (qualificationSnapshot) {
+        productMeta.goodsIds = [];
+        productMeta.skcIds = [];
+        productMeta.skuIds = [];
+        productMeta.removedProductIds = [];
+        productMeta.activeProductIds = [];
+        productMeta.productCount = null;
+        productMeta.idSources = { spu: [{ path: "$payload.result.productId", key: "productId", count: 1, samples: [detailPageProductId] }], goods: [], skc: [], sku: [] };
     }
     const productRelated = dataType === "product-list" || dataType === "product-detail"
         || productMeta.productIds.length > 0 || productMeta.goodsIds.length > 0 || productMeta.productCount !== null;
@@ -718,7 +739,8 @@ async function exportFullPacketToDownload(options = {}) {
         const storedIds = new Set(allRecords.map(record => String(record?.eventId || "")));
         if ([...requestedIds].some(id => !storedIds.has(id))) throw new Error("本次采集的原始记录有缺失，请重新采集后上传");
     }
-    const records = !frozen && requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords;
+    // 下载导出没有冻结发件箱上下文，只按当前轮次已落库指纹选取记录。
+    const records = requestedIds ? allRecords.filter(record => requestedIds.has(String(record && record.eventId || ""))) : allRecords;
     if (!records.length) return { skipped: true, reason: "empty_packet", recordCount: 0, productCount: 0 };
     const packet = makeFullCapturePacket(records, await packetSourceOptions({
         scope: requestedIds ? "current-capture-run" : "all-local-captured-records",
@@ -729,7 +751,7 @@ async function exportFullPacketToDownload(options = {}) {
     if (!packet.products.length) return { skipped: true, reason: "no_products", recordCount: packet.records.length, productCount: 0 };
     const text = JSON.stringify(packet, null, 2);
     const bytes = getUtf8ByteLength(text);
-    if (bytes > MAX_AUTO_EXPORT_BYTES) {
+    if (bytes > (records.some(record => record.dataType === 'product-qualifications' && record.payload?.result?.assets?.length) ? 64 * 1024 * 1024 : MAX_AUTO_EXPORT_BYTES)) {
         const error = new Error("auto_export_too_large");
         error.bytes = bytes;
         throw error;
@@ -1435,6 +1457,11 @@ function detailQueueView(queue) {
         complete,
         partial,
         failed: items.filter(item => item.status === "failed").length,
+        qualificationComplete: items.filter(item => item.qualificationStatus === "complete").length,
+        qualificationFailed: items.filter(item => item.qualificationStatus && item.qualificationStatus !== "complete").length,
+        qualificationFailures: items.filter(item => item.qualificationStatus && item.qualificationStatus !== "complete")
+            .slice(0, 20).map(item => ({ spuId: item.spuId, reason: item.qualificationReason || "资质未完整读取" })),
+        stopReason: String(queue.stopReason || ""),
         failures: items.filter(item => item.status === "failed").slice(0, 20).map(item => ({ spuId: item.spuId, reason: item.reason })),
         current: current && current.status === "queued" ? {
             ...current,
@@ -1566,14 +1593,24 @@ async function advanceDetailSupplement(input, sender) {
     if (queue.mode === "api" && item.status === "failed") {
         // 权限、超时或ID冲突后不继续撞接口；未查询项保留queued供日志区分。
         // 页面查询超时不代表底层请求已取消，刷新文档之前不得把页面交给发布执行器。
-        queue.platformUncertain = /超时|timeout/i.test(item.reason || "");
+        // 新回执明确区分在途结果不明与已结束的业务失败；仅缺字段的旧回执兼容文案判断。
+        queue.platformUncertain = queue.platformUncertain === true || (typeof input.queryUncertain === 'boolean' ? input.queryUncertain : /超时|timeout/i.test(item.reason || ""));
         queue.platformUncertainAt = queue.platformUncertain ? Date.now() : 0;
         queue.active = false;
         queue.status = "partial";
         queue.finishedAt = new Date().toISOString();
+    } else if (input.stopBatch === true) {
+        // 商品资料已保存，但资质查询身份失效或超时后不能继续下件；已完成商品仍可作为静态资料入库。
+        queue.active = false;
+        queue.status = "partial";
+        queue.stopReason = String(input.stopReason || "资质查询需要刷新店铺页面").slice(0, 300);
+        queue.platformUncertain = queue.platformUncertain === true || (typeof input.queryUncertain === 'boolean' ? input.queryUncertain : /超时|timeout/i.test(queue.stopReason));
+        queue.platformUncertainAt = queue.platformUncertain ? Date.now() : 0;
+        queue.finalizationPending = true;
+        queue.finishedAt = new Date().toISOString();
     } else if (index + 1 >= queue.items.length) {
         queue.active = false;
-        queue.status = queue.items.some(entry => entry.status === "failed" || !entry.detailCapture || entry.detailCapture.completeness !== "complete") ? "partial" : "done";
+        queue.status = queue.items.some(entry => entry.status === "failed" || entry.qualificationStatus && entry.qualificationStatus !== "complete" || !entry.detailCapture || entry.detailCapture.completeness !== "complete") ? "partial" : "done";
         queue.finalizationPending = true;
         queue.finishedAt = new Date().toISOString();
     } else {
@@ -1666,14 +1703,37 @@ async function captureApiDetail(input, sender) {
     const item = queue?.items?.[queue.currentIndex];
     if (!await isTabCaptureEnabled(tabId) || !queue?.active || queue.mode !== "api" || queue.runId !== input.runId || item?.spuId !== input.spuId) throw new Error("stale_detail_run");
     if (sender.tab.url !== queue.contextUrl) throw new Error("page_context_changed");
+    if (queue.pageBinding?.documentId !== sender.documentId || !await isIngestPageActive(queue.pageBinding)) throw new Error("stale_capture_round");
+    // 校验原文档和队列头后先保留不明结果；IndexedDB保存失败或页面来不及报告失败也不能解除平台锁。
+    if (input.queryUncertain === true) {
+        queue.platformUncertain = true;
+        queue.platformUncertainAt = Date.now();
+        await saveDetailQueue(tabId, queue);
+    }
     const product = input.payload?.result;
     if (input.payload?.success !== true || String(product?.productId || "") !== item.spuId) throw new Error("detail_product_id_mismatch");
     const event = { kind: "network-json", requestUrl: new URL("/visage-agent-seller/product/query", sender.tab.url).href, method: "POST", transport: "fetch", responseStatus: 200, payload: input.payload, apiRunId: queue.runId };
+    // 独立快照不会进入 publicationData；旧客户端没有资质回执时保留“未读取”，不能宣称同步成功。
+    const qualification = input.qualifications ? TemuQualificationReader.validateSnapshot(input.qualifications, item.spuId) : null;
     try {
         const result = await saveCapture(event, sender);
         await noteDetailCapture(tabId, event, result);
         await appendCaptureLog(makeCaptureLog(event, sender, result, null));
-        return { result, queue: await advanceDetailSupplement({ runId: queue.runId, spuId: item.spuId, status: "done" }, sender) };
+        if (!await isIngestPageActive(queue.pageBinding)) throw new Error("stale_capture_round");
+        if (qualification) {
+            const qualEvent = { kind: "network-json", requestUrl: new URL(TemuQualificationReader.LIST_PATH, sender.tab.url).href,
+                method: "POST", transport: "fetch", responseStatus: 200, apiRunId: queue.runId, payload: { success: true, result: qualification } };
+            const qualResult = await saveCapture(qualEvent, sender);
+            const activeQueue = await noteDetailCapture(tabId, qualEvent, qualResult);
+            const activeItem = activeQueue?.items?.[activeQueue.currentIndex];
+            if (!activeQueue?.active || activeItem?.spuId !== item.spuId || !await isIngestPageActive(queue.pageBinding)) throw new Error("stale_capture_round");
+            activeItem.qualificationStatus = qualification.status;
+            activeItem.qualificationReason = String(qualification.reason || "");
+            await saveDetailQueue(tabId, activeQueue);
+            await appendCaptureLog(makeCaptureLog(qualEvent, sender, qualResult, null));
+        }
+        return { result, queue: await advanceDetailSupplement({ runId: queue.runId, spuId: item.spuId, status: "done",
+            stopBatch: input.stopBatch === true, stopReason: input.stopReason || "", queryUncertain: input.queryUncertain }, sender) };
     } catch (error) {
         await appendCaptureLog(makeCaptureLog(event, sender, null, error));
         throw error;
@@ -2327,10 +2387,15 @@ function summarizeTargetUploadTasks(tasks, storeId = "") {
             sourceBatchId: String(task.sourceBatchId || ""),
             status: String(task.status || "received"),
             directCreate: Boolean(task.directCreate),
+            actionType: directActionType(task),
+            sourceTaskId: String(task.sourceTaskId || ''),
             directState: String(task.directState || ""),
             relaySessionId: String(task.relaySessionId || ""),
             executionRunId: String(task.executionRunId || ""),
             reason: String(task.reason || ""),
+            productId: String(task.productId || ''),
+            productState: String(task.productState || ''),
+            qualificationItems: Array.isArray(task.qualificationItems) ? task.qualificationItems : [],
             errorCode: String(task.errorCode || ""),
             errorStage: String(task.errorStage || ""),
             errorNoticeStatus: String(task.errorNoticeStatus || ''),
@@ -2342,13 +2407,14 @@ function summarizeTargetUploadTasks(tasks, storeId = "") {
         }));
 }
 
-/** 展示暂停必须有匹配的真实文档；执行门禁的缺省停止不能被翻译成用户主动暂停。 */
+/** 展示页须有同店可信观看身份；允许读取共享摘要，但不能获得商品正文或执行凭证。 */
 async function targetUploadTaskView(sender, storeId = '') {
     const empty = { tasks: [], directPaused: false, sessionReady: false };
     if (!storeId || !sender.tab?.id || !sender.documentId) return empty;
     const key = directPauseKey(storeId);
-    const matches = state => state?.tabId === sender.tab.id && state.documentId === sender.documentId
-        && state.enabledVersion === chrome.runtime.getManifest().version;
+    const viewer = (await chrome.storage.session.get(`executionViewer:${sender.tab.id}`))[`executionViewer:${sender.tab.id}`];
+    const matches = state => state && viewer?.storeId === storeId && viewer.documentId === sender.documentId
+        && viewer.enabledVersion === chrome.runtime.getManifest().version && state.enabledVersion === viewer.enabledVersion;
     const state = (await chrome.storage.session.get(key))[key];
     if (!matches(state)) return empty;
     try { await assertExecutionDocument(sender.tab.id, sender.documentId); } catch (_) { return empty; }
@@ -2367,8 +2433,8 @@ async function setTargetSessionValues(values) {
     const after = getUtf8ByteLength(JSON.stringify({ ...stored, ...values }));
     // 只比较不可变正文；原任务的进度、结果和执行代次属于控制信息，不占用新商品准入预算。
     const oldTasks = stored[TARGET_UPLOAD_TASKS_KEY] || [];
-    const taskControlFields = new Set(['executionRunId', 'directState', 'reason', 'status', 'errorCode', 'errorStage', 'errorNoticeStatus', 'reasonTruncated', 'offendingSkuCode']);
-    const attemptControlFields = new Set(['stage', 'done', 'productId', 'businessError']);
+    const taskControlFields = new Set(['executionRunId', 'directState', 'reason', 'status', 'errorCode', 'errorStage', 'errorNoticeStatus', 'reasonTruncated', 'offendingSkuCode', 'productId', 'productState', 'qualificationItems']);
+    const attemptControlFields = new Set(['stage', 'done', 'productId', 'businessError', 'qualificationItems']);
     const withoutFields = (value, fields) => JSON.stringify(Object.fromEntries(Object.entries(value).filter(([key]) => !fields.has(key))));
     const oldBodies = new Set(oldTasks.map(task => withoutFields(task, taskControlFields)));
     const controlOnly = Object.entries(values).every(([key, value]) => {
@@ -2376,8 +2442,11 @@ async function setTargetSessionValues(values) {
         if (key.startsWith('directAttempt:')) {
             if (value === null) return true;
             const previous = stored[key];
-            if (!previous?.attemptId || value?.attemptId !== previous.attemptId
-                || !['verifying', 'created', 'unknown', 'rejected'].includes(value.stage)) return false;
+            // 已存在商品没有新增尝试编号；同一商品的资质结果也需要控制预算，不能被大任务正文挤掉。
+            const sameQualificationProduct = previous?.productId && value?.productId === previous.productId
+                && value.mallId === previous.mallId && previous.stage === 'qualifying';
+            if (!(previous?.attemptId && value?.attemptId === previous.attemptId || sameQualificationProduct)
+                || !['verifying', 'created', 'unknown', 'rejected', 'qualifying', 'qualification_complete', 'qualification_failed', 'qualification_unknown'].includes(value.stage)) return false;
             // 结果可以删除已提交正文，但不能替换正文或改写该次提交的身份及指纹。
             const fields = new Set([...attemptControlFields, ...(Object.hasOwn(value, 'request') ? [] : ['request'])]);
             return withoutFields(value, fields) === withoutFields(previous, fields);
@@ -2400,7 +2469,7 @@ async function setTargetSessionValues(values) {
 /** 清理只为已退出队列服务的正文；当前件尚未退出时不抹掉未知提交证据。 */
 async function pruneDirectAttempts(tasks = null) {
     const current = tasks || await getTargetUploadTasks();
-    const keys = new Set(current.map(task => `directAttempt:${task.jobId}:${task.spuId}`));
+    const keys = new Set(current.map(directTaskKey));
     const stored = await chrome.storage.session.get(null);
     const retired = Object.keys(stored).filter(key => key.startsWith('directAttempt:') && !keys.has(key) && !directActiveTaskKeys.has(key));
     if (retired.length) await chrome.storage.session.remove(retired);
@@ -2410,7 +2479,7 @@ async function saveTargetUploadTasks(tasks, controlValues = {}) {
     const deduped = [];
     const seen = new Set();
     for (const task of (Array.isArray(tasks) ? tasks : [])) {
-        const key = JSON.stringify([String(task?.targetStoreId || ""), String(task?.jobId || ""), String(task?.spuId || "")]);
+        const key = JSON.stringify([String(task?.targetStoreId || ""), String(task?.jobId || ""), String(task?.spuId || ""), directActionType(task), task?.sourceTaskId || '']);
         if (!task?.jobId || !task?.spuId || seen.has(key)) continue;
         seen.add(key);
         deduped.push(task);
@@ -2433,7 +2502,7 @@ async function saveTargetUploadTasks(tasks, controlValues = {}) {
     await pruneDirectAttempts();
     // 队列替换和退出正文置空在同一次set中提交；容量失败时不能先删仍属于旧队列的证据。
     const nextValues = { ...controlValues, [TARGET_UPLOAD_TASKS_KEY]: deduped };
-    const nextKeys = new Set(deduped.map(task => `directAttempt:${task.jobId}:${task.spuId}`));
+    const nextKeys = new Set(deduped.map(directTaskKey));
     for (const key of Object.keys(await chrome.storage.session.get(null))) {
         if (key.startsWith('directAttempt:') && !nextKeys.has(key) && !directActiveTaskKeys.has(key)) nextValues[key] = null;
     }
@@ -2453,8 +2522,12 @@ async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "", iden
     for (const item of claimed) {
         if (!item?.jobId || !item.spuId || !item.snapshot || item.targetStoreId !== expectedStoreId
             || item.executionRunId !== identity.relaySessionId || item.transportOnly !== true || !item.directCreate) throw Error('target_upload_task_store_mismatch');
+        // 只接受已声明的两种操作；缺省仅兼容旧商品包，绝不根据资质字段猜测任务类型。
+        const actionType = directActionType(item);
+        if (!['product_create', 'qualification_upload'].includes(actionType)) throw Error('不支持的上传任务类型');
         await TemuTransferIntegrity.verify(item.snapshot, item.transferIntegrity);
-        const key = JSON.stringify([item.jobId, item.spuId]);
+        if (item.sourceTaskId && !/^[a-f0-9]{64}$/.test(item.sourceTaskId)) throw Error('来源任务标识无效');
+        const key = JSON.stringify([item.jobId, item.spuId, actionType, item.sourceTaskId || '']);
         const hash = await TemuTransferIntegrity.hash(item.snapshot);
         if (seen.has(key) && seen.get(key) !== hash) throw Error('同一投递包的商品快照发生冲突');
         if (seen.has(key)) continue;
@@ -2463,7 +2536,7 @@ async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "", iden
             sourceStoreId: String(item.sourceStoreId || ''), targetStoreId: expectedStoreId,
             sourceBatchId: String(item.sourceBatchId || ''), snapshot: item.snapshot, transferIntegrity: item.transferIntegrity,
             noticeToken: typeof item.noticeToken === 'string' && item.noticeToken.length <= 6500 ? item.noticeToken : '',
-            directCreate: true, relaySessionId: identity.relaySessionId, status: 'received', receivedAt: new Date().toISOString() });
+            directCreate: true, actionType, sourceTaskId: String(item.sourceTaskId || ''), relaySessionId: identity.relaySessionId, status: 'received', receivedAt: new Date().toISOString() });
     }
     return withTargetTaskMutation(async () => {
         await assertExecutionDocument(identity.tabId, identity.documentId);
@@ -2484,18 +2557,19 @@ async function receiveTargetUploadTasks(claimed = [], expectedStoreId = "", iden
         if (retired.size > 512) throw Error('当前页面批次过多，请结束后重新发送');
         for (const task of current) {
             if (task.targetStoreId !== expectedStoreId) { keep.push(task); continue; }
-            const key = `directAttempt:${task.jobId}:${task.spuId}`;
+            const key = directTaskKey(task);
             const record = (await chrome.storage.session.get(key))[key];
             // 运行中的预检也属于已开始；结束结果保留在日志，不再占接收容量。
             if (directActiveTaskKeys.has(key) || (!record?.done && (!state.paused || incomingJobs.has(task.jobId)))) keep.push(task);
         }
         // 相同传输标识再次出现时只允许完全相同的正文，不能静默覆盖正在执行的商品。
         for (const task of incoming) {
-            const previous = keep.find(old => old.targetStoreId === task.targetStoreId && old.jobId === task.jobId && old.spuId === task.spuId);
+            const previous = keep.find(old => old.targetStoreId === task.targetStoreId && old.jobId === task.jobId && old.spuId === task.spuId
+                && directActionType(old) === directActionType(task) && (old.sourceTaskId || '') === (task.sourceTaskId || ''));
             if (previous && await TemuTransferIntegrity.hash(previous.snapshot) !== await TemuTransferIntegrity.hash(task.snapshot)) throw Error('同一投递包的商品快照发生冲突');
         }
-        const keys = new Set(keep.map(task => JSON.stringify([task.targetStoreId, task.jobId, task.spuId])));
-        const next = incoming.filter(task => !keys.has(JSON.stringify([task.targetStoreId, task.jobId, task.spuId])))
+        const keys = new Set(keep.map(task => JSON.stringify([task.targetStoreId, task.jobId, task.spuId, directActionType(task), task.sourceTaskId || ''])));
+        const next = incoming.filter(task => !keys.has(JSON.stringify([task.targetStoreId, task.jobId, task.spuId, directActionType(task), task.sourceTaskId || ''])))
             .map(task => ({ ...task, executionRunId: state.executionRunId }));
         // 队列和淘汰名单同次提交；继续只能在共享写锁之后重读，不能跳过已替换批次。
         const controls = state.paused ? { [directPauseKey(expectedStoreId)]: {
@@ -2517,9 +2591,17 @@ async function updateDirectTaskProgress(storeId, jobId, spuId, patch = {}, ident
             if (String(task.jobId) !== String(jobId || "") || String(task.spuId) !== String(spuId || "")) return task;
             if (expectedStoreId && String(task.targetStoreId || "") !== expectedStoreId) return task;
             if (identity && (task.relaySessionId !== identity.relaySessionId || task.executionRunId !== identity.executionRunId)) return task;
+            if (identity?.actionType && directActionType(task) !== identity.actionType) return task;
+            if (identity && (task.sourceTaskId || '') !== (identity.sourceTaskId || '')) return task;
             changedTask = {
                 ...task,
                 directState: String(patch.directState || task.directState || ""),
+                // 资质结果只留当前会话摘要，完整材料和云仓令牌不得进入展示页。
+                productId: String(patch.productId || task.productId || ''),
+                productState: String(patch.productState || task.productState || ''),
+                qualificationItems: Array.isArray(patch.qualificationItems) ? patch.qualificationItems.slice(0, 200).map(item => ({
+                    certType: Number(item.certType), name: String(item.name || '').slice(0, 160), state: String(item.state || ''), reason: String(item.reason || '').slice(0, 1000)
+                })) : task.qualificationItems || [],
                 reason: String(Object.hasOwn(patch, 'reason') ? patch.reason : task.reason || "").slice(0, 2000),
                 // 平台明确给出的错误 SKU 才能展示；原因到达边界时保留截断事实，不猜测关联 SKU。
                 reasonTruncated: Object.hasOwn(patch, 'reason') ? Boolean(patch.reasonTruncated || String(patch.reason || '').length >= 2000) : Boolean(task.reasonTruncated),
@@ -2550,6 +2632,7 @@ async function queueProductErrorNotice(task) {
             const state = (await chrome.storage.session.get(directPauseKey(saved.targetStoreId)))[directPauseKey(saved.targetStoreId)];
             if (state?.relaySessionId !== saved.relaySessionId || state.executionRunId !== saved.executionRunId) return false;
             return (await getTargetUploadTasks()).some(current => current.jobId === saved.jobId && current.spuId === saved.spuId
+                && directTaskKey(current) === directTaskKey(saved)
                 && current.relaySessionId === saved.relaySessionId && current.executionRunId === saved.executionRunId
                 && (current.directRetrySequence || 0) === (saved.directRetrySequence || 0)
                 && current.directState === saved.directState && current.reason === saved.reason);
@@ -2557,6 +2640,7 @@ async function queueProductErrorNotice(task) {
         status: (saved, value) => withTargetTaskMutation(async () => {
             const tasks = await getTargetUploadTasks();
             const current = tasks.find(item => item.jobId === saved.jobId && item.spuId === saved.spuId
+                && directTaskKey(item) === directTaskKey(saved)
                 && item.relaySessionId === saved.relaySessionId && item.executionRunId === saved.executionRunId
                 && (item.directRetrySequence || 0) === (saved.directRetrySequence || 0)
                 && item.directState === saved.directState && item.reason === saved.reason);
@@ -2573,14 +2657,15 @@ async function retryDirectTask(sender, input = {}) {
     await withTargetTaskMutation(async () => {
         const tasks = await getTargetUploadTasks();
         const task = tasks.find(item => item.targetStoreId === identity.storeId && item.relaySessionId === identity.relaySessionId
-            && item.jobId === input.jobId && item.spuId === input.spuId);
+            && item.jobId === input.jobId && item.spuId === input.spuId
+            && directActionType(item) === directActionType(input) && (item.sourceTaskId || '') === (input.sourceTaskId || ''));
         if (!task || !['unknown', 'preflight_failed', 'rejected'].includes(task.directState)) throw Error('当前任务不可重试');
-        const key = `directAttempt:${task.jobId}:${task.spuId}`;
+        const key = directTaskKey(task);
         if (directActiveTaskKeys.has(key)) throw Error('该商品仍在处理中');
         await chrome.storage.session.remove(key);
         await saveTargetUploadTasks([...tasks.filter(item => item !== task), { ...task, directState: '', reason: '人工核对后重新排队', errorCode: '', errorStage: '', errorNoticeStatus: '', offendingSkuCode: '', reasonTruncated: false, directRetrySequence: (Number(task.directRetrySequence) || 0) + 1 }]);
     });
-    if (!await readDirectPause(identity.storeId, identity)) void runDirectTasks(sender.tab.id, identity);
+    if (!await readDirectPause(identity.storeId, identity)) void runDirectTasks(identity.tabId, identity);
     return { ok: true, queued: true };
 }
 /** 结束清空尚未开始的队列并换本地代次；后续新批正常执行，已发出的请求无法撤回。 */
@@ -2589,14 +2674,14 @@ async function cancelStoreTasks(sender, identity = {}) {
         const resolved = await directIdentity(sender, identity, true);
         const state = (await chrome.storage.session.get(directPauseKey(resolved.storeId)))[directPauseKey(resolved.storeId)];
         // 立即撤销在途接收代次，不能等到平台脚本返回才阻止旧HTTP响应写回。
-        executionDocumentEpochs.set(sender.tab.id, (executionDocumentEpochs.get(sender.tab.id) || 0) + 1);
+        executionDocumentEpochs.set(resolved.tabId, (executionDocumentEpochs.get(resolved.tabId) || 0) + 1);
         await stopExecutionRound(state, '操作者结束当前队列');
         let cancelled = 0, kept = 0;
         await withTargetTaskMutation(async () => {
             const next = [];
             for (const task of await getTargetUploadTasks()) {
                 if (task.relaySessionId !== resolved.relaySessionId) { next.push(task); continue; }
-                if (directActiveTaskKeys.has(`directAttempt:${task.jobId}:${task.spuId}`)) kept++;
+                if (directActiveTaskKeys.has(directTaskKey(task))) kept++;
                 cancelled++;
             }
             await saveTargetUploadTasks(next);
@@ -2614,6 +2699,8 @@ async function notifyDirectCreateProgress(tabId, payload = {}) {
     if (!tabId) return;
     // 结束或刷新后迟到的当前件只记日志，不能重新插入面板的新队列。
     const task = (await getTargetUploadTasks()).find(task => task.jobId === payload.jobId && task.spuId === payload.spuId
+        && directActionType(task) === directActionType(payload)
+        && (task.sourceTaskId || '') === (payload.sourceTaskId || '')
         && task.targetStoreId === payload.targetStoreId && task.relaySessionId === payload.relaySessionId
         && task.executionRunId === payload.executionRunId);
     if (!task) return;
@@ -2621,6 +2708,7 @@ async function notifyDirectCreateProgress(tabId, payload = {}) {
     if (!state || state.tabId !== tabId || state.relaySessionId !== task.relaySessionId || state.executionRunId !== task.executionRunId) return;
     try {
         await chrome.tabs.sendMessage(tabId, { type: "directCreateProgress", task: payload }, { documentId: state.documentId });
+        await publishStoreChannelState(task.targetStoreId);
     } catch {
         /* 页面已关闭，不补发旧队列或面板进度。 */
     }
@@ -2629,7 +2717,8 @@ async function notifyDirectCreateProgress(tabId, payload = {}) {
 /** 目标店可在新建商品页下载仅含当前商品资料的副本，便于人工核对 SKU、图片与详情而不暴露领取凭证。 */
 async function downloadTargetUploadTask(input = {}) {
     const tasks = await getTargetUploadTasks();
-    const task = tasks.find(item => String(item.jobId) === String(input.jobId || "") && String(item.spuId) === String(input.spuId || ""));
+    const task = tasks.find(item => String(item.jobId) === String(input.jobId || "") && String(item.spuId) === String(input.spuId || "")
+        && directActionType(item) === directActionType(input) && (item.sourceTaskId || '') === (input.sourceTaskId || ''));
     if (!task) throw new Error("target_task_not_found");
     // 导出包含完整商品资料，必须以当前已核验的目标店作为二次边界，不能只凭页面传入的任务主键。
     if (!input.storeId || String(task.targetStoreId || "") !== String(input.storeId)) throw new Error("target_task_store_mismatch");
@@ -2789,70 +2878,7 @@ async function rememberPageIdentity(identity = {}) {
     return lastPageIdentity;
 }
 
-async function registerStoreAgent(identity = {}) {
-    // 商城身份来自后台固定页面读取；同步本机来源归属，避免继续使用旧CLI账号绑定。
-    if(identity.executionMode === "plugin-api") {
-        identity.storeName=identity.pageStoreName || `商城 ${identity.mallId}`;
-        await chrome.storage.local.set({[BOUND_STORE_KEY]:{storeId:identity.storeId,storeName:identity.storeName}});
-    }
-    const bound = await getBoundStore();
-    const pluginInstanceId = await getPluginInstanceId();
-    const usableBound = boundMatchesPage(bound, identity.pageStoreName || identity.storeName) ? bound : { storeId: "", storeName: "" };
-    const storeId = String(identity.storeId || usableBound.storeId || "").trim();
-    await rememberPageIdentity(identity);
-    return hubJson("/api/agents/register", {
-        pluginInstanceId,
-        storeId,
-        storeName: identity.storeName || usableBound.storeName || identity.pageStoreName || "",
-        pageUrl: identity.pageUrl || "",
-        pluginVersion: chrome.runtime.getManifest().version,
-        pluginDetected: true,
-        relayProtocol: 1,
-        relaySessionId: identity.relaySessionId,
-        identityMatched: identity.identityMatched === true,
-        pageStoreName: identity.pageStoreName || "",
-        pageType: identity.pageType || "",
-        nameSource: identity.source || "",
-        nameConfidence: identity.confidence || "",
-        source: identity.sourceTag || "plugin-heartbeat"
-        ,mallId: identity.mallId || "", executionMode: identity.executionMode || ""
-    });
-}
-
-/** 长轮询只接收本页一次性投递，暂停不关闭接收；没有收妥、结果或清单恢复请求。 */
-const relayClaimFlights = new Map();
-async function claimStoreJobs(identity = {}) {
-    if (!identity.relaySessionId) throw Error('接收页面未绑定');
-    if (relayClaimFlights.has(identity.relaySessionId)) return relayClaimFlights.get(identity.relaySessionId);
-    const epoch = executionDocumentEpochs.get(identity.tabId) || 0;
-    const flight = (async () => {
-        const result = await hubJson("/api/jobs/claim", {
-            storeId: identity.storeId, mallId: identity.mallId,
-            pluginInstanceId: await getPluginInstanceId(), pluginVersion: chrome.runtime.getManifest().version,
-            relayProtocol: 1, relaySessionId: identity.relaySessionId
-        });
-        await assertExecutionDocument(identity.tabId, identity.documentId);
-        if ((executionDocumentEpochs.get(identity.tabId) || 0) !== epoch) throw Error('接收页面已变化');
-        const claimed = Array.isArray(result.claimed) ? result.claimed : [];
-        if (claimed.length) await receiveTargetUploadTasks(claimed, identity.storeId, identity);
-        const state = (await chrome.storage.session.get(directPauseKey(identity.storeId)))[directPauseKey(identity.storeId)];
-        if (state?.relaySessionId !== identity.relaySessionId) throw Error('接收页面已变化');
-        const tasks = summarizeTargetUploadTasks(await getTargetUploadTasks(), identity.storeId);
-        const latest = (await chrome.storage.session.get(directPauseKey(identity.storeId)))[directPauseKey(identity.storeId)];
-        if (!latest || latest.relaySessionId !== identity.relaySessionId || latest.executionRunId !== state.executionRunId
-            || (executionDocumentEpochs.get(identity.tabId) || 0) !== epoch) throw Error('接收页面已变化');
-        return { ok: true, relaySessionId: latest.relaySessionId, executionRunId: latest.executionRunId,
-            claimed: claimed.map(job => ({ jobId: job.jobId, spuId: job.spuId, title: job.title, mode: job.mode })),
-            receivedCount: claimed.length, directPaused: state.paused,
-            tasks };
-    })().finally(() => relayClaimFlights.delete(identity.relaySessionId));
-    relayClaimFlights.set(identity.relaySessionId, flight);
-    return flight;
-}
-
-/**
- * 面板停止取消旧轮待办；启用创建新页面轮次，不恢复旧任务。
- */
+/** 同店所有页面的控制操作串行，不能因身份读取耗时不同而改变点击顺序。 */
 let directPauseControlQueue = Promise.resolve();
 /** 从收到命令起按顺序处理含身份读取的全过程，避免较早的继续因读身份慢而覆盖较晚的停止。 */
 async function setDirectCreatePaused(sender, identity = {}, paused = false) {
@@ -2883,7 +2909,7 @@ async function applyDirectCreatePaused(sender, identity = {}, paused = false) {
     // 控制队列不等待任务写队列，避免与领取的身份绑定形成反向锁；下次状态同步清理本地摘要。
     const tasks = await getTargetUploadTasks();
     if (!paused && /^https:\/\/agentseller\.temu\.com\/goods\/list(?:[?#]|$)/i.test(sender.tab.url || '')) {
-        void runDirectTasks(sender.tab.id, resolved).catch(error => TemuOperationLog.append({
+        void runDirectTasks(resolved.tabId, resolved).catch(error => TemuOperationLog.append({
             action: 'direct-create', status: 'failed', storeId, error: directBackgroundErrorText(error) }));
     }
     return { paused, storeId, tasks: summarizeTargetUploadTasks(tasks, storeId) };
@@ -3006,27 +3032,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === "getTargetUploadTasks") return targetUploadTaskView(sender, message.storeId);
         if (message.type === "reconcileTargetUploadTasks") return targetUploadTaskView(sender, message.identity?.storeId);
         if (message.type === "downloadTargetUploadTask") return downloadTargetUploadTask(message.input || {});
-        if (message.type === "registerStoreAgent") return registerStoreAgent(await directIdentity(sender, message.identity || {}));
-        if (message.type === "claimStoreJobs") {
-            const identity=await directIdentity(sender,message.identity||{});
-            const result=await claimStoreJobs(identity);
-            // 仅当前文档的本地代次可执行；刷新后只接收新发送，不恢复旧队列。
-            // unknown不自动重发，人工重试仍先在目标店核对。
-            const pendingDirect=(result.tasks||[]).some((task)=>task.directCreate&&task.directState!=="created"&&task.directState!=="duplicate_exists");
-            // 本地暂停优先于心跳唤醒，不能只在页面按钮层拦截。
-            const directPaused=Boolean(result.directPaused);
-            // 身份连接可在详情页提前完成，但接口预检/提交必须回到商品列表页；否则执行器会被页面路由拒绝。
-            const canRunDirect = Boolean(sender.tab?.id && /^https:\/\/agentseller\.temu\.com\/goods\/list(?:[?#]|$)/i.test(sender.tab.url || ''));
-            if(pendingDirect&&canRunDirect&&!directPaused){
-                runDirectTasks(sender.tab.id,identity).catch((error)=>{
-                    TemuOperationLog.append({action:"direct-create",status:"failed",error:directBackgroundErrorText(error)||String(error?.message||error||""),storeId:identity.storeId});
-                });
-            }
-            return result;
+        if (message.type === "subscribeStoreAgent") return subscribeStoreChannel(sender, message.identity || {});
+        if (message.type === "leaveStoreAgent") return leaveStoreChannel(sender);
+        if (message.type === "registerStoreAgent") throw Error('请更新插件使用主动推送连接');
+        if (message.type === "claimStoreJobs") throw Error('任务轮询已停用，请更新插件使用主动推送连接');
+        if (message.type === "setDirectCreatePaused") {
+            const result = await setDirectCreatePaused(sender, message.identity || {}, message.paused === true);
+            return { ...result, snapshot: await publishStoreChannelState(result.storeId) };
         }
-        if (message.type === "setDirectCreatePaused") return setDirectCreatePaused(sender, message.identity || {}, message.paused === true);
         if (message.type === "retryDirectTask") return retryDirectTask(sender, message.input || {});
-        if (message.type === "cancelStoreTasks") return cancelStoreTasks(sender, message.identity || {});
+        if (message.type === "cancelStoreTasks") {
+            const result = await cancelStoreTasks(sender, message.identity || {});
+            return { ...result, snapshot: await publishStoreChannelState(result.storeId) };
+        }
         if (message.type === "getCaptureEnabled") {
             const binding = (await chrome.storage.session.get(`capturePageBinding:${sender.tab?.id}`))[`capturePageBinding:${sender.tab?.id}`];
             return {
@@ -3090,7 +3108,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener(tabId => {
     invalidateIngestTab(tabId).catch(() => {});
     // 关闭页面属于外部终止：该轮任务按操作者要求清走，不是暂停。
-    invalidateExecutionTab(tabId, '店铺页面已关闭，本轮终止', 'page_close').catch(() => {});
+    detachStoreChannelTab(tabId);
+    const ownerStores = [...executionActiveTabs.values()].filter(state => state.tabId === tabId).map(state => state.storeId);
+    invalidateExecutionTab(tabId, '执行页面已关闭，本轮终止').then(() => Promise.all(ownerStores.map(recoverStoreChannel))).catch(() => {});
     captureReloadStarted.delete(tabId);
     TemuOperationLog.append({ action: "tab-closed", status: "observed", tabId });
     // 关闭卖家页后停止该页诊断；导出页仍可读取其最近会话数据，数据会由 LRU 上限统一淘汰。
@@ -3102,7 +3122,11 @@ const captureReloadStarted = new Map();
 chrome.tabs.onUpdated?.addListener((tabId, change) => {
     if (change.status === 'loading' || change.url) invalidateIngestTab(tabId).catch(() => {});
     // 刷新或页面内导航属于外部终止：该轮任务清走，避免刷新后旧任务继续自动上传。
-    if (change.status === 'loading' || change.url) invalidateExecutionTab(tabId, '店铺页面刷新或导航，本轮终止', 'page_refresh').catch(() => {});
+    if (change.status === 'loading' || change.url) {
+        detachStoreChannelTab(tabId);
+        const ownerStores = [...executionActiveTabs.values()].filter(state => state.tabId === tabId).map(state => state.storeId);
+        invalidateExecutionTab(tabId, '执行页面刷新或导航，本轮终止').then(() => Promise.all(ownerStores.map(recoverStoreChannel))).catch(() => {});
+    }
     if (change.status === "loading") captureReloadStarted.set(tabId, Date.now());
     if (change.status !== "complete" || !captureReloadStarted.has(tabId)) return;
     const startedAt = captureReloadStarted.get(tabId);

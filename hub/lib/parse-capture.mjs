@@ -3,6 +3,7 @@
  * 完整包以 records 里的原始响应为准；列表页只能还原基础资料，详情正文必须来自明确的详情字段。
  */
 import { createHash } from "node:crypto";
+import { parseQualificationRecord, mergeQualificationCapture } from './product-qualifications.mjs';
 
 const SENSITIVE_KEY = /(?:access|refresh|auth|csrf)?token|cookie|authorization|password|passwd|secret|session(?:id)?|credential|api[-_]?key/i;
 
@@ -110,6 +111,8 @@ function upsertProduct(map, partial) {
     ));
     // 发布资料独立于展示摘要，仅核心详情可替换，避免列表响应清空配方。
     if (partial.publicationData) current.publicationData = partial.publicationData;
+    // 资质只按本对象的 SPU 合并，不能并入商品图文或发布请求。
+    if (partial.qualifications) current.qualifications = mergeQualificationCapture(current.qualifications, partial.qualifications);
     // 仅原始详情响应解析器生成该证据；源正文为空与尚未查询详情是不同状态。
     if (partial.captureEvidence?.primaryDetail === true) current.captureEvidence = { primaryDetail: true, source: "product-query", descriptionState: partial.captureEvidence.descriptionState || "unknown" };
     // 详情接口通常拆成“基础信息/图文/合规”多次返回；不能只保留第一段，否则后到的正文会丢失。
@@ -616,6 +619,10 @@ function readDetailFields(object, depth = 0, output = {}, allowGenericBody = fal
  * 避免把仅有 goodsId/SKC/SKU 的附加对象串到邻近商品；原始响应仍完整保留在 records 中。
  */
 function extractProductsFromRecord(record) {
+    const qualification = parseQualificationRecord(record);
+    if (qualification) return [qualification];
+    // 真实平台资质原始响应不属于通用商品资料；只有专用快照带完整归属时才能进入资质模块。
+    if (/\/mms\/arbok\/(?:hq\/)?(?:product|mall)_cert\//.test(String(record?.source?.requestUrl || ''))) return [];
     const products = [];
     const pageContextSpu = asText(record && record.source && record.source.pageProductId);
     // 来源身份只认成功的详情接口和 SPU；标题/SKU 模板仅用于诊断，不能决定原对象是否保留。
@@ -738,7 +745,7 @@ export function createSingleProductCapture(metadata, spuId) {
         if (Buffer.byteLength(JSON.stringify(product)) > 8 * 1024 * 1024) throw Error('capture_product_workset_exceeded');
     };
     return {
-        seed: item => add({ ...item, captureEvidence: null, publicationData: undefined, sources: ['full-packet'] }),
+        seed: item => add({ ...item, qualifications: undefined, qualificationCaptures: undefined, captureEvidence: null, publicationData: undefined, sources: ['full-packet'] }),
         record: record => extractProductsFromRecord(record).forEach(add),
         finish() {
             const product = products.get(asText(spuId));
@@ -866,6 +873,8 @@ export function parseImportedFiles(files) {
                     captureEvidence: null,
                     // 包内预计算摘要不能伪造其他 SPU 的发布资料，只采信下方核心响应解析结果。
                     publicationData: undefined,
+                    qualifications: undefined,
+                    qualificationCaptures: undefined,
                     sources: ["full-packet"]
                 });
             });

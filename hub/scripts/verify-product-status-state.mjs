@@ -46,3 +46,11 @@ test('权限裁剪、删除和伪造投影键不泄露新实例或正文；历�
     assert.equal(state.blockedReason, '历史资料缺失'); assert.equal(state.blocked, true);
     assert.doesNotMatch(JSON.stringify(state), /sensitive|images|publicationData/);
 });
+
+test('共享库同SPU多来源各自返回状态，伪造SPU与商品键组合不匹配', () => {
+    const { product, ref } = fixture();
+    const other = { ...product, sourceStoreIds: ['other'], batchIds: ['other-batch'], sendBlocked: true, productKey: 'a'.repeat(64), sourceIdentity: 'b'.repeat(64) };
+    assert.equal(productStatusResponse([ref], [product, other]).products[0].sendBlocked, false);
+    assert.equal(productStatusResponse([{ spuId: '1', productKey: other.productKey, sourceIdentity: other.sourceIdentity }], [product, other]).products[0].sendBlocked, true);
+    assert.deepEqual(productStatusResponse([{ ...ref, spuId: 'forged-spu' }], [product]), { products: [], staleIds: ['forged-spu'] });
+});

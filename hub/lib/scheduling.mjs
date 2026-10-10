@@ -1,9 +1,9 @@
 import os from 'node:os';
+import { pluginVersionAtLeast } from './plugin-version.mjs';
 
 /** 新调度只对明确支持恢复协议的插件开放；旧插件保留三店上限。 */
 export function supportsScheduling(input = {}) {
-    const [major, minor, patch] = String(input.pluginVersion || '').split('.').map(Number);
-    return input.schedulingProtocol === 1 && major === 10 && (minor > 10 || minor === 10 && patch >= 59);
+    return input.schedulingProtocol === 1 && pluginVersionAtLeast(input.pluginVersion, [10, 10, 59]);
 }
 
 /** 指令描述下一步而非成功结果；未知写入结果只能核对，不能自动重新创建。 */

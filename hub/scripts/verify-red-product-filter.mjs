@@ -57,7 +57,7 @@ try {
         const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
     };
     const agent = { storeId: 'temu:222', mallId: '222', pluginInstanceId: 'red-filter-plugin', storeName: '隔离目标店',
-        pageStoreName: '隔离目标店', pluginVersion: '10.10.73', executionMode: 'plugin-api', pluginDetected: true,
+        pageStoreName: '隔离目标店', pluginVersion: '11.0.4', executionMode: 'plugin-api', pluginDetected: true,
         identityMatched: true, relayProtocol: 1, relaySessionId: randomUUID() };
     await api('/api/agents/register', agent);
     const body = spuIds => ({ sourceStoreId, sourceBatchId: original.batch.id, targetStoreId: agent.storeId, spuIds });
@@ -67,14 +67,15 @@ try {
         assert.equal(p.sendBlocked, reds.includes(p.spuId));
         assert.equal(p.errorNotice, null, '不能伪造旧红标为新版错误通知');
     }
-    // 两种调用顺序均经过真正收发端点，不以列表件数代替最终交接证据。
-    for (const receiveFirst of [true, false]) {
+    // 两种任务与两种调用顺序都经过实际交接，补全资质不能绕过红标商品过滤。
+    for (const actionType of ['product_create', 'qualification_upload']) for (const receiveFirst of [true, false]) {
         let receive, send;
-        if (receiveFirst) { receive = api('/api/jobs/claim', agent); send = api('/api/relay/send', body(ids)); }
-        else { send = api('/api/relay/send', body(ids)); await new Promise(resolve => setTimeout(resolve, 100)); receive = api('/api/jobs/claim', agent); }
+        if (receiveFirst) { receive = api('/api/jobs/claim', agent); send = api('/api/relay/send', { ...body(ids), actionType }); }
+        else { send = api('/api/relay/send', { ...body(ids), actionType }); await new Promise(resolve => setTimeout(resolve, 100)); receive = api('/api/jobs/claim', agent); }
         const [sent, got] = await Promise.all([send, receive]);
         assert.equal(sent.sent, 4); assert.deepEqual(sent.skippedBlocked.map(p => p.spuId).sort(), [...reds].sort());
         assert.deepEqual(got.claimed.map(p => p.spuId).sort(), [...normal].sort(), '插件实际收到只能是四件正常商品');
+        assert.ok(got.claimed.every(task => task.actionType === actionType));
     }
     const skipped = await api('/api/relay/send', body(reds));
     assert.equal(skipped.sent, 0); assert.equal(skipped.skippedBlocked.length, 2, '全红不等待接收、不发空批次');

@@ -10,6 +10,15 @@
     // 同一扩展脚本在 SPA 恢复或异常重注入时只包装一次 fetch/XHR，不能累计多层响应克隆。
     if (window[HOOK_MARKER]) return;
     window[HOOK_MARKER] = true;
+    /** 只通知地址变化，不改写平台路由结果；内容脚本据此订阅或退订本店状态。 */
+    for (const name of ['pushState', 'replaceState']) {
+        const original = history[name];
+        history[name] = function (...args) {
+            const result = Reflect.apply(original, this, args);
+            window.postMessage({ source: SOURCE, kind: 'route-changed' }, location.origin);
+            return result;
+        };
+    }
     const originalFetch = window.fetch;
     const originalXhrOpen = XMLHttpRequest.prototype.open;
     const originalXhrSend = XMLHttpRequest.prototype.send;

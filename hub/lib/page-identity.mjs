@@ -1,4 +1,5 @@
 import { coreStoreName, nameFoundInText, namesCompatible } from "./store-names.mjs";
+import { pluginVersionAtLeast } from './plugin-version.mjs';
 
 export const REQUIRED_PLUGIN_PRESENCE = "temu-local-capture";
 
@@ -11,22 +12,15 @@ function asText(value) {
  * 不能据此让工人进入领取任务的后续状态。
  */
 export function hasRequiredPlugin(presence, version) {
-    const parts = asText(version).split(".").map(part => Number(part));
-    return asText(presence) === REQUIRED_PLUGIN_PRESENCE
-        && parts.length === 3
-        && parts.every(Number.isInteger)
-        && parts.every(part => part >= 0)
-        && parts[0] === 10
-        // 10.1.0 起才公开 pluginInstanceId 和自动店名；10.0.x 不能再进入领取状态。
-        && parts[1] > 0;
+    return asText(presence) === REQUIRED_PLUGIN_PRESENCE && pluginVersionAtLeast(version, [10, 1, 0]);
 }
 
 /**
  * 工人在已打开的紫鸟窗口里执行这段脚本。
  * 只读取插件宿主公开的只读状态和页面文本，不填写、不点击、不跳转。
- * pluginDetected 的版本正则必须与 hasRequiredPlugin 一致：只承认 10.1+，10.0.x 视为未检测到。
+ * 页面脚本复用同一版本函数，承认10.1+及11.x，不把历史面板或未知主版本当成可用插件。
  */
-export const PAGE_INSPECT_SCRIPT = "JSON.stringify((function(){var panel=document.getElementById('temu-local-dataset-panel');function attr(name){return panel?String(panel.getAttribute(name)||''):'';}try{window.dispatchEvent(new Event('temu-shop-transfer-status-request'));}catch(e){}var presence=attr('data-plugin-presence');var version=attr('data-plugin-version');var body=document.body;var text=body?String(body.innerText||''):'';return{url:location.href,title:document.title,pluginPanelPresent:Boolean(panel),pluginPresence:presence,pluginDetected:Boolean(panel)&&presence==='temu-local-capture'&&/^10\\.(?:[1-9]\\d*)\\.\\d+$/.test(version),pluginVersion:version,pluginInstanceId:attr('data-plugin-instance-id'),boundStoreId:attr('data-mapped-store-id')||attr('data-bound-store-id'),boundStoreName:attr('data-mapped-store-name')||attr('data-bound-store-name'),pageStoreName:attr('data-page-store-name'),pageType:attr('data-page-type'),nameSource:attr('data-name-source'),expectedCount:attr('data-expected-count'),completedCount:attr('data-completed-count'),capturePhase:attr('data-capture-phase'),ingestPhase:attr('data-ingest-phase'),pendingUploadCount:attr('data-pending-upload-count'),snippet:text.slice(0,4000)};})())";
+export const PAGE_INSPECT_SCRIPT = `JSON.stringify((function(){var panel=document.getElementById('temu-local-dataset-panel');function attr(name){return panel?String(panel.getAttribute(name)||''):'';}try{window.dispatchEvent(new Event('temu-shop-transfer-status-request'));}catch(e){}var presence=attr('data-plugin-presence');var version=attr('data-plugin-version');var body=document.body;var text=body?String(body.innerText||''):'';return{url:location.href,title:document.title,pluginPanelPresent:Boolean(panel),pluginPresence:presence,pluginDetected:Boolean(panel)&&presence==='temu-local-capture'&&(${pluginVersionAtLeast.toString()})(version,[10,1,0]),pluginVersion:version,pluginInstanceId:attr('data-plugin-instance-id'),boundStoreId:attr('data-mapped-store-id')||attr('data-bound-store-id'),boundStoreName:attr('data-mapped-store-name')||attr('data-bound-store-name'),pageStoreName:attr('data-page-store-name'),pageType:attr('data-page-type'),nameSource:attr('data-name-source'),expectedCount:attr('data-expected-count'),completedCount:attr('data-completed-count'),capturePhase:attr('data-capture-phase'),ingestPhase:attr('data-ingest-phase'),pendingUploadCount:attr('data-pending-upload-count'),snippet:text.slice(0,4000)};})())`;
 
 export function isTemuSellerUrl(url) {
     return /^https?:\/\/(?:[^/]+\.)?(?:temu\.com|kuajingmaihuo\.com)(?:\/|$)/i.test(asText(url));
@@ -123,7 +117,7 @@ export function evaluateStoreIdentity(input = {}) {
                 : !nameMatched
                 ? "页面店名与目标店不一致"
                 : !pluginDetected
-                    ? (pluginPanelPresent ? "检测到旧版或不兼容插件面板，未检测到 10.x 中转插件" : "目标店已打开，但未检测到 10.x 中转插件")
+                    ? (pluginPanelPresent ? "检测到旧版或不兼容插件面板，未检测到兼容中转插件" : "目标店已打开，但未检测到兼容中转插件")
                     : "页面店名与紫鸟店铺一致，并检测到采集插件"
     };
 }

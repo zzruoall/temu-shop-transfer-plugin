@@ -12,6 +12,8 @@ import { noticeStateKey, noticeRawSources, refreshNoticeStates, noticeRef, notic
     applyNoticeViews, filterNoticeDelivery, deliverNoticeNow, noticeUnblockTargets, noticeDisplayProduct, productStatusResponse } from './product-notice-state.mjs';
 import path from "node:path";
 import {skuFingerprint} from "./sku-dedup.mjs";
+import { mergeQualificationCapture, qualificationContentHash } from './product-qualifications.mjs';
+import { sourceStoreNameCandidate } from './source-store-display.mjs';
 import { createHash, randomUUID } from "node:crypto";
 import { createSingleProductCapture, detectFileKind, getProductCompleteness, hasRealProductDetail, isProductReadyForTransfer, makeBatchId, parseImportedFiles, redactSensitive } from "./parse-capture.mjs";
 
@@ -362,7 +364,14 @@ export function createStore(rootDir, options = {}) {
             ready: false,
             completeness: {}
         };
+        // 同货号可能归并多个原始 SPU，资质仍按来源店及原始 SPU 分别保存，禁止提升为整行审核状态。
+        const qualificationScopes = new Map();
         for (const { product, batch, groupProduct = product } of row.source) {
+            if (product.qualifications) {
+                const scope = JSON.stringify([batch.sourceStoreId || `batch:${batch.id}`, product.spuId]);
+                const capture = { ...product.qualifications, sourceStoreId: batch.sourceStoreId || '', spuId: String(product.spuId) };
+                qualificationScopes.set(scope, mergeQualificationCapture(qualificationScopes.get(scope), capture));
+            }
             current.goodsId = current.goodsId || product.goodsId || "";
             if (product.title && product.title.length >= current.title.length) current.title = product.title;
             current.category = current.category || product.category || "";
@@ -398,6 +407,7 @@ export function createStore(rootDir, options = {}) {
             // 红标按“来源店 + SPU”判定，行内必须记住自己来自哪些来源店，不能只留下批次 ID。
             if (batch.sourceStoreId) current.sourceStoreIds = [...new Set((current.sourceStoreIds || []).concat(String(batch.sourceStoreId)))];
         }
+        if (qualificationScopes.size) current.qualificationCaptures = [...qualificationScopes.values()];
         // SPU 取“带完整发布资料的那一条”：上传任务按 (来源批次, SPU) 取快照，
         // 两者必须来自同一次采集，错位会取不到商品。没有发布资料时退回第一条 SPU。
         // 优先选带 sourceProduct 的那条：插件按 sourceProduct.productId 取来源资料，
@@ -680,12 +690,14 @@ export function createStore(rootDir, options = {}) {
             const hash=owner ? skuFingerprint(product,owner) : "";
             // 业务去重会忽略时间字段，但来源原对象一旦变化就必须保留新采集，不能用旧资料冒充本次传输。
             const duplicate=hash&&old.find(b=>b.products.some(p=>skuFingerprint(p,b.sourceStoreId)===hash
-                && transferHash(p.publicationData || null) === transferHash(product.publicationData || null)));
+                && transferHash(p.publicationData || null) === transferHash(product.publicationData || null)
+                && qualificationContentHash(p.qualifications) === qualificationContentHash(product.qualifications)));
             if(duplicate)reusedBatch=duplicate;else kept.push(product);
         }
         // 整包复用必须由同一批次覆盖本次全部商品，不能只返回最后一件命中的批次。
         if(parsed.products.length&&!kept.length&&reusedBatch && parsed.products.every(product => reusedBatch.products.some(old => old.spuId === product.spuId
-            && transferHash(old.publicationData || null) === transferHash(product.publicationData || null)))) {
+            && transferHash(old.publicationData || null) === transferHash(product.publicationData || null)
+            && qualificationContentHash(old.qualifications) === qualificationContentHash(product.qualifications)))) {
             const restoredFiles = await restoreMissingFiles(reusedBatch);
             // 这条提前返回同样要给旧批次补齐文件事实：它是"整包复用"的主路径，
             // 漏掉它会出现"补了另一条复用路径、这条仍带空引用"的半修状态。
@@ -750,9 +762,10 @@ export function createStore(rootDir, options = {}) {
             fingerprint,
             createdAt: new Date(Math.max(Date.now(), sourceCreatedAt + 1)).toISOString(),
             label: options.label || parsed.shopName || "未命名批次",
-            shopName: parsed.shopName || options.shopName || "",
+            // ID 占位属于缺名；已校验来源的目录补名只写批次元数据，不改原包及其完整性摘要。
+            shopName: sourceStoreNameCandidate(owner, [parsed.shopName, options.shopName]),
             sourceStoreId: parsed.sourceStoreId || options.sourceStoreId || "",
-            sourceStoreName: parsed.sourceStoreName || options.sourceStoreName || parsed.shopName || options.shopName || "",
+            sourceStoreName: sourceStoreNameCandidate(owner, [parsed.sourceStoreName, options.sourceStoreName, parsed.shopName, options.shopName, parsed.pageStoreName, options.pageStoreName]),
             pluginInstanceId: parsed.pluginInstanceId || options.pluginInstanceId || "",
             pageStoreName: parsed.pageStoreName || options.pageStoreName || "",
             pageUrl: parsed.pageUrl,
@@ -1017,13 +1030,25 @@ export function createStore(rootDir, options = {}) {
         return index.batches.find((batch) => batch.id === id) || null;
     }
 
-    async function getProduct(spuId) {
-        if (sql) return sql.getProduct(spuId);
+    /** 原包下载只查询文件所属来源店；总览的批次摘要不含文件清单，不能拿摘要验证下载权限。 */
+    async function fileStoreIds(storedName) {
+        if (sql) return sql.fileStoreIds(storedName);
+        const index = await readIndex();
+        return [...new Set(index.batches.filter(batch => (batch.files || []).some(file => file.storedName === storedName))
+            .map(batch => String(batch.sourceStoreId || '')))];
+    }
+    async function getProduct(spuId, scope = null, sourceStoreId = '') {
+        if (sql) return sql.getProduct(spuId, scope, sourceStoreId);
         const index = await readIndex();
         // 合并行只对外暴露一个 SPU，另一个同货号 SPU 仍要能打开详情，否则旧链接会变成“没有这件商品”。
-        const product = index.products.find((item) => item.spuId === String(spuId) || (item.spuIds || []).includes(String(spuId)));
+        // 同 SPU 可出现在不同来源和分类，必须先过滤来源再选择，不能先取全仓第一条。
+        const product = index.products.find((item) => (!scope || (item.sourceStoreIds || []).some(id => scope.has(String(id))))
+            && (!sourceStoreId || (item.sourceStoreIds || []).includes(sourceStoreId))
+            && (item.spuId === String(spuId) || (item.spuIds || []).includes(String(spuId))));
         if (!product) return null;
-        const related = index.batches.filter((batch) => (batch.products || []).some((item) => (product.spuIds || [product.spuId]).includes(String(item.spuId || ""))));
+        const related = index.batches.filter((batch) => (product.batchIds || []).includes(batch.id)
+            && (!scope || scope.has(String(batch.sourceStoreId)))
+            && (batch.products || []).some((item) => (product.spuIds || [product.spuId]).includes(String(item.spuId || ""))));
         return { product: noticeDisplayProduct(product), batches: related.map(summarizeBatch) };
     }
 
@@ -1201,7 +1226,7 @@ export function createStore(rootDir, options = {}) {
      * 删除一个来源店铺的数据。
      *
      * keepProducts=true：保留商品（只清理红标），用于"先删店铺、数据以后再处理"。
-     *   商品仍在库中，但来源店已不存在，普通用户按归属过滤看不到，只有管理员可见。
+     *   来源店标识与数据分类仍保留，同类共享库可读；已删除来源不再允许发送。
      * keepProducts=false：连同该店采集的批次、商品与原始文件一起物理删除。
      *
      * 两种模式都清掉该店的标红记录：标红按"来源店 + SPU"记录，店铺没了之后这条标记
@@ -1560,7 +1585,7 @@ export function createStore(rootDir, options = {}) {
         }
         return options.collectErrors ? { products: verified, errors } : verified;
     }
-    const api = { ensure, importFiles, importPreparedCapture, deleteProducts, markProductBlocked, getFailureEpochs, clearProductBlocked, unblockProducts, listOverview, indexSignature, getBatch, getProduct, readStoredFile, attachSourceStore, storeDataImpact, deleteStoreData, filesDir, importLegacyIndex, rebuildNoticeProjection, verifyBatchTransfer,
+    const api = { ensure, importFiles, importPreparedCapture, deleteProducts, markProductBlocked, getFailureEpochs, clearProductBlocked, unblockProducts, listOverview, indexSignature, getBatch, getProduct, fileStoreIds, readStoredFile, attachSourceStore, storeDataImpact, deleteStoreData, filesDir, importLegacyIndex, rebuildNoticeProjection, verifyBatchTransfer,
         noticeRefs, withNoticeDelivery, recordErrorNotice, errorDetails, unblockErrorProducts, readProductStatuses };
     if (sql) {
         // 预查询沿用业务层的输入归一化，非法请求仍由原入口返回明确校验错误。

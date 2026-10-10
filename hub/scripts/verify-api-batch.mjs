@@ -9,26 +9,35 @@ import os from 'node:os';
 import path from 'node:path';
 
 const code = await fs.readFile(new URL('../../plugin/api-reader.js', import.meta.url), 'utf8');
+const qualificationCode = await fs.readFile(new URL('../../plugin/qualification-reader.js', import.meta.url), 'utf8');
 const replies = [];
 let listener, calls = 0;
 const product = { productId: '5372907865', productName: '测试多规格商品', carouselImageUrls: ['https://example.com/main.jpg'], outerPackageImages: [{ imageUrl: 'https://example.com/package.jpg' }], productPropertyList: [{ propName: '材质', propValue: '蜡' }], productSkcList: [{ productSkcId: '66847115779', productSkuList: [{ productSkuId: '58148545964', supplierPrice: 1600, productSkuSpecList: [{ parentSpecName: '数量', specName: '20pcs' }] }, { productSkuId: '36212696376', supplierPrice: 1800 }] }], goodsLayerDecorationVOList: null, goodsLayerDecorationCustomizeI18nVOList: [] };
 // 模块号刻意与实测不同，保证实现依赖结构签名而不是硬编码编号。
-const runtime = () => ({ post: async (url, input) => { calls++; assert.equal(url, '/visage-agent-seller/product/query'); assert.equal(typeof input.productId, 'string'); return product; }, mallIdClient: { getMallIdAsync: async () => 'test-mall' } });
+const runtime = () => ({ post: async (url, input) => {
+    calls++;
+    // 无资质样本明确返回完整空清单，主回归仍聚焦商品详情，不能省略实际同步采集分支。
+    if (url === '/mms/arbok/product_cert/query/list') return { if_semi_managed: false, total: 0, product_with_cert_list: [] };
+    assert.equal(url, '/visage-agent-seller/product/query'); assert.equal(typeof input.productId, 'string'); return product;
+}, mallIdClient: { getMallIdAsync: async () => 'test-mall' } });
 runtime.m = { 987654: function(e) { e.postWithoutMallId = null; e.mallIdClient = { getMallIdAsync() {} }; } };
 const chunks = [];
 chunks.push = chunk => chunk[2](runtime);
 const location = { hostname: 'agentseller.temu.com', pathname: '/goods/list', origin: 'https://agentseller.temu.com', href: 'https://agentseller.temu.com/goods/list' };
 const window = { chunkLoadingGlobal_temu_sca_goods: chunks, addEventListener: (_, fn) => { listener = fn; }, postMessage: value => replies.push(value) };
-vm.runInNewContext(code, { window, location, crypto: webcrypto, TextEncoder, setTimeout, clearTimeout, URL });
+const pageContext = vm.createContext({ window, location, crypto: webcrypto, TextEncoder, setTimeout, clearTimeout, URL });
+vm.runInContext(qualificationCode, pageContext);
+vm.runInContext(code, pageContext);
 const query = id => listener({ source: window, origin: location.origin, data: { source: 'temu-shop-transfer-api-v1', kind: 'query', requestId: webcrypto.randomUUID(), runId: 'run-1', spuId: id } });
 await query('5372907865');
 assert.equal(replies.at(-1).payload.result.productId, '5372907865');
+assert.equal(replies.at(-1).qualifications.status, 'complete');
 await query('3714507798');
 assert.match(replies.at(-1).error, /不匹配/);
 location.pathname = '/goods/edit';
 await query('5372907865');
 assert.match(replies.at(-1).error, /列表页/);
-assert.equal(calls, 2);
+assert.equal(calls, 3);
 
 const record = { dataType: 'product-detail', source: { requestUrl: 'https://agentseller.temu.com/visage-agent-seller/product/query', pageUrl: location.href, pageProductId: '5372907865' }, identity: { productIds: ['5372907865'], goodsIds: [], skcIds: [], skuIds: [] }, payload: { success: true, result: product } };
 const parse = records => parseImportedFiles([{ originalName: 'temu-full-capture-test.json', payload: { kind: 'full-capture-packet', exportMode: 'full-capture', source: { allowedSpuIds: ['5372907865'] }, records } }]);
@@ -53,6 +62,9 @@ console.log('API批采：客户端动态发现、字符串ID、路由限制、�
 
 // 临时仓库存储回归，绝不接触正式data目录；再次读取仍应保留核心详情已采证据。
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ziniao-api-batch-'));
+assert.equal(path.dirname(path.resolve(tempRoot)), path.resolve(os.tmpdir()));
+assert.ok(path.basename(tempRoot).startsWith('ziniao-api-batch-'));
+try {
 const warehouse = createStore(tempRoot);
 await warehouse.importFiles([{ originalName: 'temu-full-capture-api-test.json', payload: { kind: 'full-capture-packet', source: { shopName: '测试店', sourceStoreId: 'test-store', allowedSpuIds: ['5372907865'] }, records: [record] } }]);
 const overview = await warehouse.listOverview();
@@ -70,18 +82,22 @@ const bg = vm.createContext({ crypto: webcrypto, TextEncoder, URL, URLSearchPara
         async get(key) { return structuredClone({ [key]: sessionData[key] }); },
         async set(values) { Object.assign(sessionData, structuredClone(values)); },
         async remove(key) { delete sessionData[key]; }
-    } }, tabs: { async update() { throw new Error('禁止导航'); } }, runtime: { getManifest: () => ({ version: '10.5.0' }) } }
+    }, local: { async get() { return {}; }, async set() {}, async remove() {} } }, tabs: { async update() { throw new Error('禁止导航'); } }, runtime: { getManifest: () => ({ version: '10.5.0' }) } }
 });
 vm.runInContext(background.split('chrome.runtime.onMessage.addListener')[0], bg);
 vm.runInContext(`
     globalThis.logs = [];
+    isIngestPageActive = async () => true;
+    invalidateIngestTab = async () => {};
+    getIngestSettings = async () => ({autoPush:false});
     appendCaptureLog = async value => logs.push(value);
     exportFullPacketToDownload = async () => ({exported:true,fileName:'test.json'});
     saveCapture = async event => ({eventId:event.payload.result.productId, productRelated:true, detailCapture:summarizeDetailCapture(event.payload,event.requestUrl,'https://agentseller.temu.com/goods/list',200)});
 `, bg);
-const sender = { tab: { id: 7, url: 'https://agentseller.temu.com/goods/list' } };
+const sender = { tab: { id: 7, url: 'https://agentseller.temu.com/goods/list' }, documentId: 'api-fixture-doc' };
 sessionData['captureEnabledTab:7'] = true;
-const queue = await bg.beginDetailSupplement({ spuIds: ['5372907865', '3714507798'], eventIds: ['list'], listUrl: sender.tab.url }, sender);
+sessionData['capturePageBinding:7'] = {tabId:7,documentId:sender.documentId,captureToken:'api-fixture-round'};
+const queue = await bg.beginDetailSupplement({ spuIds: ['5372907865', '3714507798'], eventIds: ['list'], listUrl: sender.tab.url, captureToken: 'api-fixture-round' }, sender);
 assert.equal(queue.mode, 'api');
 assert.ok(queue.runId);
 const input = { runId: queue.runId, spuId: '5372907865', payload: {success:true, result: product} };
@@ -101,15 +117,13 @@ await bg.withDetailQueue(7, () => bg.clearDetailSupplement(sender));
 await assert.rejects(() => bg.withDetailQueue(7, () => bg.captureApiDetail(input, sender)), /stale_detail_run/);
 console.log('后台API队列：落库推进、空正文完成、重复回执拒绝、失败日志、停止失效及不导航通过');
 
-// 实际详情渲染器校验三种正文状态，防止后端正确但网页仍输出误导性提示。
-const uiCode = await fs.readFile(new URL('../public/app.js', import.meta.url), 'utf8');
-const element = { innerHTML: '', addEventListener() {} };
-const ui = vm.createContext({ document: { getElementById: () => element, querySelectorAll: () => [] }, location: {hash:'#/products'}, window: {}, console });
-vm.runInContext(uiCode.split('window.addEventListener("hashchange", route);')[0], ui);
-ui.renderProduct({ product: parsed.products[0], batches: [] });
-assert.match(element.innerHTML, /源正文为空/);
-assert.doesNotMatch(element.innerHTML, /需要在 Temu 打开商品详情或编辑页/);
-ui.renderProduct({ product: withBody.products[0], batches: [] });
-assert.match(element.innerHTML, /detail.jpg/);
-assert.doesNotMatch(element.innerHTML, /原商品没有详情正文/);
+// 展示模块已拆分；空正文不新增解释模块，非空图文仍由实际商品详情渲染器输出。
+const uiCode = await fs.readFile(new URL('../public/product-detail.js', import.meta.url), 'utf8');
+const ui = vm.createContext({ window: {}, URL });
+vm.runInContext(uiCode, ui);
+const render = product => ui.window.ProductDetailView.render(product);
+assert.doesNotMatch(render(parsed.products[0]), /详情图文|需要在 Temu 打开商品详情或编辑页/);
+assert.match(render(withBody.products[0]), /detail.jpg/);
+assert.doesNotMatch(render(withBody.products[0]), /原商品没有详情正文/);
 console.log('商品页面真实渲染器：已采空正文/非空图文展示通过');
+} finally { await fs.rm(tempRoot, {recursive:true,force:true}); }

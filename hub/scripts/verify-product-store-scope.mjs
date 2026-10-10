@@ -51,6 +51,9 @@ const list = async () => (await store.listOverview()).products
     ]);
     const before = await list();
     assert.equal(before.length, 3, "前置条件：三个商品行");
+    assert.deepEqual((await store.getProduct('1111111111', new Set([STORE_B]))).product.sourceStoreIds, [STORE_B], '同SPU详情先按范围选择');
+    assert.deepEqual((await store.getProduct('1111111111', null, STORE_B)).product.sourceStoreIds, [STORE_B], '共享库详情绑定被点击的来源');
+    assert.ok((await store.getProduct('1111111111', new Set([STORE_B]))).batches.every(batch => batch.sourceStoreId === STORE_B));
     await store.deleteProducts(["1111111111"], null, { storeIds: [STORE_A] });
     const after = await list();
     assert.equal(after.length, 2, `删除后应剩两行，实际 ${JSON.stringify(after)}`);

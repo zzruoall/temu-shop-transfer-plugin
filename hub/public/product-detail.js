@@ -166,7 +166,61 @@ window.ProductDetailView = (() => {
             + images(first(value.imageUrl, value.imgUrl, value.picUrl, value.imageUrls, value.images, value.src), '详情图', true);
     }
 
-    /** 参考图的纵向顺序固定，模块是否出现只取决于可展示数据，与完整度判定无关。 */
+    /** 资质附件来源独立于商品图片，只开放平台 HTTPS 链接，不把签名地址发给第三方预览服务。 */
+    function qualificationFile(value) {
+        const url = safeUrl(value);
+        if (!url) return '';
+        const host = new URL(url).hostname;
+        return ['kwcdn.com', 'temu.com', 'kuajingmaihuo.com'].some(domain => host === domain || host.endsWith(`.${domain}`)) ? url : '';
+    }
+
+    /** 资质按原始 SPU 分组；读取状态与平台上传/审核状态分开，不能以来源店资料代替目标店审核。 */
+    function qualifications(product) {
+        const captures = array(product.qualificationCaptures);
+        const captureName = status => ({ complete: '读取完成', partial: '部分读取', failed: '读取失败' }[status] || '未读取');
+        const timestamp = value => text(value).replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+        const codeName = value => value === null || value === undefined ? '未提供' : `平台状态码 ${text(value)}`;
+        return captures.map(capture => {
+            const scope = `来源店 ${text(capture.sourceStoreId) || '尚未映射'} · SPU ${text(capture.spuId)}`;
+            const latest = capture.lastAttempt ? `<p class="qualification-warning">最近读取：${escape(captureName(capture.lastAttempt.status))} · ${escape(timestamp(capture.lastAttempt.capturedAt))}${capture.lastAttempt.reason ? ` · ${escape(capture.lastAttempt.reason)}` : ''}</p>` : '';
+            // 资料读取完成不等于附件可搬运；旧临时链接必须明确提示重新采集。
+            const archiveLabel = { complete: '附件已归档', partial: '附件部分归档', failed: '附件归档失败', not_archived: '附件未归档，请重新采集' }[capture.archiveStatus] || '附件未归档，请重新采集';
+            const status = `<p class="qualification-meta">${escape(captureName(capture.status))} · ${escape(timestamp(capture.capturedAt))} · ${escape(archiveLabel)}</p>`;
+            const reason = capture.reason ? `<p class="qualification-warning">${escape(capture.reason)}</p>` : '';
+            const empty = !array(capture.items).length ? `<p>${capture.status === 'complete' ? '本次查询无商品资质记录' : '未取得完整资质资料'}</p>` : '';
+            const items = array(capture.items).map(item => {
+                const countries = array(item.sites).map(site => text(site.name) || `站点 ${text(site.id)}`).join(' / ');
+                const requirements = array(item.requirements).map(value => `<p>${escape(value)}</p>`).join('');
+                const effects = array(item.saleEffects).map(value => `<p>${escape(value)}</p>`).join('');
+                const files = array(item.files).map(file => {
+                    const url = qualificationFile(file.url);
+                    const label = [text(file.role), text(file.name), text(file.language), file.asset?.sha256 ? '已归档' : '未归档'].filter(Boolean).join(' · ');
+                    return url ? `<a class="detail-file-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${escape(label || '资质附件')}</a>${!file.asset?.sha256 && file.reason ? `<p class="qualification-warning">${escape(file.reason)}</p>` : ''}`
+                        : `<p>${escape(label || '资质附件')} · ${escape(file.reason || '附件地址未验证，未开放链接')}</p>`;
+                }).join('');
+                // 仅展示明确的商品资质填写字段，操作者、联系方式和模板配置不进入用户内容面板。
+                const fields = { authCode: '资质编号', authCodes: '资质编号', model: '型号', brand: '品牌', eprelId: 'EPREL 编号',
+                    selectedCheckItems: '已选择检测项', productDangerousIngredients: '危险成分信息', docPdfContentReq: '资质文档填写内容',
+                    uploadedContents: '已上传内容', groupUploadedContents: '分组上传内容' };
+                const entered = Object.entries(fields).map(([key, label]) => {
+                    const value = item.content?.[key];
+                    if (value === null || value === undefined || value === '' || typeof value === 'object' && !Object.keys(value).length) return '';
+                    return row(label, typeof value === 'object' ? `<pre class="qualification-content">${escape(JSON.stringify(value, null, 2))}</pre>` : `<p>${escape(value)}</p>`);
+                }).join('');
+                // 每项资质独立默认收起；缺失提示保留在标题旁，长要求与填写内容只在用户展开后展示。
+                const warning = item.status !== 'complete' ? '读取不完整' : array(item.files).some(file => !file.asset?.sha256) ? '附件未完整' : '';
+                return `<details class="detail-qualification"><summary class="qualification-summary"><h4>${escape(item.displayName || item.name || `资质 ${item.certType}`)}</h4>${warning ? `<span class="qualification-summary-warning">${escape(warning)}</span>` : ''}</summary><div class="qualification-body">${item.name && item.displayName ? `<p class="qualification-meta">${escape(item.name)}</p>` : ''}
+                    ${valueRow('上传状态', Number(item.uploadStatus) === 1 ? '待上传' : codeName(item.uploadStatus))}${valueRow('审核状态', codeName(item.auditStatus))}
+                    ${valueRow('适用国家或地区', countries)}${row('合规要求', requirements)}${row('销售影响', effects)}
+                    ${row('资质文件', files || (item.status === 'complete' ? '<p>未返回已上传附件</p>' : ''))}
+                    ${item.status !== 'complete' ? `<p class="qualification-warning">${escape(item.reason || '资质详情未完整读取')}</p>` : ''}
+                    ${entered ? `<details class="qualification-entered"><summary>已填写内容</summary>${entered}</details>` : ''}</div></details>`;
+            }).join('');
+            return `<div class="qualification-scope"><h3>${escape(scope)}</h3>${status}${latest}${reason}${empty}${items}</div>`;
+        }).join('');
+    }
+
+    /** 参考图的纵向顺序固定，新增资质放在资料尾部，不改变已有商品属性、规格和 SKU 的排列。 */
     function render(product = {}) {
         const candidate = product.publicationData?.sourceProduct;
         const hasSource = Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate));
@@ -221,7 +275,7 @@ window.ProductDetailView = (() => {
             return url ? `<a class="detail-file-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(first(file.fileName, file.name, '说明书'))}</a>` : '';
         }).join('');
         const body = hasSource ? [source.goodsLayerDecorationVOList, source.goodsLayerDecorationCustomizeI18nVOList, source.decoration] : product.detail;
-        return `<div class="product-detail">${section('商品素材', material)}${section('基本信息', basic)}${section('商品属性', attributes(product, source, hasSource))}${section('商品规格', specification)}${section('尺码表', images(source.sizeChartImages, '尺码表'))}${section('商品包装信息', packaging)}${section('敏感属性与体积重量', hasLogistics ? logistics : '')}${section('SKU 信息', skuInfo)}${section('货号', valueRow('货号', codes.join(' / ')))}${section('化妆品成分', cosmetics(source, rows))}${section('详情视频', row('详情视频', videos(source.detailVideoVOList)))}${section('电子说明书', row('说明书文件', guideLinks))}${section('详情图文', description(body))}</div>`;
+        return `<div class="product-detail">${section('商品素材', material)}${section('基本信息', basic)}${section('商品属性', attributes(product, source, hasSource))}${section('商品规格', specification)}${section('尺码表', images(source.sizeChartImages, '尺码表'))}${section('商品包装信息', packaging)}${section('敏感属性与体积重量', hasLogistics ? logistics : '')}${section('SKU 信息', skuInfo)}${section('货号', valueRow('货号', codes.join(' / ')))}${section('化妆品成分', cosmetics(source, rows))}${section('详情视频', row('详情视频', videos(source.detailVideoVOList)))}${section('电子说明书', row('说明书文件', guideLinks))}${section('详情图文', description(body))}${section('商品资质', qualifications(product))}</div>`;
     }
     return { render };
 })();

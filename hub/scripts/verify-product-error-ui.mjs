@@ -13,7 +13,8 @@ function implementation(name) {
     const text = app.slice(start), end = /^}\r?$/m.exec(text); assert.ok(end);
     return text.slice(0, end.index + end[0].length);
 }
-const functions = ['escapeHtml', 'safeImageUrl', 'productExtCodes', 'skuExtCodes', 'identifierText', 'renderProductRows'].map(implementation).join('\n');
+const libraryHelpers = app.slice(app.indexOf('const isCatalogRoute'), app.indexOf('const storeViews'));
+const functions = `const currentAccount = { isAdmin: false };\n${libraryHelpers}\n` + ['escapeHtml', 'safeImageUrl', 'productExtCodes', 'skuExtCodes', 'identifierText', 'renderProductRows'].map(implementation).join('\n');
 const output = new URL('../../output/playwright/', import.meta.url);
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true });

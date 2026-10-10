@@ -1,10 +1,10 @@
 /**
- * 仅在当前HTTP请求期间连接发送方与接收方；不落库、不等收妥、不保存平台运行状态。
+ * 只连接当前发送请求与接收通道；不落库、不等收妥、不保存平台运行状态。
  * 断线、超时或重启均丢弃当前发送，不在下次连接重放；页面身份防止旧请求落到刷新后的页面。
  */
 export function createOneShotRelay({ waitMs = 12000, maxBytes = 32 * 1024 * 1024, maxPending = 128,
     handoff = async (claimed, deliver) => deliver({ claimed, skippedBlocked: [] }) } = {}) {
-    const senders = new Map(), receivers = new Map();
+    const senders = new Map(), receivers = new Map(), channels = new Map();
     let bytes = 0, pending = 0;
     const fail = (code, status = 409) => Object.assign(Error(code), { status });
     const keyOf = ({ storeId, pluginInstanceId, relaySessionId }) => {
@@ -35,6 +35,19 @@ export function createOneShotRelay({ waitMs = 12000, maxBytes = 32 * 1024 * 1024
         if (size > maxBytes || bytes + size > maxBytes || pending >= maxPending
             || [...senders.values()].filter(v => v.owner === owner).length >= 16) throw fail('relay_capacity', 429);
         if (senders.has(key)) throw fail('relay_store_busy', 429);
+        const channel = channels.get(key);
+        if (channel) {
+            if (channel.delivering) throw fail('relay_store_busy', 429);
+            channel.delivering = true;
+            try {
+                return await handoff(claimed, ({ claimed: allowed, skippedBlocked = [] }) => {
+                    if (signal?.aborted || channels.get(key) !== channel || !channel.available()) throw fail('relay_not_connected', 409);
+                    channel.deliver(allowed);
+                    // 仅表示交给当前网络连接，不表示插件收妥或平台创建成功。
+                    return { sent: allowed.length, skippedBlocked };
+                });
+            } finally { channel.delivering = false; }
+        }
         const receiver = receivers.get(key);
         if (receiver) {
             if (receiver.delivering) throw fail('relay_store_busy', 429);
@@ -74,5 +87,14 @@ export function createOneShotRelay({ waitMs = 12000, maxBytes = 32 * 1024 * 1024
         if (receivers.size >= 512) throw fail('relay_capacity', 429);
         return wait(receivers, key, signal, { claimed: [] });
     }
-    return { send, receive, snapshot: () => ({ bytes, pending, receivers: receivers.size }) };
+    /** 持久通道只保留连接引用；断线立即解除，不保留商品或等待下一次连接重放。 */
+    function attach(identity, channel) {
+        const key = keyOf(identity);
+        if (channels.size >= 512 && !channels.has(key)) throw fail('relay_capacity', 429);
+        const previous = channels.get(key);
+        previous?.close?.();
+        channels.set(key, channel);
+        return () => { if (channels.get(key) === channel) channels.delete(key); };
+    }
+    return { send, receive, attach, snapshot: () => ({ bytes, pending, receivers: receivers.size, channels: channels.size }) };
 }

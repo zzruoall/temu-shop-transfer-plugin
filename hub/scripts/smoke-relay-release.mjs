@@ -64,9 +64,10 @@ try {
     const capability = await get('/api/direct-create-capability');
     assert.equal(capability.status, 200);
     const protocol = await capability.json();
-    assert.equal(protocol.minimumPluginVersion, '10.10.69');
+    assert.equal(protocol.minimumPluginVersion, '11.0.4');
+    assert.deepEqual(protocol.actionTypes, ['product_create', 'qualification_upload']);
     assert.equal(protocol.errorNoticeProtocol, 2);
-    // 协议门槛与安装包版本分开核对，后续插件升级不得误提高已兼容的最低版本。
+    // 独立操作使用新的发送门槛；错误通知仍保持原授权协议，不修改其历史兼容版本。
     assert.equal(protocol.errorNoticeMinimumPluginVersion, '10.10.72');
     for (const endpoint of ['/api/jobs', '/api/jobs/dashboard', '/api/work-log']) {
         assert.equal((await get(endpoint)).status, 404, `旧统计/状态入口未关闭:${endpoint}`);

@@ -63,6 +63,13 @@ function canonical(value) {
     return value;
 }
 
+/** 列表不携带资质/发布大正文；完整压缩资料仍由商品详情读取，避免采集资质后每页列表占用成倍增加。 */
+export function inventoryListSummary(product) {
+    const { publicationData, detail, qualificationCaptures, qualifications, ...summary } = product;
+    if (publicationData) summary.publicationData = { sourceBatchId: publicationData.sourceBatchId };
+    return summary;
+}
+
 /** 完整资料按内容寻址压缩存一份，列表只读取投影；复制给目标店不复制原始采集文件。 */
 export function createMysqlInventory(database, { removeFile } = {}) {
     const context = new AsyncLocalStorage();
@@ -557,9 +564,7 @@ export function createMysqlInventory(database, { removeFile } = {}) {
             }
             if (previous.has(id)) await queuePayload(previous.get(id).payload_id);
             await payload(product);
-            // 发布大正文不随商品列表返回；列表选择来源只需要不可变来源批次标识。
-            const { publicationData, detail, ...summary } = product;
-            if (publicationData) summary.publicationData = { sourceBatchId: publicationData.sourceBatchId };
+            const summary = inventoryListSummary(product);
             const search = [product.title, product.spuId, ...(product.spuIds || []), product.goodsId, product.category, product.articleNo,
                 ...(product.productExtCodes || []), ...(product.skuExtCodes || []), ...(product.skus || []).map(sku => sku.extCode)].filter(Boolean).join(" ").toLocaleLowerCase();
             await query(`INSERT INTO hub_products(id,store_id,position,payload_id,body,search_text,ready,blocked,missing_detail,empty_detail,missing_image)
@@ -625,14 +630,26 @@ export function createMysqlInventory(database, { removeFile } = {}) {
             AND EXISTS(SELECT 1 FROM hub_product_sources s WHERE s.product_id=p.id AND s.store_id=?)`, [JSON.stringify(ids.map(String)),storeId]);
         return { products: await decorateNotices(rows.map(row => parse(row.body))) };
     }
-    async function getProduct(spuId) {
-        const [rows] = await query("SELECT payload_id,body FROM hub_products WHERE JSON_CONTAINS(JSON_EXTRACT(body,'$.spuIds'),CAST(? AS JSON)) LIMIT 1", [JSON.stringify(String(spuId))]);
+    async function getProduct(spuId, scope = null, sourceStoreId = '') {
+        // 范围条件必须放在 LIMIT 前，防止同 SPU 的测试数据遮挡或泄露正式数据。
+        if (scope && !scope.size) return null;
+        const params = [JSON.stringify(String(spuId))];
+        let filter = '';
+        if (scope) { filter += ' AND EXISTS (SELECT 1 FROM hub_product_sources s WHERE s.product_id=p.id AND s.store_id IN (?))'; params.push([...scope]); }
+        if (sourceStoreId) { filter += ' AND EXISTS (SELECT 1 FROM hub_product_sources s WHERE s.product_id=p.id AND s.store_id=?)'; params.push(sourceStoreId); }
+        const [rows] = await query("SELECT payload_id,body FROM hub_products p WHERE JSON_CONTAINS(JSON_EXTRACT(body,'$.spuIds'),CAST(? AS JSON))" + filter + " LIMIT 1", params);
         if (!rows.length) return null;
         const bodies = await loadPayloads([rows[0].payload_id]);
         const product = applyBlockedView(bodies.get(rows[0].payload_id), parse(rows[0].body));
         await decorateNotices([product]);
         const [batchRows] = product.batchIds?.length ? await query("SELECT body FROM hub_batches WHERE id IN (?) ORDER BY position", [product.batchIds]) : [[]];
-        return { product: noticeDisplayProduct(product), batches: batchRows.map(row => parse(row.body)) };
+        return { product: noticeDisplayProduct(product), batches: batchRows.map(row => parse(row.body)).filter(batch => !scope || scope.has(String(batch.sourceStoreId))) };
+    }
+
+    /** 仅投影来源店，不加载商品正文；文件必须在授权分类的所有引用中都可读。 */
+    async function fileStoreIds(name) {
+        const [rows] = await query("SELECT DISTINCT store_id FROM hub_batches WHERE JSON_CONTAINS(JSON_EXTRACT(body,'$.files[*].storedName'),CAST(? AS JSON))", [JSON.stringify(name)]);
+        return rows.map(row => String(row.store_id || ''));
     }
 
     /** 单批最多百行，只读列表元数据及原子通知；不加载压缩正文、图片或完整库存。 */
@@ -719,7 +736,12 @@ export function createMysqlInventory(database, { removeFile } = {}) {
         const batchWhere = scope ? scope.size ? "store_id IN (?)" : "0=1" : "1=1";
         // 统计、店铺目录与当前页关联批次分开查询；商品翻页不下载所有历史批次 JSON。
         const [[batchCounts]] = await query(`SELECT COUNT(*) AS n,COALESCE(SUM(JSON_LENGTH(JSON_EXTRACT(body,'$.files'))),0) AS files FROM hub_batches WHERE ${batchWhere}`, batchParams);
-        const [sourceRows] = await query(`SELECT store_id,MAX(COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(body,'$.sourceStoreName')),''),JSON_UNQUOTE(JSON_EXTRACT(body,'$.shopName')),store_id)) AS name FROM hub_batches WHERE ${batchWhere} GROUP BY store_id`, batchParams);
+        // 全范围目录不依赖当前页批次；空白与本店 ID 占位不覆盖其他批次已有的真实名称。
+        const [sourceRows] = await query(`SELECT store_id,COALESCE(MAX(COALESCE(
+            NULLIF(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(body,'$.sourceStoreName'))),''),store_id),
+            NULLIF(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(body,'$.shopName'))),''),store_id),
+            NULLIF(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(body,'$.pageStoreName'))),''),store_id))),store_id) AS name
+            FROM hub_batches WHERE ${batchWhere} GROUP BY store_id`, batchParams);
         const batchIds = new Set(products.flatMap(product => product.batchIds || []));
         const directory = url.searchParams.get('includeAllBatches') === '1';
         const batchOffset = Math.max(0, Math.floor(Number(url.searchParams.get('batchOffset')) || 0));
@@ -746,12 +768,14 @@ export function createMysqlInventory(database, { removeFile } = {}) {
         if (row?.status !== 'processing') throw Error('入库请求状态已失效');
     }
     return { read: stores => readSnapshot(() => read(stores ?? context.getStore()?.stores)), write, runMutation, ingestReceipt, lockIngest,
-        protectFile, queueFiles, cleanup, storesForSpus, assertSource, sharedSpuCount, importMeta, prepareImport, markProductBlocked, getFailureEpochs,
+        protectFile, queueFiles, cleanup, storesForSpus, fileStoreIds, assertSource, sharedSpuCount, importMeta, prepareImport, markProductBlocked, getFailureEpochs,
         syncNoticeStates, deleteNoticeStates, recordErrorNotice, unblockErrorProducts, invalidateLegacyNoticeRefs, withNoticeDelivery, backfillNoticeStates,
         noticeRefs: (id, ids) => readSnapshot(() => noticeRefs(id, ids)),
         errorDetails: input => readSnapshot(() => errorDetails(input)),
         productStatuses: (requested, scope) => readSnapshot(() => productStatuses(requested, scope)),
-        getBatch: id => readSnapshot(() => getBatch(id)), getProduct: id => readSnapshot(() => getProduct(id)),
+        getBatch: id => readSnapshot(() => getBatch(id)),
+        // 快照包装必须完整传递权限与来源条件，不能丢掉分类后退回全仓第一条。
+        getProduct: (id, scope = null, sourceStoreId = '') => readSnapshot(() => getProduct(id, scope, sourceStoreId)),
         transferRows: (ids, storeId) => readSnapshot(() => transferRows(ids, storeId)), signature, versions: () => readSnapshot(versions), hasUnmapped,
         page: (scope,url) => readSnapshot(() => page(scope,url)) };
 }

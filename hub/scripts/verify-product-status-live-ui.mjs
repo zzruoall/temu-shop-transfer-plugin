@@ -26,7 +26,7 @@ async function fixture(viewport, count = 25) {
         category: '身体护理', images: [], batchIds: ['batch'], sourceStoreIds: ['temu:111'],
         publicationData: { sourceBatchId: 'batch' }, blocked: false, sendBlocked: false, errorNotice: null }));
     const agents = ['222', '333', '444'].map(id => ({ storeId: `temu:${id}`, storeName: `目标店 ${id}`, online: true,
-        pluginDetected: true, identityMatched: true, canReceiveUploads: true }));
+        pluginDetected: true, identityMatched: true, canReceiveUploads: true, pluginVersion: '11.0.4' }));
     page.on('pageerror', error => errors.push(error.message));
     await context.route('**/*', async route => {
         const url = new URL(route.request().url()); assert.equal(url.origin, origin);
@@ -60,7 +60,8 @@ async function fixture(viewport, count = 25) {
             const p = products.find(p => p.spuId === url.searchParams.get('spuId'));
             return json({ sendBlocked: p.sendBlocked, notice: { reason: p.errorNotice?.summary, skuCode: 'SKU-ERROR', code: '2000225' } });
         }
-        if (url.pathname === '/api/direct-create-capability') return json({ directCreate: true });
+        if (url.pathname === '/api/direct-create-capability') return json({ directCreate: true,
+            actionTypes: ['product_create', 'qualification_upload'], minimumPluginVersion: '11.0.4' });
         if (url.pathname === '/api/relay/send') {
             const body = route.request().postDataJSON(); sends.push(body);
             if (holdSends) await new Promise(resolve => gates.push(resolve));
@@ -187,7 +188,9 @@ try {
     const f = await fixture({ width: 1280, height: 900 }, 25), { page } = f;
     await page.locator('label:has(#select-all-products)').click(); await targets(page);
     f.hold(); await page.locator('#batch-direct-create').click();
-    await page.getByRole('dialog', { name: '确认批量上架' }).getByRole('button', { name: '确认发送', exact: true }).click();
+    await page.locator('.upload-action-types label:has(input[value="product_create"])').click();
+    assert.equal(await page.locator('#single-target-select-all').isChecked(), true, '预选店带入共用弹窗');
+    await page.locator('#single-target-dialog button[value="apply"]').click();
     await page.waitForFunction(() => document.querySelector('#batch-direct-create')?.textContent === '发送中…');
     for (let i = 0; i < 100 && f.sends.length < 2; i++) await page.waitForTimeout(10);
     assert.equal(f.sends.length, 2);

@@ -1,4 +1,4 @@
-/** 执行内容脚本的真实汇总、渲染与心跳函数；所有消息只进内存夹具，不访问平台或修改浏览器存储。 */
+/** 执行内容脚本的真实汇总、渲染与推送快照函数；所有消息只进内存夹具，不访问平台或修改浏览器存储。 */
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
@@ -82,7 +82,7 @@ function createHarness(tasks = []) {
     const progress = root.querySelector(".transfer-progress");
     progress.children.set(".transfer-progress-percent", new MinimalElement());
     progress.children.set(".transfer-progress-detail", new MinimalElement());
-    progress.stages = ["duplicate_check", "authorizing", "submitting", "created"]
+    progress.stages = ["duplicate_check", "authorizing", "submitting", "qualifying", "created"]
         .map(stage => new MinimalElement({ "data-stage": stage }));
     const messages = [];
     const identity = { storeId: "temu:123", pageStoreName: "回归测试店", storeName: "回归测试店" };
@@ -101,12 +101,8 @@ function createHarness(tasks = []) {
             messages.push(structuredClone(message));
             if (message.type === "recordOperation") return { ok: true };
             if (message.type === "getBoundStore") return { ok: true, store: { ...identity } };
-            if (message.type === "registerStoreAgent") return { ok: true, agent: { ...identity, pluginInstanceId: "fixture" } };
             if (message.type === "reconcileTargetUploadTasks" || message.type === "getTargetUploadTasks") {
                 return { ok: true, tasks: api.state.transferTasks, directPaused: replies.directPaused };
-            }
-            if (message.type === "claimStoreJobs") {
-                return { ok: true, claimed: [], tasks: api.state.transferTasks, ...replies };
             }
             if (message.type === "retryDirectTask") return { ok: true };
             throw new Error(`夹具禁止的消息：${message.type}`);
@@ -116,19 +112,23 @@ function createHarness(tasks = []) {
     const stateEnd = source.indexOf("    let ingestSettings", stateStart);
     assert.ok(stateStart >= 0 && stateEnd > stateStart, "必须加载真实 state 初始对象");
     const functions = ["logOperation", "send", "directTaskOutcome", "currentStoreTransferTasks", "currentTransferTask",
-        "directBatchProgress", "directBatchSummary", "directProgressView", "render", "syncStoreAgentNow",
+        "directBatchProgress", "directBatchSummary", "directProgressView", "render", "applyStoreAgentSnapshot",
         "refreshTargetUploadTasks", "retryUnknownDirectTask", "directErrorEntries", "directErrorsText", "closeForeignErrorDialog"].map(sourceFunction).join("\n");
     vm.runInContext(`${source.slice(stateStart, stateEnd)}
         let root = fixtureRoot, boundStore = {}, mappedStore = {}, pluginInstanceId = "";
         let agentState = { phase: "claimed", detail: "正在自动创建", claimed: 0 };
         let ingestState = { phase: "idle" }, lastOperationState = "";
         let targetViewEpoch = 0, directPauseBusy = false;
-        let agentRegisteredAt = 0, agentRegisteredPageStoreName = "", agentRegisterInFlight = null;
-        let agentSyncFailures = 0, agentNextSyncAt = 0;
-        const AGENT_REGISTER_INTERVAL_MS = 20000, AGENT_RETRY_BACKOFF_BASE_MS = 5000, AGENT_RETRY_BACKOFF_MAX_MS = 60000;
+        let subscribedStoreId = '', lastStoreSequence = 0;
+        let storeSnapshotEnabled = true;
+        let sharedConnection = {phase:'connected',detail:'已连接'};
+        const isWorkPage = () => true;
         ${functions}
         globalThis.api = { state, currentStoreTransferTasks, currentTransferTask, directBatchProgress,
-            directBatchSummary, directProgressView, render, syncStoreAgentNow, retryUnknownDirectTask, directErrorEntries, directErrorsText,
+            directBatchSummary, directProgressView, render, applyStoreAgentSnapshot, retryUnknownDirectTask, directErrorEntries, directErrorsText,
+            pushSnapshot: () => applyStoreAgentSnapshot({storeId:'temu:123',mallId:'123',storeName:'回归测试店',
+                executionMode:'plugin-api',identityMatched:true,sequence:lastStoreSequence+1,tasks:state.transferTasks,
+                directPaused:state.directPaused,connection:{phase:'connected',detail:'已连接'}}),
             agent: () => agentState };
     `, ctx, { filename: "content-app-progress-fixture.js", timeout: 2000 });
     api = ctx.api;
@@ -146,7 +146,7 @@ function assertSummary(harness, counts) {
     const batch = harness.batch();
     for (const [key, expected] of Object.entries(counts)) assert.equal(batch[key], expected, `统计 ${key}`);
     harness.api.render();
-    assert.match(harness.detail(), new RegExp(`创建成功 ${batch.success}，失败 ${batch.failed}，跳过 ${batch.skipped}，待核对 ${batch.unknown}`));
+    assert.match(harness.detail(), new RegExp(`成功 ${batch.success}，未完成 ${batch.failed}，跳过 ${batch.skipped}，待核对 ${batch.unknown}`));
     assert.match(harness.percent(), new RegExp(`已处理 ${batch.finished}/${batch.total}`));
     assert.equal(harness.root.querySelector(".progress-bar").style.width, "50%", "不能改动采集进度");
     assert.equal(harness.root.querySelector(".progress").getAttribute("aria-valuetext"), "2/4");
@@ -164,7 +164,7 @@ function assertEnded(harness) {
 
 let cases = 0;
 
-// 四件全部被平台拒绝：必须 4/4，最后一件仍可人工重试，心跳不再误报自动创建。
+// 四件全部被平台拒绝：必须 4/4，最后一件仍可人工重试，连接就绪不冒充商品创建成功。
 {
     const h = createHarness([1, 2, 3, 4].map(id => directTask(id, "rejected", { reason: `第 ${id} 件缺少净含量` })));
     assertSummary(h, { total: 4, finished: 4, success: 0, failed: 4, skipped: 0, unknown: 0, percent: 100, complete: true });
@@ -175,9 +175,9 @@ let cases = 0;
     assert.ok(h.progress.stages.find(node => node.getAttribute("data-stage") === "submitting").classList.contains("error"));
     assertEnded(h);
     h.replies.receivedCount = 4;
-    assert.equal(await h.api.syncStoreAgentNow(), true);
-    assert.equal(h.api.agent().phase, "error");
-    assert.match(h.api.state.message, /创建成功 0，失败 4，跳过 0，待核对 0/);
+    h.api.pushSnapshot();
+    assert.equal(h.api.agent().phase, "verified");
+    assert.match(h.api.state.message, /成功 0，未完成 4，跳过 0，待核对 0/);
     assertEnded(h);
     await h.api.retryUnknownDirectTask();
     const retries = h.messages.filter(message => message.type === "retryDirectTask");
@@ -198,8 +198,9 @@ for (const nextState of ["received", "", "duplicate_wait", "authorizing", "submi
     assert.equal(h.messages.filter(message => message.type === "retryDirectTask").length, 0);
     if (nextState === "duplicate_wait") {
         assert.match(h.text(".transfer-status"), /等待重复检索/);
-        await h.api.syncStoreAgentNow();
-        assert.equal(h.api.agent().detail, "等待重复检索");
+        h.api.pushSnapshot();
+        assert.equal(h.api.agent().detail, "已连接");
+        assert.match(h.text('.transfer-status'), /等待重复检索/);
     }
     cases++;
 }
@@ -229,8 +230,8 @@ for (const directState of ["preflight_failed", "rejected", "unknown"]) {
     if (unknown) {
         assert.ok(h.root.querySelector(".transfer-status").classList.contains("warn"));
         assert.ok(h.progress.stages.every(node => !node.classList.contains("done") && !node.classList.contains("error")));
-        await h.api.syncStoreAgentNow();
-        assert.equal(h.api.agent().phase, "unknown");
+        h.api.pushSnapshot();
+        assert.equal(h.api.agent().phase, "verified");
         assertEnded(h);
     }
     cases++;
@@ -260,7 +261,7 @@ for (const directState of ["created", "duplicate_exists"]) {
     assert.ok(h.root.querySelector(".transfer-status").classList.contains("done"));
     assertEnded(h);
     h.replies.receivedCount = 2;
-    await h.api.syncStoreAgentNow();
+    h.api.pushSnapshot();
     assert.equal(h.api.agent().phase, "verified");
     assertEnded(h);
     h.api.render("已导出待上传资料 JSON。");
@@ -356,6 +357,36 @@ for (const directState of ["duplicate_wait", "future_state"]) {
     h.api.render();
     assert.equal(h.root.querySelector('.transfer-errors').hidden, true);
     cases++;
+}
+
+// 推送序号保护迟到快照；空队列连接成功和批次结束后的断网是独立连接状态。
+{
+    const h = createHarness();
+    const snapshot = { storeId: 'temu:123', mallId: '123', storeName: '回归测试店', executionMode: 'plugin-api', identityMatched: true,
+        sequence: 100, tasks: [], directPaused: false, connection: { phase: 'connected', detail: '已连接' } };
+    h.api.applyStoreAgentSnapshot(snapshot);
+    assert.equal(h.text('.agent-status'), '已连接'); assert.equal(h.batch().total, 0);
+    h.api.applyStoreAgentSnapshot({ ...snapshot, sequence: 101, tasks: [directTask(1, 'created')] });
+    h.api.applyStoreAgentSnapshot({ ...snapshot, sequence: 100, tasks: [directTask(2, 'rejected')] });
+    assert.equal(h.api.state.transferTasks[0].spuId, '1');
+    h.api.applyStoreAgentSnapshot({ ...snapshot, sequence: 102, tasks: h.api.state.transferTasks, connection: { phase: 'reconnecting', detail: '连接已断开，正在重连' } });
+    assert.match(h.text('.agent-status'), /重连/); assert.equal(h.batch().success, 1);
+    h.api.state.directPaused = true; h.api.state.message = '已暂停';
+    h.api.applyStoreAgentSnapshot({ ...snapshot, sequence: 103 });
+    assert.equal(h.api.state.message, '准备就绪'); assert.equal(h.api.state.directPaused, false);
+    cases += 3;
+}
+
+// 独立资质任务失败不冒充商品上传失败；轨道准确高亮资质，弹窗保留类型和具体原因。
+{
+    const h = createHarness([directTask(1, 'qualification_failed', { actionType: 'qualification_upload', productId: '9876543210', productCodes: ['CERT-1'],
+        qualificationItems: [{ certType: 1421, name: '检测报告', state: 'failed', reason: '目标要求英文报告' }], reason: '商品已确认，资质未完成' })]);
+    assertSummary(h, { total: 1, success: 0, failed: 1, finished: 1 });
+    assert.equal(h.progress.stages.find(node => node.getAttribute('data-stage') === 'qualifying').classList.contains('error'), true);
+    assert.match(h.api.directErrorsText(h.api.directErrorEntries()), /检测报告.*目标要求英文报告/s);
+    h.api.state.transferTasks[0].directState = 'qualification_unknown';
+    assertSummary(h, { success: 0, failed: 0, unknown: 1, finished: 1 });
+    cases += 2;
 }
 
 console.log(JSON.stringify({ passed: true, cases, realFunctions: 14, realRender: true, minimalDOM: true,
