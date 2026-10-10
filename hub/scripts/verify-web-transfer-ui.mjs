@@ -56,7 +56,7 @@ async function fixture(viewport, count = 6) {
         release() { hold = false; gates.splice(0).forEach(resolve => resolve()); } };
 }
 
-/** 未预选店直接打开共用任务弹窗，再选类型和目标；确认前不得产生发送。 */
+/** 未预选店直接打开共用弹窗选店；点击底部命令前不得产生发送。 */
 async function selectAndConfirm(page) {
     await page.locator('label:has(#select-all-products)').click();
     assert.equal(await page.locator('#select-all-products').isChecked(), true);
@@ -64,7 +64,6 @@ async function selectAndConfirm(page) {
     assert.equal(await page.locator('#batch-direct-create').isEnabled(), true);
     await page.locator('#batch-direct-create').click();
     const confirm = page.locator('#single-target-dialog');
-    await confirm.locator('.upload-action-types label:has(input[value="product_create"])').click();
     await page.locator('label:has(#single-target-select-all)').click();
     assert.equal(await page.locator('#single-target-select-all').isChecked(), true);
     assert.match(await confirm.innerText(), /标红跳过 2 个/);
@@ -86,7 +85,7 @@ try {
         assert.ok(width.width <= width.viewport + 1, JSON.stringify(width));
         await page.screenshot({ path: new URL(`web-transfer-confirm-${name}.png`, output).pathname.slice(1), fullPage: true });
         assert.equal(f.sends.length, 0);
-        await confirm.locator('button[value="apply"]').click();
+        await confirm.locator('button[value="product_create"]').click();
         await page.waitForFunction(() => {
             const message = document.querySelector('#catalog-toast')?.textContent || '';
             if (message.includes('发送失败')) throw Error(message);
@@ -113,7 +112,7 @@ try {
     }
     const f = await fixture({ width: 1280, height: 900 }, 20), { page } = f;
     const confirm = await selectAndConfirm(page);
-    await confirm.locator('button[value="apply"]').click();
+    await confirm.locator('button[value="product_create"]').click();
     for (let i = 0; i < 100 && f.sends.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(f.sends.length, 2);
     await page.getByRole('link', { name: '店铺认领', exact: true }).click();

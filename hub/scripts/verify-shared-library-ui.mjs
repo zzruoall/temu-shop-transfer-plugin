@@ -94,9 +94,8 @@ try {
         assert.equal(await page.locator('#delete-selected').isEnabled(), false, '仅选择他人商品不允许批量删除');
         await page.locator('#clear-product-selection').click();
         await page.locator('[data-product-row]').nth(1).locator('[data-transfer-spu]').click();
-        await page.locator('.upload-action-types label:has(input[value="product_create"])').click();
         await page.locator('#single-target-options label').click();
-        await page.locator('#single-target-dialog button[value="apply"]').click();
+        await page.locator('#single-target-dialog button[value="product_create"]').click();
         await page.waitForFunction(() => document.querySelector('#catalog-toast')?.textContent.includes('实际发出 1 份'));
         assert.equal(sends[0].sourceStoreId, 'temu:112'); assert.equal(sends[0].sourceBatchId, 'batch1');
         assert.equal(sends[0].actionType, 'product_create');

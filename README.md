@@ -1,8 +1,8 @@
 # Temu 商品转移上架插件
 
-- 网站服务版本：`v54`（2026-10-10 线上源码快照）
+- 网站服务版本：`v55`（2026-10-10 线上源码快照）
 - 插件版本：`11.0.4`
-- 版本以 `plugin/manifest.json` 为准；源码和安装包与正式 v54 发布摘要一致。商品上架与资质补全是两个独立任务。
+- 插件版本以 `plugin/manifest.json` 为准；v55 仅调整网站选店弹窗，沿用 11.0.4 插件及安装包。上方直接选择本账户绑定的在线店铺，下方分别点击“上架商品”或“补全资质”。
 - 扩展 ID：`efojbbfhfniieifmppafmigfmndbledc`
 - 用途：采集 Temu 商品及资质，通过中转仓向自己的目标店分别投递商品创建或资质补全任务
 
@@ -13,8 +13,8 @@
 - `worker/`：本机紫鸟工人，用于核验目标店页面身份与插件状态
 - `hub/public/downloads/temu-transfer-plugin-11.0.4.crx`：当前已签名插件
 - `hub/public/downloads/temu-transfer-plugin-11.0.4.zip`：同版本插件源码安装包
-- `docs/release-v54.md`：本次版本边界、验证与限制
-- `docs/release-v54-sha256.json`：正式源码和安装包的 SHA-256 摘要
+- `docs/release-v55.md`：本次网站调整、验证与限制
+- `docs/release-v55-sha256.json`：当前正式源码和安装包的 SHA-256 摘要
 - 根目录的 `temu-shop-transfer-10.10.47.crx` 是历史文件，不是当前版本
 
 ## 安装插件
@@ -33,7 +33,7 @@ npm start
 
 开发环境也可以将 `plugin/` 作为未打包扩展加载，便于查看实时修改。
 
-数据库、凭证及数据目录由部署环境单独配置；不要直接在有在途传输的生产库运行迁移。当前正常传输不依赖旧账户执行器，历史调度和部署脚本不代表 v54 的启动方式。详见 [v54 发布说明](docs/release-v54.md)。
+数据库、凭证及数据目录由部署环境单独配置；不要直接在有在途传输的生产库运行迁移。当前正常传输不依赖旧账户执行器，历史调度和部署脚本不代表当前版本的启动方式。详见 [v55 发布说明](docs/release-v55.md)。
 
 插件的 `direct-adapter.js` 是 `worker/direct-create-prepare.js` 的构建产物；来源保真使用独立模块。
 修改转换源文件后需在 `plugin/` 目录执行 `node build-direct-adapter.mjs` 重新生成，不要直接改产物。

@@ -280,19 +280,17 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
         <dialog id="single-target-dialog" class="batch-target-dialog" aria-labelledby="single-target-dialog-title">
             <form method="dialog">
                 <div class="upload-dialog-body">
-                <div class="batch-dialog-head"><div><h2 id="single-target-dialog-title">选择上传任务</h2><p>本次商品：<strong id="single-target-spu">当前商品</strong></p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
-                <fieldset class="upload-action-types"><legend>任务类型</legend><label><input type="radio" name="upload-action-type" value="product_create"><span>上架商品</span></label><label><input type="radio" name="upload-action-type" value="qualification_upload"><span>补全资质</span></label></fieldset>
-                <p class="upload-task-notice" id="upload-task-notice" aria-live="polite">请选择任务类型。</p>
-                <p class="upload-task-notice" id="upload-product-compliance" hidden>点击“确定上传”即表示确认本次商品符合适用要求，并同意平台《商品合规声明》V2.0；目标店插件检查重复商品，创建不等于审核上架。</p>
-                <fieldset class="upload-target-fields" id="upload-target-fields" hidden disabled><legend>自己的在线店铺</legend>
+                <div class="batch-dialog-head"><div><h2 id="single-target-dialog-title">选择目标店铺</h2><p>本次商品：<strong id="single-target-spu">当前商品</strong></p></div><button type="submit" value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+                <fieldset class="upload-target-fields" id="upload-target-fields"><legend>本账户绑定的在线店铺</legend>
                 <label class="batch-dialog-search"><span class="search-symbol" aria-hidden="true"></span><span class="visually-hidden">搜索上传店铺</span><input id="single-target-search" type="search" placeholder="搜索店铺名称或 ID" autocomplete="off"></label>
                 <label class="batch-dialog-select-all"><input id="single-target-select-all" type="checkbox"><span></span>全选当前店铺</label>
                 <div class="batch-target-options" id="single-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml(`${store.storeName || store.storeId} ${store.storeId}`.toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)} · 在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无在线目标店铺。</p>`}</div>
                 <div class="task-load-more" id="single-target-load-more-wrap" ${targetStoresHaveMore ? "" : "hidden"}><button type="button" class="toolbar-button" id="single-target-load-more">加载更多目标店铺</button><span id="single-target-load-more-status">已显示 ${targetStores.length} / ${targetStoreTotal} 家</span></div>
                 </fieldset>
+                <p class="upload-task-notice" id="upload-product-compliance">点击“上架商品”即表示确认本次商品符合适用要求，并同意平台《商品合规声明》V2.0；创建不等于审核上架。</p>
                 <p class="upload-task-notice">任务发出不代表执行成功。离开本页将停止剩余发送，已发内容不撤回。</p>
                 </div>
-                <div class="batch-dialog-footer"><span id="single-target-count" aria-live="polite">已选择 0 家店铺</span><div class="single-target-dialog-actions"><button type="submit" value="cancel" class="toolbar-button">取消</button><button type="submit" value="apply" class="toolbar-button primary" disabled>确定上传</button></div></div>
+                <div class="batch-dialog-footer"><span id="single-target-count" aria-live="polite">已选择 0 家店铺</span><div class="single-target-dialog-actions"><button type="submit" value="product_create" class="toolbar-button primary" disabled>上架商品</button><button type="submit" value="qualification_upload" class="toolbar-button" disabled>补全资质</button></div></div>
             </form>
         </dialog>
         <section class="catalog-workspace" aria-label="商品台账">
@@ -481,11 +479,8 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const singleTargetSelectAll = document.getElementById("single-target-select-all");
     let singleTargetOptions = [...document.querySelectorAll("#single-target-options .batch-target-option")];
     const singleTargetCount = document.getElementById("single-target-count");
-    const uploadActionInputs = [...singleTargetDialog.querySelectorAll('[name="upload-action-type"]')];
-    const uploadTargetFields = document.getElementById("upload-target-fields");
-    const uploadTaskNotice = document.getElementById("upload-task-notice");
-    const uploadProductCompliance = document.getElementById("upload-product-compliance");
-    const uploadConfirmButton = singleTargetDialog.querySelector('button[value="apply"]');
+    // 两个命令共用店铺草稿和权限边界，点击的按钮才决定发送哪条插件流程。
+    const uploadCommandButtons = [...singleTargetDialog.querySelectorAll('button[value="product_create"], button[value="qualification_upload"]')];
     const productList = document.querySelector(".catalog-workspace .product-list");
     const productPageSizeSelect = document.getElementById("product-page-size");
     const productPagePrev = document.getElementById("product-page-prev");
@@ -609,7 +604,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     const bindBatchTargetOption = (option) => option.querySelector("input")?.addEventListener("change", syncDialogCount);
     batchTargetOptions.forEach(bindBatchTargetOption);
     batchTargetDialog?.addEventListener("close", () => { if (batchTargetDialog.returnValue === "apply") applyDialogSelection(); else syncDialogFromSelect(); });
-    /** 共用弹窗只形成选择草稿；两种模式和任务类型都必须实时重算禁传资格。 */
+    /** 共用弹窗只形成店铺草稿；两种命令都必须实时重算禁传资格。 */
     const syncSingleDialogCount = () => {
         const visibleOptions = singleTargetOptions.filter(option => !option.hidden);
         const checkedVisible = visibleOptions.filter(option => option.querySelector("input")?.checked).length;
@@ -619,21 +614,15 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         }
         const targetCount = singleTargetOptions.filter(option => option.querySelector("input")?.checked).length;
         if (singleTargetCount) singleTargetCount.textContent = `已选择 ${targetCount} 家店铺`;
-        const actionType = uploadActionInputs.find(input => input.checked)?.value || '';
         const products = singleTargetDialog.dataset.mode === 'batch' ? [...catalogSelectedProducts.values()]
             : overview.products.filter(product => catalogKey(product) === singleTargetDialog.dataset.productKey);
         const selection = prepareBulkSelection(products, sourceBatchForProduct);
         if (singleTargetSpu) singleTargetSpu.textContent = singleTargetDialog.dataset.mode === 'batch'
             ? `已选择 ${products.length} 个，可发送 ${selection.eligible} 个，标红跳过 ${selection.blocked.length} 个，缺少来源 ${selection.missing.length} 个。`
             : singleTargetDialog.dataset.spu || '当前商品';
-        uploadTargetFields.hidden = !actionType;
-        uploadTargetFields.disabled = !actionType;
-        uploadProductCompliance.hidden = actionType !== 'product_create';
-        uploadTaskNotice.textContent = !actionType ? '请选择任务类型。' : actionType === 'qualification_upload'
-            ? '向目标店已有商品补全资质，不创建商品，也不表示商品已上架。'
-            : '向目标店发送商品创建任务。';
-        uploadConfirmButton.textContent = actionType === 'qualification_upload' ? '确定补全' : '确定上传';
-        uploadConfirmButton.disabled = !actionType || !targetCount || !selection.eligible || singleUploadBusy || batchUploadBusy;
+        uploadCommandButtons.forEach(button => {
+            button.disabled = !targetCount || !selection.eligible || singleUploadBusy || batchUploadBusy;
+        });
     };
     const resetSingleDialog = () => {
         if (singleTargetSearch) singleTargetSearch.value = "";
@@ -642,7 +631,6 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
             const checkbox = option.querySelector("input");
             if (checkbox) checkbox.checked = selectedTargetOptions().some(option => String(option.value) === String(checkbox.value));
         });
-        uploadActionInputs.forEach(input => { input.checked = false; });
         syncSingleDialogCount();
     };
     /** 单商品和批量仅切换上下文，不嵌套确认窗；预选店铺带入后仍可调整。 */
@@ -653,14 +641,17 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         singleTargetDialog.returnValue = '';
         resetSingleDialog();
         singleTargetDialog.showModal();
-        uploadActionInputs[0]?.focus();
+        singleTargetSearch?.focus();
     };
-    uploadActionInputs.forEach(input => input.addEventListener('change', syncSingleDialogCount));
     // 提交边界再次重算，在线店离线或商品刚标红时，即使触发提交事件也不能发出任务。
     singleTargetDialog.querySelector('form').addEventListener('submit', event => {
-        if (event.submitter?.value !== 'apply') return;
+        if (event.submitter?.value === 'cancel') return;
         syncSingleDialogCount();
-        if (uploadConfirmButton.disabled) event.preventDefault();
+        if (!uploadCommandButtons.includes(event.submitter) || event.submitter.disabled) event.preventDefault();
+    });
+    // 搜索框的回车只用于查找，不能隐式提交表单触发上架或补全资质。
+    singleTargetSearch?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') event.preventDefault();
     });
     singleTargetSearch?.addEventListener("input", () => {
         const query = singleTargetSearch.value.trim().toLocaleLowerCase();
@@ -679,8 +670,8 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
     singleTargetDialog?.addEventListener("close", async () => {
         if (!singleTargetDialog.isConnected || !isCatalogRoute(location.hash)) return;
         const mode = singleTargetDialog.dataset.mode;
-        const actionType = uploadActionInputs.find(input => input.checked)?.value;
-        if (singleTargetDialog.returnValue !== "apply" || !actionType) {
+        const actionType = singleTargetDialog.returnValue;
+        if (!uploadCommandButtons.some(button => button.value === actionType)) {
             resetSingleDialog();
             return;
         }
@@ -691,7 +682,7 @@ function bindProductInventory(overview, initialTargetStores, agentResult = {}) {
         const targetIds = singleTargetOptions.filter(option => option.querySelector("input")?.checked).map(option => String(option.querySelector("input")?.value || "")).filter(Boolean);
         const targets = (targetStores || []).filter(item => targetIds.includes(String(item.storeId)));
         if (!targets.length) { resetSingleDialog(); return; }
-        // 批量只在最终提交后进入既有分段发送函数；开窗、切换类型和取消都不创建任务。
+        // 批量只在点击底部命令后进入分段发送；开窗、选择店铺和关闭都不创建任务。
         if (mode === 'batch') {
             [...batchTargetStores.options].forEach(option => { option.selected = targetIds.includes(String(option.value)); });
             updateTargetSummary();

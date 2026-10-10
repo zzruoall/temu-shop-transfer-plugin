@@ -1,5 +1,5 @@
 async (page) => {
-    // 接口全部拦截，确认按钮只创建模拟任务，绝不把测试商品交给真实插件。
+    // 接口全部拦截，只模拟当前传输；开窗和取消不写任务，绝不交给真实插件。
     const posts = [], errors = [];
     let failCapability = false;
     const check = (value, message) => { if (!value) throw new Error(message); };
@@ -15,9 +15,9 @@ async (page) => {
         const request = route.request(), pathname = request.url().split("?")[0];
         let body = {};
         if (request.method() !== "GET") {
-            if (pathname.endsWith("/bulk-dispatch") && request.method() === "POST") {
+            if (pathname.endsWith("/relay/send") && request.method() === "POST") {
                 posts.push(JSON.parse(request.postData()));
-                return route.fulfill({ json: { batch: { id: `mock-${posts.length}` } } });
+                return route.fulfill({ json: { sent: posts.at(-1).spuIds.length } });
             }
             return route.abort();
         }
@@ -27,7 +27,7 @@ async (page) => {
         if (pathname.endsWith("/stores")) body = { stores: [], total: 0, hasMore: false };
         if (pathname.endsWith("/direct-create-capability")) {
             if (failCapability) return route.fulfill({ status: 503, json: { error: "模拟服务暂不可用" } });
-            body = { directCreate: true };
+            body = { directCreate: true, actionTypes: ['product_create', 'qualification_upload'], minimumPluginVersion: '11.0.4' };
         }
         await route.fulfill({ json: body });
     });
@@ -37,18 +37,22 @@ async (page) => {
     await page.locator("#batch-target-trigger").click();
     await page.locator("label:has(#batch-target-select-all)").click();
     await page.locator('#batch-target-dialog button[value="apply"]').click();
-    const begin = () => page.locator("#batch-direct-create").click();
-    const confirm = () => page.locator('.confirm-dialog button[value="ok"]').click();
+    // 预选店只带入草稿；每次仍需点击底部命令才发送。
+    const begin = async () => {
+        await page.locator("#batch-direct-create").click();
+    };
+    const confirm = () => page.locator('#single-target-dialog button[value="product_create"]').click();
+    const confirmSource = () => page.locator('.confirm-dialog button[value="ok"]').click();
     await begin();
-    await page.getByRole("dialog", { name: "确认批量上架" }).waitFor();
-    check(!await page.locator("#batch-direct-create").isEnabled(), "确认期间提交按钮未锁定");
-    await page.setViewportSize({ width: 1360, height: 900 });
-    await page.screenshot({ path: "output/send-confirm-desktop.png" });
+    await page.locator("#single-target-dialog").waitFor();
+    check(posts.length === 0 && await page.locator('dialog[open]').count() === 1, "确认前产生了任务或嵌套弹窗");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: "output/playwright/send-confirm-desktop.png" });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: "output/send-confirm-mobile.png" });
-    check(await page.locator(".confirm-dialog").evaluate(element => element.getBoundingClientRect().width <= innerWidth), "移动端弹窗溢出");
+    await page.screenshot({ path: "output/playwright/send-confirm-mobile.png" });
+    check(await page.locator("#single-target-dialog").evaluate(element => element.getBoundingClientRect().width <= innerWidth), "移动端弹窗溢出");
     await page.keyboard.press("Escape");
-    await page.locator("#catalog-toast").filter({ hasText: "已取消发送" }).waitFor();
+    check(!await page.locator('#single-target-dialog').evaluate(element => element.open), "Escape未关闭任务弹窗");
     check(posts.length === 0, "取消后创建了任务");
     await begin(); await confirm();
     await page.getByRole("dialog", { name: "确认发送到来源店铺" }).waitFor();
@@ -56,16 +60,16 @@ async (page) => {
     await page.locator('.confirm-dialog button[value="cancel"]').click();
     check(posts.length === 0, "拒绝同店发送后仍创建任务");
     failCapability = true;
-    await begin(); await confirm(); await confirm();
+    await begin(); await confirm(); await confirmSource();
     await page.locator("#catalog-toast").filter({ hasText: "模拟服务暂不可用" }).waitFor();
     check(await page.locator("#batch-direct-create").isEnabled(), "请求失败未解锁提交");
     failCapability = false;
-    await begin(); await confirm(); await confirm();
-    await page.locator("#catalog-toast").filter({ hasText: "发送清单已保存" }).waitFor();
-    check(posts.length === 1 && posts[0].targets.length === 2, "两店应通过一次请求保存清单");
-    check(posts[0].sameStoreConfirmed === true, "缺少同店明确确认字段");
-    check(posts[0].groups[0].spuIds.join() === "p1", "错误发送商品范围");
+    await begin(); await confirm(); await confirmSource();
+    await page.locator("#catalog-toast").filter({ hasText: "实际发出 2 份" }).waitFor();
+    check(posts.length === 2 && new Set(posts.map(body => body.targetStoreId)).size === 2, "两店应分别执行当前传输");
+    check(posts.every(body => body.sameStoreConfirmed === true && body.actionType === 'product_create'), "缺少同店确认或任务类型字段");
+    check(posts.every(body => body.spuIds.join() === "p1"), "错误发送商品范围");
     check(await page.evaluate(() => window.nativeConfirmCalls) === 0, "发送仍依赖原生confirm");
     check(errors.length === 0, errors.join("\n"));
-    return { passed: true, nativeConfirmDisabled: true, cancelNoWrites: true, sameStoreConfirmation: true, failureRecovery: true, mockedJobs: posts.length, realWrites: 0 };
+    return { passed: true, nativeConfirmDisabled: true, cancelNoWrites: true, sameStoreConfirmation: true, failureRecovery: true, mockedTransfers: posts.length, realWrites: 0 };
 }

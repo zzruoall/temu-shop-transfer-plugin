@@ -821,13 +821,9 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
 .batch-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 4px; border-top: 1px solid #e9eff3; }
 .batch-dialog-footer span { color: #718696; font-size: 12px; }
 .single-target-dialog-actions { display: flex; align-items: center; gap: 8px; }
-/* 上传任务沿用目标店弹窗的色彩与间距；类型先选，店铺草稿随后展开。 */
-.upload-action-types { display: flex; flex-wrap: wrap; gap: 10px 20px; margin: 0; padding: 10px 12px; border: 1px solid #c8d9e7; border-radius: 7px; }
-.upload-action-types legend, .upload-target-fields legend { padding: 0 4px; color: #2c5572; font-size: 13px; font-weight: 700; }
-.upload-action-types label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; color: #28536f; font-size: 14px; cursor: pointer; }
-.upload-action-types input { margin: 0; accent-color: #0b74de; }
+/* 店铺先选，底部两个命令直接决定流程，沿用现有弹窗的色彩与间距。 */
+.upload-target-fields legend { padding: 0 4px; color: #2c5572; font-size: 13px; font-weight: 700; }
 .upload-target-fields { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
-.upload-target-fields[hidden] { display: none; }
 .upload-target-fields .batch-target-option[hidden] { display: none; }
 .upload-task-notice { margin: 0; color: #49677e; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 /* 长店铺列表只滚动弹窗正文，窄屏确认按钮始终可见，不被材料提示或加载按钮挤出。 */
@@ -836,7 +832,7 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
 #single-target-dialog .task-load-more[hidden] { display: none; }
 #single-target-dialog .batch-dialog-footer { flex-wrap: wrap; background: #fff; }
 #single-target-dialog .batch-dialog-head strong { overflow-wrap: anywhere; }
-.upload-action-types label:has(input:focus-visible), #single-target-dialog .batch-target-option:has(input:focus-visible), #single-target-dialog .batch-dialog-select-all:has(input:focus-visible) { outline: 2px solid #0b74de; outline-offset: 3px; }
+#single-target-dialog .batch-target-option:has(input:focus-visible), #single-target-dialog .batch-dialog-select-all:has(input:focus-visible) { outline: 2px solid #0b74de; outline-offset: 3px; }
 @media (max-width: 620px) {
     .catalog-action-left { flex-wrap: wrap; }
     .catalog-action-row > .selection-count { margin-left: 0; }

@@ -105,21 +105,23 @@ async function fixture({ viewport = { width: 1440, height: 900 }, count = 6, onl
         } };
 }
 
-/** 通过真实入口打开共用弹窗，不直接调用上传函数绕过类型选择或确认。 */
+/** 通过真实入口打开共用弹窗，不绕过选店及底部命令提交。 */
 async function openBatch(f) {
     await f.page.locator('label:has(#select-all-products)').click();
     assert.equal(await f.page.locator('#batch-direct-create').isEnabled(), true, '没有预选店也可打开');
     await f.page.locator('#batch-direct-create').click();
     assert.equal(await f.page.locator('#single-target-dialog').getAttribute('data-mode'), 'batch');
     assert.equal(await f.page.locator('dialog[open]').count(), 1);
-    assert.equal(await f.page.locator('#upload-target-fields').isVisible(), false, '必须先选任务类型');
+    assert.equal(await f.page.locator('#upload-target-fields').isVisible(), true, '打开立即显示本账户店铺');
+    assert.equal(await f.page.locator('.upload-action-types').count(), 0);
+    assert.equal(await f.page.locator('.single-target-dialog-actions button').count(), 2);
     assert.equal(f.sends.length, 0);
     assert.equal(f.capabilityReads, 0, '开窗不得启动提交前检查');
 }
 
 async function chooseTask(page, actionType, ids = ['222', '333', '444']) {
-    await page.locator(`.upload-action-types label:has(input[value="${actionType}"])`).click();
-    assert.equal(await page.locator('#upload-product-compliance').isVisible(), actionType === 'product_create');
+    assert.ok(actionTypes.includes(actionType));
+    assert.equal(await page.locator('#upload-product-compliance').isVisible(), true);
     for (const id of ids) await page.locator(`#single-target-options label:has(input[value="temu:${id}"])`).click();
 }
 
@@ -128,17 +130,24 @@ async function finish(f, copies) {
     assert.doesNotMatch(await f.page.locator('#catalog-toast').innerText(), /上架成功|补全成功|创建成功/);
 }
 
-/** 截图作为用户交付证据；几何检查覆盖窄屏弹窗、长商品汇总及底部确认按钮。 */
+/** 截图作为交付证据；两个命令都要在窄屏首屏可见，不能重叠或挤出弹窗。 */
 async function checkLayout(page, actionType) {
     const bounds = await page.locator('#single-target-dialog').evaluate(dialog => {
-        const rect = dialog.getBoundingClientRect(), confirm = dialog.querySelector('button[value="apply"]').getBoundingClientRect();
+        const rect = dialog.getBoundingClientRect();
+        const buttons = [...dialog.querySelectorAll('.single-target-dialog-actions button')].map(button => {
+            const box = button.getBoundingClientRect();
+            return { left: box.left, right: box.right, bottom: box.bottom, textFits: button.scrollWidth <= button.clientWidth };
+        });
         return { viewport: innerWidth, height: innerHeight, left: rect.left, right: rect.right, bottom: rect.bottom, scrollWidth: dialog.scrollWidth, width: dialog.clientWidth,
-            buttonLeft: confirm.left, buttonRight: confirm.right, buttonBottom: confirm.bottom };
+            buttons };
     });
     assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport + 1, JSON.stringify(bounds));
     assert.ok(bounds.scrollWidth <= bounds.width + 1, JSON.stringify(bounds));
-    assert.ok(bounds.buttonLeft >= bounds.left && bounds.buttonRight <= bounds.right, JSON.stringify(bounds));
-    assert.ok(bounds.buttonBottom <= Math.min(bounds.bottom, bounds.height), '确认按钮必须在弹窗首屏可见');
+    for (const button of bounds.buttons) {
+        assert.ok(button.left >= bounds.left && button.right <= bounds.right && button.textFits, JSON.stringify(bounds));
+        assert.ok(button.bottom <= Math.min(bounds.bottom, bounds.height), '两个命令必须在弹窗首屏可见');
+    }
+    assert.ok(bounds.buttons[0].right <= bounds.buttons[1].left, '两个命令不得重叠');
     assert.ok((await page.screenshot({ path: fileURLToPath(new URL(`split-upload-${page.viewportSize().width}-${actionType}.png`, output)) }))
         .byteLength > 5000, '真实网页截图不得为空');
 }
@@ -150,10 +159,10 @@ try {
             await openBatch(f);
             assert.match(await f.page.locator('#single-target-spu').innerText(), /可发送 4 个，标红跳过 2 个/);
             await chooseTask(f.page, actionType);
-            assert.equal(await f.page.locator('#single-target-dialog button[value="apply"]').isEnabled(), true);
+            assert.equal(await f.page.locator(`#single-target-dialog button[value="${actionType}"]`).isEnabled(), true);
             await checkLayout(f.page, actionType);
             assert.equal(f.sends.length, 0, '确认前不得发送');
-            await f.page.locator('#single-target-dialog button[value="apply"]').click();
+            await f.page.locator(`#single-target-dialog button[value="${actionType}"]`).click();
             await finish(f, 12);
             assert.equal(f.sends.length, 3);
             for (const body of f.sends) {
@@ -165,24 +174,28 @@ try {
         }
     }
 
-    // 取消及 Escape 不产生任务，弹窗再次打开时不会沿用上次 apply 返回值或任务类型。
+    // 关闭及 Escape 不产生任务，重新打开也不能沿用上次命令的返回值。
     const cancel = await fixture();
     await openBatch(cancel); await chooseTask(cancel.page, 'qualification_upload');
-    await cancel.page.locator('#single-target-dialog').getByRole('button', { name: '取消', exact: true }).click();
+    await cancel.page.locator('#single-target-search').fill('222');
+    await cancel.page.locator('#single-target-search').press('Enter');
+    assert.equal(await cancel.page.locator('#single-target-dialog').isVisible(), true, '搜索回车不能关闭弹窗或发送');
+    assert.equal(cancel.sends.length, 0);
+    await cancel.page.locator('#single-target-dialog').getByRole('button', { name: '关闭', exact: true }).click();
     await cancel.page.locator('#batch-direct-create').click();
-    assert.equal(await cancel.page.locator('[name="upload-action-type"]:checked').count(), 0);
+    assert.equal(await cancel.page.locator('#single-target-dialog').evaluate(dialog => dialog.returnValue), '');
     await cancel.page.keyboard.press('Escape');
     assert.equal(cancel.sends.length, 0); assert.equal(cancel.capabilityReads, 0); await cancel.close();
 
-    // 无在线店时两种入口均可打开，类型可选，但没有接收方不得提交。
+    // 无在线店时两种入口均可打开，但两个命令都不能在没有接收方时提交。
     const empty = await fixture({ online: false, red: 0 });
     await openBatch(empty); await chooseTask(empty.page, 'qualification_upload', []);
-    assert.equal(await empty.page.locator('#single-target-dialog button[value="apply"]').isDisabled(), true);
+    assert.equal(await empty.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
     await empty.page.locator('#single-target-options').getByText('暂无在线目标店铺。').waitFor();
     await empty.page.keyboard.press('Escape');
     await empty.page.locator('[data-transfer-spu]').first().click();
     await chooseTask(empty.page, 'product_create', []);
-    assert.equal(await empty.page.locator('#single-target-dialog button[value="apply"]').isDisabled(), true);
+    assert.equal(await empty.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
     assert.equal(empty.sends.length, 0); await empty.close();
 
     // 两种单商品任务都带入已选店，并允许改为多店；只发本行，不受批量勾选影响。
@@ -195,7 +208,7 @@ try {
         assert.equal(await single.page.locator('#single-target-dialog').getAttribute('data-mode'), 'single');
         assert.equal(await single.page.locator('#single-target-options input[value="temu:222"]').isChecked(), true);
         await chooseTask(single.page, actionType, ['222', '333', '444']);
-        await single.page.locator('#single-target-dialog button[value="apply"]').click();
+        await single.page.locator(`#single-target-dialog button[value="${actionType}"]`).click();
         await finish(single, 2);
         assert.deepEqual(single.sends.map(body => body.targetStoreId).sort(), ['temu:333', 'temu:444']);
         for (const body of single.sends) { assert.equal(body.actionType, actionType); assert.deepEqual(body.spuIds, [single.products[2].spuId]); }
@@ -208,7 +221,6 @@ try {
     await draft.page.locator('#batch-target-options label:has(input[value="temu:222"])').click();
     await draft.page.locator('#batch-target-dialog button[value="apply"]').click();
     await openBatch(draft);
-    await draft.page.locator('.upload-action-types label:has(input[value="product_create"])').click();
     assert.equal(await draft.page.locator('#single-target-options input[value="temu:222"]').isChecked(), true);
     await draft.page.locator('#single-target-search').fill('333');
     assert.equal(await draft.page.locator('#single-target-options label:has(input[value="temu:222"])').isVisible(), false);
@@ -216,10 +228,10 @@ try {
     assert.equal(await draft.page.locator('#single-target-options input[value="temu:333"]').isChecked(), true);
     await draft.page.locator('#single-target-search').fill('');
     await draft.page.locator('#single-target-options label:has(input[value="temu:222"])').click();
-    await draft.page.locator('#single-target-dialog button[value="apply"]').click();
+    await draft.page.locator('#single-target-dialog button[value="product_create"]').click();
     await finish(draft, 6); assert.equal(draft.sends[0].targetStoreId, 'temu:333'); await draft.close();
 
-    // 类型、搜索、店铺勾选和原行节点在实时刷新中保留；新红标立即禁用提交。
+    // 搜索、店铺勾选和原行节点在实时刷新中保留；新红标立即禁用两个命令。
     for (const mode of ['batch', 'single']) {
         const live = await fixture({ count: 1, red: 0 });
         if (mode === 'batch') await openBatch(live); else await live.page.locator('[data-transfer-spu]').click();
@@ -228,17 +240,19 @@ try {
         await live.page.evaluate(() => { window.savedRow = document.querySelector('[data-product-row]'); });
         const reads = live.overviewReads;
         live.products[0].sendBlocked = true; await live.notify();
-        assert.equal(await live.page.locator('#single-target-dialog button[value="apply"]').isDisabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="qualification_upload"]').isDisabled(), true);
         assert.equal(await live.page.locator('[data-transfer-spu]').isDisabled(), true);
         assert.equal(await live.page.locator('#single-target-search').inputValue(), '222');
-        assert.equal(await live.page.locator('[name="upload-action-type"]:checked').inputValue(), 'qualification_upload');
         assert.equal(await live.page.locator('#single-target-options input[value="temu:222"]').isChecked(), true);
         assert.equal(await live.page.evaluate(() => window.savedRow === document.querySelector('[data-product-row]')), true);
         assert.equal(live.overviewReads, reads);
         live.products[0].sendBlocked = false; await live.notify();
-        assert.equal(await live.page.locator('#single-target-dialog button[value="apply"]').isEnabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="product_create"]').isEnabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="qualification_upload"]').isEnabled(), true);
         live.setAgents([]); await live.notify();
-        assert.equal(await live.page.locator('#single-target-dialog button[value="apply"]').isDisabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
+        assert.equal(await live.page.locator('#single-target-dialog button[value="qualification_upload"]').isDisabled(), true);
         live.setAgents(['333']); await live.notify();
         await live.page.locator('#single-target-search').fill('');
         assert.equal(await live.page.locator('#single-target-options input').count(), 1);
@@ -249,7 +263,7 @@ try {
     for (const actionType of actionTypes) {
         const chunks = await fixture({ count: 20, red: 2 });
         await openBatch(chunks); await chooseTask(chunks.page, actionType); chunks.hold();
-        await chunks.page.locator('#single-target-dialog button[value="apply"]').click();
+        await chunks.page.locator(`#single-target-dialog button[value="${actionType}"]`).click();
         await chunks.page.waitForFunction(() => document.querySelector('#batch-direct-create')?.textContent === '发送中…');
         for (let i = 0; i < 100 && chunks.sends.length < 2; i++) await chunks.page.waitForTimeout(10);
         assert.equal(chunks.sends.length, 2, '第三店不得突破两店并发');
@@ -269,7 +283,7 @@ try {
     for (const actionType of actionTypes) {
         const leave = await fixture({ count: 20, red: 0 });
         await openBatch(leave); await chooseTask(leave.page, actionType); leave.hold();
-        await leave.page.locator('#single-target-dialog button[value="apply"]').click();
+        await leave.page.locator(`#single-target-dialog button[value="${actionType}"]`).click();
         for (let i = 0; i < 100 && leave.sends.length < 2; i++) await leave.page.waitForTimeout(10);
         assert.equal(leave.sends.length, 2);
         await leave.page.getByRole('link', { name: '店铺认领', exact: true }).click();
@@ -284,26 +298,26 @@ try {
         unsupported.setCapability({ directCreate: true, actionTypes: ['product_create'] });
         if (mode === 'batch') await openBatch(unsupported); else await unsupported.page.locator('[data-transfer-spu]').first().click();
         await chooseTask(unsupported.page, 'qualification_upload', ['222']);
-        await unsupported.page.locator('#single-target-dialog button[value="apply"]').click();
+        await unsupported.page.locator('#single-target-dialog button[value="qualification_upload"]').click();
         await unsupported.page.locator('#catalog-toast').getByText(/后台尚未启用所选上传任务类型/).waitFor();
         assert.equal(unsupported.sends.length, 0); await unsupported.close();
     }
     const oldServer = await fixture({ red: 0 }); oldServer.setCapability({ directCreate: true });
     await openBatch(oldServer); await chooseTask(oldServer.page, 'product_create', ['222']);
-    await oldServer.page.locator('#single-target-dialog button[value="apply"]').click();
+    await oldServer.page.locator('#single-target-dialog button[value="product_create"]').click();
     await oldServer.page.locator('#catalog-toast').getByText(/后台尚未启用所选上传任务类型/).waitFor();
     assert.equal(oldServer.sends.length, 0); await oldServer.close();
     const oldPlugin = await fixture({ count: 1, red: 0 }); oldPlugin.failSend();
     await openBatch(oldPlugin); await chooseTask(oldPlugin.page, 'qualification_upload', ['222']);
-    await oldPlugin.page.locator('#single-target-dialog button[value="apply"]').click();
+    await oldPlugin.page.locator('#single-target-dialog button[value="qualification_upload"]').click();
     await oldPlugin.page.locator('#catalog-toast').getByText(/最低 11\.0\.4/).waitFor();
     assert.equal(oldPlugin.sends.length, 1); assert.equal(await oldPlugin.page.locator('#batch-direct-create').isEnabled(), true);
     await oldPlugin.close();
 
     // 保留在线/绑定展示，但旧版不能被拆分任务选择，前端先阻止无效发送。
     const oldTarget = await fixture({ count: 1, red: 0 }); oldTarget.setVersion('11.0.3'); await oldTarget.notify();
-    await openBatch(oldTarget); await oldTarget.page.locator('.upload-action-types label:has(input[value="qualification_upload"])').click();
-    assert.equal(await oldTarget.page.locator('#single-target-dialog button[value="apply"]').isDisabled(), true);
+    await openBatch(oldTarget);
+    assert.equal(await oldTarget.page.locator('#single-target-dialog button[value="product_create"]').isDisabled(), true);
     assert.equal(await oldTarget.page.locator('#single-target-dialog [data-store-id]').count(), 0);
     assert.equal(oldTarget.sends.length, 0); await oldTarget.close();
 
@@ -312,7 +326,7 @@ try {
         const hidden = await fixture({ count: 20, red: 0 });
         if (mode === 'batch') await openBatch(hidden); else await hidden.page.locator('[data-transfer-spu]').first().click();
         await chooseTask(hidden.page, 'product_create'); hidden.hold();
-        await hidden.page.locator('#single-target-dialog button[value="apply"]').click();
+        await hidden.page.locator('#single-target-dialog button[value="product_create"]').click();
         for (let i = 0; i < 100 && hidden.sends.length < 2; i++) await hidden.page.waitForTimeout(10);
         assert.equal(hidden.sends.length, 2);
         await hidden.page.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
@@ -323,7 +337,7 @@ try {
     // 同来源确认在共用弹窗关闭后才出现，取消不发；等待能力时离页也不能迟到发送。
     const same = await fixture({ count: 1, red: 0, sameStore: true });
     await openBatch(same); await chooseTask(same.page, 'qualification_upload', ['111']);
-    await same.page.locator('#single-target-dialog button[value="apply"]').click();
+    await same.page.locator('#single-target-dialog button[value="qualification_upload"]').click();
     const sameDialog = same.page.getByRole('dialog', { name: '确认发送到来源店铺' }); await sameDialog.waitFor();
     assert.equal(await same.page.locator('dialog[open]').count(), 1, '不得嵌套模态弹窗');
     await sameDialog.getByRole('button', { name: '取消', exact: true }).click();
@@ -332,7 +346,7 @@ try {
         const waiting = await fixture({ red: 0 }); waiting.holdCapability();
         if (mode === 'batch') await openBatch(waiting); else await waiting.page.locator('[data-transfer-spu]').first().click();
         await chooseTask(waiting.page, 'product_create', ['222']);
-        await waiting.page.locator('#single-target-dialog button[value="apply"]').click();
+        await waiting.page.locator('#single-target-dialog button[value="product_create"]').click();
         await waiting.page.waitForFunction(() => singleUploadBusy || batchUploadBusy);
         for (let i = 0; i < 100 && !waiting.capabilityReads; i++) await waiting.page.waitForTimeout(10);
         await waiting.page.getByRole('link', { name: '店铺认领', exact: true }).click();

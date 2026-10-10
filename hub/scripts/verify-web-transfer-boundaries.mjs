@@ -113,6 +113,7 @@ test('删除旧查验、查看方式和手工导入入口，保留商品库路�
     // 无在线店只禁用弹窗提交，不禁用开窗入口；红标与来源校验仍保留。
     assert.match(source, /button\.disabled = Boolean\(blocked \|\| !hasBatch/);
     assert.doesNotMatch(source, /button\.disabled = Boolean\(blocked \|\| !targetStores\.length/);
-    assert.match(source, /uploadConfirmButton\.disabled = !actionType \|\| !targetCount \|\| !selection\.eligible/);
+    assert.match(source, /button\.disabled = !targetCount \|\| !selection\.eligible \|\| singleUploadBusy \|\| batchUploadBusy/);
+    assert.doesNotMatch(source, /upload-action-types|uploadActionInputs|uploadConfirmButton/);
     assert.match(source, /标红跳过.*缺少来源/);
 });

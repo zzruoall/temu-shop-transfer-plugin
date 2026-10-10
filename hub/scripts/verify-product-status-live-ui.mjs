@@ -188,9 +188,8 @@ try {
     const f = await fixture({ width: 1280, height: 900 }, 25), { page } = f;
     await page.locator('label:has(#select-all-products)').click(); await targets(page);
     f.hold(); await page.locator('#batch-direct-create').click();
-    await page.locator('.upload-action-types label:has(input[value="product_create"])').click();
     assert.equal(await page.locator('#single-target-select-all').isChecked(), true, '预选店带入共用弹窗');
-    await page.locator('#single-target-dialog button[value="apply"]').click();
+    await page.locator('#single-target-dialog button[value="product_create"]').click();
     await page.waitForFunction(() => document.querySelector('#batch-direct-create')?.textContent === '发送中…');
     for (let i = 0; i < 100 && f.sends.length < 2; i++) await page.waitForTimeout(10);
     assert.equal(f.sends.length, 2);
