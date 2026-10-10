@@ -287,8 +287,6 @@ function renderProducts(overview, agentResult = { agents: [], total: 0, hasMore:
                 <div class="batch-target-options" id="single-target-options">${targetStores.map(store => `<label class="batch-target-option" data-store-search="${escapeHtml(`${store.storeName || store.storeId} ${store.storeId}`.toLocaleLowerCase())}"><input type="checkbox" value="${escapeHtml(store.storeId)}"><span class="batch-target-check"></span><strong>${escapeHtml(store.storeName || store.storeId)}</strong><small>${escapeHtml(store.storeId)} · 在线，可接收上传任务</small></label>`).join("") || `<p class="muted">暂无在线目标店铺。</p>`}</div>
                 <div class="task-load-more" id="single-target-load-more-wrap" ${targetStoresHaveMore ? "" : "hidden"}><button type="button" class="toolbar-button" id="single-target-load-more">加载更多目标店铺</button><span id="single-target-load-more-status">已显示 ${targetStores.length} / ${targetStoreTotal} 家</span></div>
                 </fieldset>
-                <p class="upload-task-notice" id="upload-product-compliance">点击“上架商品”即表示确认本次商品符合适用要求，并同意平台《商品合规声明》V2.0；创建不等于审核上架。</p>
-                <p class="upload-task-notice">任务发出不代表执行成功。离开本页将停止剩余发送，已发内容不撤回。</p>
                 </div>
                 <div class="batch-dialog-footer"><span id="single-target-count" aria-live="polite">已选择 0 家店铺</span><div class="single-target-dialog-actions"><button type="submit" value="product_create" class="toolbar-button primary" disabled>上架商品</button><button type="submit" value="qualification_upload" class="toolbar-button" disabled>补全资质</button></div></div>
             </form>

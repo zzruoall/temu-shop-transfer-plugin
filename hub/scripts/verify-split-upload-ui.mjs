@@ -121,7 +121,7 @@ async function openBatch(f) {
 
 async function chooseTask(page, actionType, ids = ['222', '333', '444']) {
     assert.ok(actionTypes.includes(actionType));
-    assert.equal(await page.locator('#upload-product-compliance').isVisible(), true);
+    assert.equal(await page.locator('#single-target-dialog .upload-task-notice, #upload-product-compliance').count(), 0, '弹窗不再展示两段说明小字');
     for (const id of ids) await page.locator(`#single-target-options label:has(input[value="temu:${id}"])`).click();
 }
 

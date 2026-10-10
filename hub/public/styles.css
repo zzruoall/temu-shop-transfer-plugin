@@ -825,8 +825,7 @@ h2 { font-size: 20px; letter-spacing: -.025em; }
 .upload-target-fields legend { padding: 0 4px; color: #2c5572; font-size: 13px; font-weight: 700; }
 .upload-target-fields { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .upload-target-fields .batch-target-option[hidden] { display: none; }
-.upload-task-notice { margin: 0; color: #49677e; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-/* 长店铺列表只滚动弹窗正文，窄屏确认按钮始终可见，不被材料提示或加载按钮挤出。 */
+/* 长店铺列表只滚动弹窗正文，窄屏两个命令始终可见，不被店铺列表或加载按钮挤出。 */
 #single-target-dialog form { grid-template-rows: minmax(0, 1fr) auto; box-sizing: border-box; max-height: min(680px, calc(100dvh - 48px)); overflow: hidden; }
 .upload-dialog-body { display: grid; gap: 14px; min-height: 0; overflow: auto; padding-right: 4px; }
 #single-target-dialog .task-load-more[hidden] { display: none; }

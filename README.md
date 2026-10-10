@@ -1,8 +1,8 @@
 # Temu 商品转移上架插件
 
-- 网站服务版本：`v55`（2026-10-10 线上源码快照）
+- 网站服务版本：`v56`（2026-10-10 线上源码快照）
 - 插件版本：`11.0.4`
-- 插件版本以 `plugin/manifest.json` 为准；v55 仅调整网站选店弹窗，沿用 11.0.4 插件及安装包。上方直接选择本账户绑定的在线店铺，下方分别点击“上架商品”或“补全资质”。
+- 插件版本以 `plugin/manifest.json` 为准；v56 删除选店弹窗两段说明，沿用 11.0.4 插件及安装包。上方直接选择本账户绑定的在线店铺，下方分别点击“上架商品”或“补全资质”。
 - 扩展 ID：`efojbbfhfniieifmppafmigfmndbledc`
 - 用途：采集 Temu 商品及资质，通过中转仓向自己的目标店分别投递商品创建或资质补全任务
 
@@ -13,8 +13,8 @@
 - `worker/`：本机紫鸟工人，用于核验目标店页面身份与插件状态
 - `hub/public/downloads/temu-transfer-plugin-11.0.4.crx`：当前已签名插件
 - `hub/public/downloads/temu-transfer-plugin-11.0.4.zip`：同版本插件源码安装包
-- `docs/release-v55.md`：本次网站调整、验证与限制
-- `docs/release-v55-sha256.json`：当前正式源码和安装包的 SHA-256 摘要
+- `docs/release-v56.md`：本次网站调整、验证与限制
+- `docs/release-v56-sha256.json`：当前正式源码和安装包的 SHA-256 摘要
 - 根目录的 `temu-shop-transfer-10.10.47.crx` 是历史文件，不是当前版本
 
 ## 安装插件
